@@ -1,5 +1,5 @@
 include README.md LICENSE CHANGELOG.md
-include docs/TESTING.md docs/INSTALL.md docs/WATERMARKS.md
+include docs/TESTING.md docs/INSTALL.md docs/WATERMARKS.md docs/WEIBO_IMAGE_AUDIT.md
 recursive-include scripts *.py
 recursive-include tests *.py
 exclude docs/validation.md

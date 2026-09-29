@@ -6,7 +6,7 @@ Checked locally for 0.2.0b11 on 2026-09-30. Download success and session verific
 
 Prefer usable sources without added platform marks. If none can be obtained, retain the available media instead of refusing the whole post. Douyin, Xiaohongshu and Weibo report known source fallbacks. This is not a visual watermark detector: logos burned into an upload can still appear, including on an otherwise clean rendition. There is no pixel erasure, cropping, blurring or re-encoding.
 
-Weibo's clean image rendition can be smaller than its marked image. This release prioritizes the clean rendition and reports that tradeoff. Video downloads preserve source quality. Previously saved files and Photos items are not changed; redownload to apply new source selection.
+Weibo's alternate image rendition can be smaller than its marked image. Since 0.2.0b12 it is selected only when image comparison supports a localized watermark improvement; otherwise original quality is retained. Selected reductions are reported. Video downloads preserve source quality. Previously saved files and Photos items are not changed; redownload to apply new source selection.
 
 ## Actual samples
 
@@ -24,6 +24,8 @@ Weibo's clean image rendition can be smaller than its marked image. This release
 Videos were inspected at approximately 10%, 50% and 90% of duration, not frame by frame. Results apply to these samples; they do not certify every post on a platform. HEIC images were converted only for temporary visual inspection; downloaded originals were not altered.
 
 ## Weibo investigation
+
+**Batch follow-up:** [19-image comparison across seven authors](WEIBO_IMAGE_AUDIT.md) found that all 17 images wider than 690 pixels were reduced to 690 pixels wide by `oslarge`; two narrower images retained their dimensions. Five images that already lacked a visible platform mark were unnecessarily downsized by 0.2.0b11's unconditional replacement. Version 0.2.0b12 retained all six already-clean originals in the same sample set. Two alternate images retained older source watermarks. Do not interpret a successful `oslarge` request as proof of watermark removal or retained original quality.
 
 For the reported JPEG, `large`, `original`, `mw2000` and `orj1080` still contained the platform mark. `oslarge` returned the usable clean rendition. Other attempted original-size variants did not return usable JPEGs. This does not establish that every Weibo image has a clean full-resolution source.
 

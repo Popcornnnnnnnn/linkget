@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0b12 — preserve clean Weibo originals
+
+- Stop unconditionally replacing Weibo JPEGs with smaller `oslarge` images. Compare same-size renditions and the actual downloaded large image; select the alternate only when localized changes support a watermark improvement.
+- Preserve original bytes and dimensions when no improvement is detected, comparison is inconclusive, ffmpeg is unavailable, or comparison fails. No new dependency is added; image inspection uses the existing ffmpeg tool.
+- Avoid claiming that an alternate is completely watermark-free: marks embedded by earlier sources can remain.
+- Rechecked 19 images from seven authors: all six visually clean originals were retained, while 13 images with an added account watermark selected the alternate. Added regression coverage for compression noise, distributed changes, clean large images with marked previews and decoder failure.
+
 ## 0.2.0b11 — prefer clean media sources
 
 - Prefer Weibo's `oslarge` JPEG rendition: all three images in the reported sample lost the platform watermark. Report when the clean rendition is smaller; retain the downloaded original if the alternative is unavailable or invalid.

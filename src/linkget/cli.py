@@ -858,7 +858,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                     raise RuntimeError("Download failed.\n" + "\n".join(tail))
                 if domain == "weibo.com" and engine == "gallery-dl":
                     with activity("Checking sources"):
-                        source_notes = prefer_clean_images(media_dir)
+                        source_notes = prefer_clean_images(media_dir, find_tool("ffmpeg"))
                 for note in source_notes:
                     status("Media", note)
                 files = sorted(path for path in media_dir.iterdir() if path.is_file() and path.suffix.lower() in MEDIA)
