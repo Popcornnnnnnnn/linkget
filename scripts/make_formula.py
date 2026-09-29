@@ -26,9 +26,9 @@ args.output.write_text('''class Linkget < Formula
   sha256 "%s"
   license "MIT"
 
-  depends_on :macos
   depends_on "ffmpeg"
   depends_on "gallery-dl"
+  depends_on :macos
   depends_on "python@3.14"
   depends_on "yt-dlp"
 
