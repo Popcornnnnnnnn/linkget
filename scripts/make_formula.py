@@ -27,16 +27,16 @@ args.output.write_text('''class Linkget < Formula
   license "MIT"
 
   depends_on :macos
-  depends_on "python@3.14"
-  depends_on "gallery-dl"
-  depends_on "yt-dlp"
   depends_on "ffmpeg"
+  depends_on "gallery-dl"
+  depends_on "python@3.14"
+  depends_on "yt-dlp"
 
   def install
     libexec.install "src/linkget"
     (bin/"linkget").write <<~SH
       #!/bin/sh
-      exec "#{Formula["python@3.14"].opt_bin}/python3.14" "#{libexec}/linkget/cli.py" "$@"
+      exec "#{formula_opt_bin("python@3.14")}/python3.14" "#{libexec}/linkget/cli.py" "$@"
     SH
   end
 
