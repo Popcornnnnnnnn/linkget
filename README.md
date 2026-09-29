@@ -89,6 +89,8 @@ Normal downloads use public access first. Bilibili uses an already-connected log
 
 Use `linkget auth` to connect a website before downloading. If all websites are connected, it prints the results and exits. Network check failures do not remove saved logins. After logout, reconnecting requires your explicit choice.
 
+In an interactive terminal, `auth` automatically refreshes expired or rejected saved logins from the previously connected browser/profile. Sites using the same browser/profile share one read. Only newly verified sessions replace saved data; network errors, rate limits and website verification challenges do not trigger automatic refresh. `--browser none` and noninteractive account checks never read browsers automatically.
+
 `--browser none` disables all login use. `--browser firefox --profile '/path/to/profile'` selects a specific browser and account profile. Otherwise the download engine chooses its recently used profile. Noninteractive commands do not run setup or automatically read browsers; explicitly requesting `--browser` still requests that browser.
 
 ## Quality and Photos originals
@@ -120,3 +122,13 @@ uv build
 ```
 
 See [validation scope](docs/TESTING.md). Actual Photos and OS permission dialogs require manual acceptance; unit tests never open personal apps or read real browser sessions.
+
+### Development handoff — 2026-09-29
+
+- The local checkout is `/Users/forge/Workspace/linkget`, registered as a dedicated Codex project with the original conversation. The development environment was recreated after relocation and no longer references the old checkout. Use `PYTHONPATH=src .venv/bin/python` for source validation.
+- This is an independent public MIT repository with its own Homebrew tap. The release version is maintained in `src/linkget/version.py`.
+- Preserve the CLI-only design, saved destination settings, original media preference and single-post restriction. `auth` manages website connections; `doctor` checks dependencies. Do not introduce a separate login command.
+- Verified: all eight website checks passed with an authorized Chrome export. An expired YouTube snapshot automatically recovered using real Chrome cookies in an isolated temporary account store. Other browsers' real OS access is not thereby verified. See the validation document for automated coverage.
+- YouTube diagnosis: the old saved snapshot returned `LOGGED_IN=false` and `loggedOut=true`, while a fresh Chrome export returned the opposite. Seven cookie values differed although local expiry checks passed. Refreshing from Chrome restored the saved connection. No credential values were retained in development evidence.
+- Implemented: interactive `auth` refreshes explicitly rejected or expired snapshots once per authorized browser/profile, preserves sessions after failed validation, and respects logout and noninteractive checks. Cookies renewed during validation are included in newly saved snapshots.
+- Before further work, verify the working directory, this README and Git status. Real permission prompts, other browser profiles and long-term behavior under upstream website changes remain acceptance limits.

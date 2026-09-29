@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0b10 — session recovery and response handling
+
+- Automatically refresh expired/rejected sessions during interactive `auth`, using one read per authorized browser/profile and saving only verified replacements. Respect logout, public-only mode and noninteractive checks.
+- Preserve cookies renewed by website validation before saving a connection.
+- Recognize rotated-cookie download errors and recover even when a video probe silently falls back to anonymous results.
+- Handle malformed Xiaohongshu, Instagram and X responses and interrupted HTTP responses without crashing account checks. Recognize Xiaohongshu's login redirect as a rejected session.
+- Verified all eight channels with real Chrome sessions and recovered an expired YouTube snapshot in an isolated store. Browser-specific OS permissions outside Chrome remain unverified.
+
 ## 0.2.0b9 — verified Weibo sessions
 
 - Replace the incorrect Weibo config endpoint with the homepage's authenticated viewer configuration; require matching viewer IDs and an account name.

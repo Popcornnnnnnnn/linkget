@@ -296,6 +296,15 @@ class NewSiteTests(unittest.TestCase):
                 download.assert_not_called()
                 self.assertFalse((self.root / "out").exists())
 
+    def test_video_probe_recovers_rejected_cookies_even_after_anonymous_success(self):
+        warning = "The provided YouTube account cookies are no longer valid. They have likely been rotated in the browser."
+        for domain in ("youtube.com", "bilibili.com"):
+            for returncode in (0, 1):
+                with self.subTest(domain=domain, returncode=returncode), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], returncode, '{"id":"example"}\n', warning)):
+                    with self.assertRaises(cli.LoginRequired):
+                        cli.prepare_video(["yt-dlp", "--cookies", str(self.root / "session.txt"), YT_URL], self.root / "info.json", io.StringIO(), domain)
+                    self.assertFalse((self.root / "info.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

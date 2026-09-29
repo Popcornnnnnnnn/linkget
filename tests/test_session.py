@@ -1,6 +1,8 @@
 import contextlib
 from http.cookiejar import Cookie, MozillaCookieJar
+from http.client import IncompleteRead
 import io
+import json
 import os
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -95,6 +97,16 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(session.check_session(jar, "instagram.com").state, "invalid")
             opener.assert_not_called()
 
+    def test_xiaohongshu_login_redirect_is_rejected_without_following_it(self):
+        jar = MozillaCookieJar()
+        jar.set_cookie(cookie("web_session", ".xiaohongshu.com"))
+        for location, expected in [("/login?redirectPath=explore", "invalid"),
+                                   ("https://www.xiaohongshu.com/login", "invalid"),
+                                   ("https://other.test/login", "unverified")]:
+            with patch.object(session, "build_opener") as opener:
+                opener.return_value.open.side_effect = HTTPError(session.ENDPOINTS["xiaohongshu.com"], 302, "Redirect", {"Location": location}, io.BytesIO())
+                self.assertEqual(session.check_session(jar, "xiaohongshu.com").state, expected)
+
     def test_timeout_never_claims_cookie_is_invalid(self):
         jar = MozillaCookieJar()
         jar.set_cookie(cookie("SESSDATA", ".bilibili.com"))
@@ -102,6 +114,40 @@ class SessionTests(unittest.TestCase):
             opener.return_value.open.side_effect = TimeoutError()
             result = session.check_session(jar, "bilibili.com")
         self.assertEqual(result.state, "unverified")
+
+    def test_interrupted_http_response_is_unknown_not_an_expired_session(self):
+        jar = MozillaCookieJar()
+        jar.set_cookie(cookie("SESSDATA", ".bilibili.com"))
+        with patch.object(session, "build_opener") as opener:
+            opener.return_value.open.side_effect = IncompleteRead(b"partial", 100)
+            self.assertEqual(session.check_session(jar, "bilibili.com").state, "unverified")
+
+    def test_changed_response_shapes_never_crash_or_prove_login(self):
+        for value in (None, [], [1], {}, "unexpected"):
+            self.assertEqual(session.webpage_login("xiaohongshu.com", 'window.__INITIAL_STATE__=' + json.dumps({"user": value})), {})
+            self.assertEqual(session.webpage_login("xiaohongshu.com", 'window.__INITIAL_STATE__=' + json.dumps({"user": {"loggedIn": True, "userInfo": value}})), {})
+            self.assertEqual(session.classify_response("instagram.com", 200, {"message": value}).state, "unverified")
+            self.assertEqual(session.classify_response("x.com", 200, {"errors": [{"code": value}]}).state, "unverified")
+
+    def test_renewed_cookies_from_verification_are_saved_for_download(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "cookies.txt"
+            jar = MozillaCookieJar()
+            jar.set_cookie(cookie("SAPISID", ".youtube.com"))
+            def check(scoped, domain):
+                renewed = cookie("__Secure-1PSIDTS", ".youtube.com")
+                renewed.value = "renewed-by-server"
+                scoped.set_cookie(renewed)
+                return session.Session("valid", "Valid")
+            with patch.object(session, "export_browser", return_value=(jar, None)), patch.object(session, "check_session", side_effect=check):
+                session.prepare_session("gallery-dl", "chrome/youtube.com", path, "youtube.com")
+            self.assertIn("renewed-by-server", path.read_text())
+
+    def test_rotated_cookie_errors_enter_login_recovery_but_transport_errors_do_not(self):
+        self.assertTrue(cli.needs_login("The provided YouTube account cookies are no longer valid. They have likely been rotated in the browser as a security measure."))
+        self.assertTrue(cli.needs_login("Your session has expired"))
+        for message in ("HTTP Error 403", "Download URL expired", "Cookie check timed out", "Unable to read cookies"):
+            self.assertFalse(cli.needs_login(message))
 
     def test_export_filters_domains_and_reuses_private_snapshot(self):
         with tempfile.TemporaryDirectory() as directory:

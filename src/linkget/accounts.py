@@ -79,21 +79,22 @@ def remember_source(domain, specification):
     set_preferences(sources=sources, blocked=blocked)
 
 
-def connect_browser(tool, browser, profile=None):
+def connect_browser(tool, browser, profile=None, domains=None):
     """One browser export, only verified supported-site sessions are retained."""
     specification = browser + (":" + str(Path(profile).expanduser()) if profile else "")
+    domains = tuple(SITES.values() if domains is None else domains)
     results = {}
     with tempfile.TemporaryDirectory(prefix="linkget-connect-") as temp:
         root = Path(temp)
         jar, error = export_browser(tool, specification, root / "browser.txt")
         if jar is None:
-            return {domain: error for domain in SITES.values()}
+            return {domain: error for domain in domains}
         for cookie in list(jar):
             host = cookie.domain.lstrip(".")
-            if not any(host == domain or host.endswith("." + domain) for domain in SITES.values()):
+            if not any(host == domain or host.endswith("." + domain) for domain in domains):
                 jar.clear(cookie.domain, cookie.path, cookie.name)
         jar.save(ignore_discard=True, ignore_expires=True)
-        snapshots = {domain: site_cookies(jar, domain, root / (domain + ".txt")) for domain in SITES.values()}
+        snapshots = {domain: site_cookies(jar, domain, root / (domain + ".txt")) for domain in domains}
         with ThreadPoolExecutor(max_workers=len(snapshots)) as executor:
             checks = {domain: executor.submit(check_session, filtered, domain) for domain, filtered in snapshots.items()}
             states = {domain: check.result() for domain, check in checks.items()}
@@ -104,10 +105,38 @@ def connect_browser(tool, browser, profile=None):
                 state = error
             if state.state == "valid":
                 filtered.save(ignore_discard=True, ignore_expires=True)
-                save(path, domain)
-                remember_source(domain, browser + "/" + domain +
-                                (":" + str(Path(profile).expanduser()) if profile else ""))
+                saved = save(path, domain)
+                if saved.state == "unverified":
+                    remember_source(domain, browser + "/" + domain +
+                                    (":" + str(Path(profile).expanduser()) if profile else ""))
+                else:
+                    state = saved
             results[domain] = state
+    return results
+
+
+def refresh_saved(tool, domains, browser="auto", profile=None):
+    """Refresh rejected snapshots once per authorized browser/profile group."""
+    settings = preferences()
+    groups = {}
+    for domain in domains:
+        if domain in settings.get("blocked", []):
+            continue
+        selected, selected_profile = browser, profile
+        if browser == "auto":
+            source = settings.get("sources", {}).get(domain)
+            if source:
+                head, _, selected_profile = source.partition(":")
+                selected = head.split("/", 1)[0]
+                selected_profile = selected_profile or None
+            else:
+                selected, selected_profile = settings.get("browser"), settings.get("profile")
+        if not selected or selected == "none":
+            continue
+        groups.setdefault((selected, selected_profile), []).append(domain)
+    results = {}
+    for (selected, selected_profile), selected_domains in groups.items():
+        results.update(connect_browser(tool, selected, selected_profile, domains=selected_domains))
     return results
 
 

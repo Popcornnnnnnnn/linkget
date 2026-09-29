@@ -48,7 +48,8 @@ def needs_login(message):
         r"login[_ -]required|log[ -]?in (?:is )?required|(?:please|must|need to) (?:log[ -]?in|sign in)|"
         r"(?:account|login) credentials (?:required|needed)|invalid login credentials|"
         r"(?:cookies|authentication|authorization)['\"]? (?:are |is )?(?:required|needed)|"
-        r"fresh cookies.*needed|sign in (?:to|if)|redirect to login page|登录后|请(?:先)?登录|需要登录",
+        r"fresh cookies.*needed|(?:cookies|session)(?: are| is| have| has)? (?:expired|no longer valid)|"
+        r"sign in (?:to|if)|redirect to login page|登录后|请(?:先)?登录|需要登录",
         message, re.I))
 
 
@@ -74,7 +75,7 @@ def login_result(site, state, saved=False):
         status(site, state.detail, "1;33")
 
 
-def show_logins():
+def show_logins(args=None):
     settings = accounts.preferences()
     states = {}
     pending = {site: domain for site, domain in accounts.SITES.items()
@@ -84,6 +85,15 @@ def show_logins():
         with activity("Checking"), ThreadPoolExecutor(max_workers=len(pending)) as executor:
             futures = {site: executor.submit(accounts.status, domain) for site, domain in pending.items()}
             results = {site: future.result() for site, future in futures.items()}
+    rejected = [pending[site] for site, state in results.items() if state.state == "invalid"]
+    if rejected and args is not None and sys.stdin.isatty() and args.browser != "none":
+        tool = find_tool("gallery-dl")
+        if tool:
+            with activity("Refreshing"):
+                refreshed = accounts.refresh_saved(tool, rejected, args.browser, args.profile)
+            for site, domain in pending.items():
+                if domain in refreshed:
+                    results[site] = refreshed[domain]
     for site, domain in accounts.SITES.items():
         if domain in settings.get("blocked", []):
             status(site, "Disconnected", "1")
@@ -102,7 +112,7 @@ def account_command(args, parser):
             parser.error("Use linkget auth, then choose a website to connect.")
         if args.profile and args.browser in {"auto", "none"}:
             parser.error("--profile requires an explicit --browser.")
-        states = show_logins()
+        states = show_logins(args)
         while sys.stdin.isatty() and args.browser != "none":
             if all(state == "valid" for state in states.values()):
                 break
@@ -287,7 +297,7 @@ def prepare_bilibili(command, info_path, log):
     messages = "\n".join(lines[:-1]) + "\n" + result.stderr
     log.write(messages)
     log.flush()
-    if result.returncode:
+    if result.returncode or ("--cookies" in command and needs_login(messages)):
         if needs_login(messages):
             raise LoginRequired("Bilibili requires a signed-in account for this video.")
         raise RuntimeError("Could not read this Bilibili video's formats.\n" + "\n".join(messages.splitlines()[-8:]))
@@ -329,7 +339,7 @@ def prepare_video(command, info_path, log, domain):
     messages = "\n".join(lines[:-1]) + "\n" + result.stderr
     log.write(messages)
     log.flush()
-    if result.returncode:
+    if result.returncode or ("--cookies" in command and needs_login(messages)):
         if needs_login(messages):
             raise LoginRequired(f"{site} asks you to sign in or complete verification for this video.")
         if domain == "youtube.com" and ("PO Token" in messages or "JavaScript" in messages or "challenge" in messages.lower()):

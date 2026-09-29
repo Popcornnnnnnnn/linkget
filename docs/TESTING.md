@@ -6,6 +6,8 @@ Covered behaviors include:
 
 - first-use connection, skip, denied access, explicit browser/profile selection, and connecting a site before a download;
 - missing/expired/rejected sessions versus network errors, parallel checks, logout and explicit reconnection;
+- automatic refresh for all eight channels, grouping by browser/profile, explicit browser overrides, failed-refresh snapshot preservation, and no refresh for unknown states or noninteractive checks;
+- malformed account payloads, interrupted HTTP responses, saving cookies renewed during verification, and rotated-cookie warnings after anonymous video metadata fallback;
 - public downloads, quality restrictions, using an existing Bilibili login before format selection, and media routing;
 - Xiaohongshu complete original image sets, original video selection, HEIC/HEIF detection, refusal of missing/rejected originals, preserved share tokens, invalid media and interrupted downloads;
 - Weibo mixed media, YouTube video/Shorts routing, runtime guidance, quality display and playlist/live rejection;
@@ -36,6 +38,8 @@ This reads real browser cookies and can request OS permission. Use it only with 
 Browser extraction and website verification are separate acceptance layers: verify extraction/profile/OS permissions per supported browser; verify each website's authenticated identity against the shared cookie interface. A channel parser fix does not require repeating every browser/site combination. Browser-specific real access remains unverified until tested on that browser. For channel changes, also test an anonymous or invalid-cookie request, and add a sanitized regression case based on the observed response. Record actual live results separately from synthetic test results.
 
 Weibo regressions cover the observed homepage `window.$CONFIG` viewer identity, feature-only config responses, visitor/login redirects, and refusal of profile/album URLs before invoking a downloader. Short links that resolve to a profile must also be refused.
+
+For 0.2.0b10, live checks again verified all eight channels from Chrome. An isolated temporary account store containing an expired synthetic YouTube cookie then ran the real automatic-refresh path: Chrome export, website verification, saved-session replacement and a second live verification all passed. Temporary exports and test account stores were removed. No real user account was expired or logged out for this test.
 
 ## Reproduce
 

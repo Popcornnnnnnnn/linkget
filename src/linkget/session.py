@@ -1,6 +1,7 @@
 """Check browser sessions without treating readable cookies as authenticated."""
 
 from dataclasses import dataclass
+from http.client import HTTPException
 from http.cookiejar import MozillaCookieJar
 import json
 import re
@@ -77,7 +78,10 @@ def webpage_login(domain, html):
                 return {"authenticated": True}
     elif domain == "xiaohongshu.com":
         user = initial_state(html).get("user", {})
-        if user.get("loggedIn") is True and (user.get("userInfo") or {}).get("userId"):
+        if not isinstance(user, dict):
+            return {}
+        info = user.get("userInfo")
+        if user.get("loggedIn") is True and isinstance(info, dict) and info.get("userId"):
             return {"authenticated": True}
         if user.get("loggedIn") is False:
             return {"authenticated": False}
@@ -120,9 +124,9 @@ def classify_response(domain, code, data):
         user = data.get("form_data")
         if code == 200 and data.get("status") == "ok" and isinstance(user, dict) and user.get("username"):
             return Session("valid", "Valid")
-        if data.get("message") in {"login_required", "login_again", "session_invalid"}:
+        if data.get("message") in ("login_required", "login_again", "session_invalid"):
             return Session("invalid", "Session rejected")
-        if data.get("message") in {"challenge_required", "checkpoint_required", "consent_required"} or data.get("checkpoint_url"):
+        if data.get("message") in ("challenge_required", "checkpoint_required", "consent_required") or data.get("checkpoint_url"):
             return Session("attention", "Verification required")
     elif domain == "x.com":
         account = data.get("data")
@@ -132,7 +136,8 @@ def classify_response(domain, code, data):
                 and account.get("rest_id") and not data.get("errors")):
             return Session("valid", "Valid")
         errors = data.get("errors", [])
-        codes = {item.get("code") for item in errors if isinstance(item, dict)} if isinstance(errors, list) else set()
+        codes = {item["code"] for item in errors if isinstance(item, dict)
+                 and isinstance(item.get("code"), int)} if isinstance(errors, list) else set()
         if codes & {32, 89}:
             return Session("invalid", "Session rejected")
         if codes & {64, 326}:
@@ -201,6 +206,11 @@ def check_session(jar, domain):
                 if (destination.hostname in {None, "www.instagram.com", "instagram.com"}
                         and destination.path.rstrip("/") == "/accounts/login"):
                     return Session("invalid", "Session rejected")
+            if domain == "xiaohongshu.com" and code in {301, 302, 303, 307, 308}:
+                destination = urlsplit(response.headers.get("Location", ""))
+                if (destination.hostname in {None, "www.xiaohongshu.com", "xiaohongshu.com"}
+                        and destination.path.rstrip("/") == "/login"):
+                    return Session("invalid", "Session rejected")
             try:
                 body = response.read(4_000_000)
                 data = (webpage_login(domain, body.decode("utf-8", "replace"))
@@ -208,7 +218,7 @@ def check_session(jar, domain):
             except (ValueError, UnicodeError):
                 data = None
         return classify_response(domain, code, data)
-    except (URLError, OSError, TimeoutError):
+    except (URLError, OSError, HTTPException):
         return Session("unverified", "Network check failed")
 
 
@@ -255,7 +265,9 @@ def prepare_session(gallery_dl, browser_spec, cookie_path, domain):
     if jar is None:
         return error
     jar = site_cookies(jar, domain, cookie_path)
-    jar.save(ignore_discard=True, ignore_expires=True)
     if error and not login_cookies(jar, domain):
         return error
-    return check_session(jar, domain)
+    state = check_session(jar, domain)
+    # Keep any cookies renewed by the validation response, not the older export.
+    jar.save(ignore_discard=True, ignore_expires=True)
+    return state
