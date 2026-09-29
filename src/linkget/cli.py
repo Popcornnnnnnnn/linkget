@@ -57,21 +57,21 @@ def login_guidance(args, domain, url, reason):
     if args.browser == "none":
         status("Next", "Public-only mode is enabled. Run without --browser none to use a browser login.", stream=sys.stderr)
     elif not sys.stdin.isatty():
-        status("Sign in", LOGIN_URLS[domain], stream=sys.stderr)
+        sign_in_link(domain, stream=sys.stderr)
         status("Next", "Run linkget in an interactive terminal to connect a browser and continue.", stream=sys.stderr)
 
 
 def login_result(site, state, saved=False):
     if state.state == "valid":
-        status(site, "Connected", "32")
+        status(site, "Connected", "1;32")
     elif state.state == "missing":
-        status(site, "Not connected" if state.detail == "Not saved" else "Not signed in")
+        status(site, "Not connected" if state.detail == "Not saved" else "Not signed in", "1")
     elif state.state == "unverified":
         detail = ("Network error · login unchanged" if saved and state.detail == "Network check failed"
                   else "Could not verify: " + state.detail)
-        status(site, detail, "33")
+        status(site, detail, "1;33")
     else:
-        status(site, state.detail, "33")
+        status(site, state.detail, "1;33")
 
 
 def show_logins():
@@ -86,7 +86,7 @@ def show_logins():
             results = {site: future.result() for site, future in futures.items()}
     for site, domain in accounts.SITES.items():
         if domain in settings.get("blocked", []):
-            status(site, "Disconnected")
+            status(site, "Disconnected", "1")
             states[site] = "disconnected"
         else:
             state = results[site]
@@ -109,7 +109,7 @@ def account_command(args, parser):
             default = next((site for site, state in states.items() if state == "disconnected"), None)
             if default is None:
                 default = next((site for site, state in states.items() if state in {"missing", "invalid"}), None)
-            prompt = (f"\n  Press Enter to connect {default}.\n"
+            prompt = (f"\n  Press Enter to connect {emphasis(default)}.\n"
                       "  To connect a different website, type its name (e.g. instagram).\n"
                       "  Type q and press Enter to exit.\n  > " if default else
                       "\n  To connect a website, type its name (e.g. bilibili).\n"
@@ -122,7 +122,7 @@ def account_command(args, parser):
                 print("  Choose: " + ", ".join(accounts.SITES))
                 continue
             if recover_login(args, accounts.SITES[site], "Connect " + site, proactive=True):
-                status(site, "Connected", "32")
+                status(site, "Connected", "1;32")
                 states[site] = "valid"
         return 0
     if len(sites) != 1 or sites[0] not in {*accounts.SITES, "all"}:
@@ -154,16 +154,15 @@ def choose_browser():
         print("  Enter a number from the list.")
 
 
-def browser_notice(browser):
+def browser_access_help(browser):
+    """Permission help after a failed read, never a speculative prompt notice."""
     if sys.platform == "darwin" and browser in {"chrome", "edge", "brave"}:
         name = "Microsoft Edge" if browser == "edge" else browser.capitalize()
-        status("Access", f"macOS may ask to read {name} Safe Storage.")
-        print("              In the 'security' prompt, enter your Mac login password.")
-        print("              Allow: this read. Always Allow: remember permission.")
+        status("Next", f"Check the {name} profile and its Keychain access permission, then retry or choose another browser.")
     elif sys.platform == "darwin" and browser == "safari":
-        status("Access", "Safari data may require Full Disk Access for your terminal in System Settings > Privacy & Security.")
+        status("Next", "Check Safari data access in System Settings > Privacy & Security > Full Disk Access, then retry.")
     else:
-        status("Access", f"Reading website logins from {browser.capitalize()}; your website passwords are not requested.")
+        status("Next", f"Check the {browser.capitalize()} profile and browser data permissions, then retry or choose another browser.")
 
 
 def first_run(args):
@@ -179,14 +178,19 @@ def first_run(args):
             status("Setup needed", installation_hint(["gallery-dl"]), "33")
             print("  Browser connection skipped. Public downloads remain available.\n")
             return
-        browser_notice(browser)
         with activity("Connecting"):
             results = accounts.connect_browser(tool, browser, profile)
         if all(state.state == "unavailable" for state in results.values()):
             status(browser.capitalize(), next(iter(results.values())).detail, "33")
+            browser_access_help(browser)
         else:
             for site, domain in accounts.SITES.items():
                 login_result(site, results[domain])
+                if results[domain].state in {"missing", "invalid", "unverified"}:
+                    sign_in_link(domain)
+            if any(state.state in {"missing", "invalid", "unverified"} for state in results.values()):
+                status("Next", f"Open these links in {browser.capitalize()}" + (" (the selected profile)" if profile else "")
+                       + ", sign in or complete verification, then return here and type r to check again.")
         usable_read = any(state.state != "unavailable" for state in results.values())
         if usable_read:
             accounts.set_preferences(browser=browser, profile=profile)
@@ -208,6 +212,7 @@ def recover_login(args, domain, reason, proactive=False):
     if not sys.stdin.isatty() or args.browser == "none":
         return False
     settings = accounts.preferences()
+    site = next(site for site, site_domain in accounts.SITES.items() if site_domain == domain)
     if domain in settings.get("blocked", []) and not proactive:
         if input("  Browser access is disabled for this site. Reconnect? [y/N]: ").strip().lower() != "y":
             return False
@@ -234,27 +239,27 @@ def recover_login(args, domain, reason, proactive=False):
                 return False
         if not new_browser:
             if "access" in reason.lower() or "decrypt" in reason.lower() or "read browser" in reason.lower():
-                status("Next", f"Allow access to {browser.capitalize()}, or choose another browser.")
-            elif "Network" in reason or "Rate limited" in reason or "Website" in reason or "Unexpected" in reason:
-                status("Next", "Check your connection or complete website verification in your browser, then retry.")
+                browser_access_help(browser)
             else:
-                status("Sign in", LOGIN_URLS[domain])
-                status("Next", f"Sign in using {browser.capitalize()}" + (" (the selected profile)" if profile else "") + ", then return here.")
-            answer = input("  Enter to continue · b to change browser · q to cancel: ").strip().lower()
+                sign_in_link(domain)
+                status("Next", f"Open this link in {browser.capitalize()}" + (" (the selected profile)" if profile else "")
+                       + f", sign in to {emphasis(site)} or complete verification, then return here.")
+                if "Network" in reason or "Rate limited" in reason:
+                    status("Note", "The check did not complete. Check your connection or try again later.")
+            answer = input("  Press Enter to check again · b to change browser · q to cancel: ").strip().lower()
             if answer == "q":
                 return False
             if answer == "b":
                 browser = None
                 continue
-        browser_notice(browser)
         specification = browser + "/" + domain + (":" + str(Path(profile).expanduser()) if profile else "")
-        with activity("Checking"):
+        with activity("Checking " + site):
             state = accounts.import_browser(tool, specification, domain)
         if state.state == "valid":
             accounts.set_preferences(browser=browser, profile=profile, setup=True)
             return True
         reason = state.detail
-        status("Could not connect", reason, "33")
+        status(site, "Could not connect · " + reason, "1;33")
 
 
 def restricted_bilibili_quality(info, messages):
@@ -345,11 +350,29 @@ def prepare_video(command, info_path, log, domain):
     return command[:-1] + ["--load-info-json", str(info_path)]
 
 
+def terminal_styles(stream):
+    return stream.isatty() and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
+
+
+def emphasis(value, stream=None):
+    stream = stream if stream is not None else sys.stdout
+    return f"\033[1m{value}\033[0m" if terminal_styles(stream) else str(value)
+
+
+def sign_in_link(domain, stream=None):
+    stream = stream if stream is not None else sys.stdout
+    site = next(site for site, site_domain in accounts.SITES.items() if site_domain == domain)
+    url = LOGIN_URLS[domain]
+    # Keep the full URL readable/copyable even when OSC 8 links are unsupported.
+    link = f"\033]8;;{url}\033\\{url}\033]8;;\033\\" if terminal_styles(stream) else url
+    status("Sign in", f"{emphasis(site, stream)} · {link}", stream=stream)
+
+
 def status(label, value, color="0", stream=None):
     """Aligned terminal output; redirected output remains plain text."""
     stream = stream if stream is not None else sys.stdout
     field = f"{label:<12}"
-    if stream.isatty() and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb":
+    if terminal_styles(stream):
         field = f"\033[{color}m{field}\033[0m"
     lines = str(value).splitlines() or [""]
     print(f"  {field} {lines[0]}", file=stream, flush=True)
@@ -759,7 +782,6 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             cookie_path = Path(session_dir.name) / "cookies.txt"
             session = setup_results.get(domain)
             if session is None:
-                browser_notice(args.browser)
                 with activity("Preparing"):
                     session = prepare_session(tools["gallery-dl"], cookie_spec, cookie_path, domain)
             elif session.state == "valid":
@@ -845,11 +867,6 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                     tried_browser = True
                     exporter = find_tool("gallery-dl")
                     if exporter:
-                        settings = accounts.preferences()
-                        specification = settings.get("sources", {}).get(domain)
-                        browser = specification.split("/", 1)[0] if specification else settings.get("browser")
-                        if browser and domain not in settings.get("blocked", []):
-                            browser_notice(browser)
                         with activity("Checking"):
                             state, _ = accounts.import_auto(exporter, domain)
                         if state.state == "valid" and accounts.copy_saved(domain, candidate):

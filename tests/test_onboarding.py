@@ -2,6 +2,7 @@
 import contextlib
 from http.cookiejar import Cookie, MozillaCookieJar
 import io
+import os
 from pathlib import Path
 from subprocess import CompletedProcess
 import tempfile
@@ -153,8 +154,45 @@ class OnboardingTests(unittest.TestCase):
             self.assertEqual(prompt.call_count, 1)
             self.assertIn("Enter to connect bilibili", prompt.call_args_list[0].args[0])
             self.assertNotIn("Sign in", out.getvalue())
+            self.assertNotIn("Safe Storage", out.getvalue())
+            self.assertNotIn("Access", out.getvalue())
             self.assertNotIn("bilibili.com", accounts.preferences()["blocked"])
             self.assertTrue(accounts.path_for("bilibili.com").exists())
+
+    def test_every_site_gets_a_login_link_when_connection_check_is_inconclusive(self):
+        accounts.set_preferences(setup=True, browser="chrome")
+        for site, domain in accounts.SITES.items():
+            with self.subTest(site=site), patch.object(accounts, "status", return_value=session.Session("missing", "Not saved")), patch.object(accounts, "import_browser", return_value=session.Session("unverified", "Website check inconclusive")), patch("builtins.input", side_effect=[site, "q", "q"]) as prompt, contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(cli.main(["auth"]), 0)
+                self.assertIn(f"Sign in      {site}", out.getvalue())
+                self.assertIn(session.LOGIN_URLS[domain], out.getvalue())
+                self.assertIn("Open this link in Chrome", out.getvalue())
+                self.assertIn("Press Enter to check again", prompt.call_args_list[1].args[0])
+                self.assertNotIn("Safe Storage", out.getvalue())
+
+    def test_terminal_login_links_and_site_emphasis_have_plain_text_fallbacks(self):
+        with patch.dict(os.environ, {"TERM": "xterm-256color"}, clear=True):
+            for site, domain in accounts.SITES.items():
+                out = io.StringIO()
+                with patch.object(out, "isatty", return_value=True):
+                    cli.sign_in_link(domain, stream=out)
+                self.assertIn(f"\033[1m{site}\033[0m", out.getvalue())
+                self.assertIn(f"\033]8;;{session.LOGIN_URLS[domain]}\033\\", out.getvalue())
+            for tty, env in [(False, {}), (True, {"NO_COLOR": "1"}), (True, {"TERM": "dumb"})]:
+                out = io.StringIO()
+                with patch.dict(os.environ, env), patch.object(out, "isatty", return_value=tty):
+                    cli.sign_in_link("weibo.com", stream=out)
+                self.assertNotIn("\033", out.getvalue())
+                self.assertIn(session.LOGIN_URLS["weibo.com"], out.getvalue())
+
+    def test_permission_help_only_follows_a_failed_browser_read(self):
+        accounts.set_preferences(setup=True, browser="chrome")
+        with patch.object(cli.sys, "platform", "darwin"), patch.object(accounts, "status", return_value=session.Session("missing", "Not saved")), patch.object(accounts, "import_browser", return_value=session.Session("unavailable", "Browser access denied")), patch("builtins.input", side_effect=["weibo", "q", "q"]), contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(cli.main(["auth"]), 0)
+            text = out.getvalue()
+            self.assertIn("Keychain access permission", text)
+            self.assertLess(text.index("Browser access denied"), text.index("Keychain access permission"))
+            self.assertNotIn("may ask", text)
 
     def test_auth_noninteractive_only_queries_and_never_prompts_or_imports(self):
         with patch.object(cli.sys.stdin, "isatty", return_value=False), patch.object(accounts, "status", return_value=session.Session("missing", "Not saved")), patch.object(accounts, "import_browser") as connect, patch("builtins.input") as prompt, contextlib.redirect_stdout(io.StringIO()):

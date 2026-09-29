@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0b8 — clearer account guidance
+
+- Remove speculative browser permission notices; show permission troubleshooting only after a failed read.
+- Emphasize website names in account results and connection prompts.
+- Show clickable, copyable sign-in URLs for every supported website when login or verification is needed, including inconclusive checks and first-run setup.
+- Tell users which browser to use and how to recheck after signing in. Redirected output and terminals without styling keep plain text.
+
 ## 0.2.0b7 — Xiaohongshu account check
 
 - Handle empty JavaScript Maps in Xiaohongshu page state so unrelated page stores no longer prevent account verification.
