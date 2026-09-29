@@ -1,5 +1,5 @@
 include README.md LICENSE CHANGELOG.md
-include docs/TESTING.md docs/INSTALL.md
+include docs/TESTING.md docs/INSTALL.md docs/WATERMARKS.md
 recursive-include scripts *.py
 recursive-include tests *.py
 exclude docs/validation.md

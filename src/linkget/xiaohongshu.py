@@ -73,8 +73,16 @@ def image_key(item):
     return None
 
 
-def note_media(note):
+def note_media(note, prefer_original=True):
     if note.get("type") == "video":
+        if not prefer_original:
+            streams = ((note.get("video") or {}).get("media") or {}).get("stream") or {}
+            variants = [entry for entries in streams.values() if isinstance(entries, list)
+                        for entry in entries if isinstance(entry, dict) and entry.get("masterUrl")]
+            if not variants:
+                raise RuntimeError("Xiaohongshu did not expose a fallback video source.")
+            best = max(variants, key=lambda entry: (entry.get("width", 0) * entry.get("height", 0), entry.get("videoBitrate", 0)))
+            return [("video", media_url(best["masterUrl"]))]
         key = ((note.get("video") or {}).get("consumer") or {}).get("originVideoKey")
         return [("video", original_url(key, "video"))]
     images = note.get("imageList") or []
@@ -82,6 +90,13 @@ def note_media(note):
         raise RuntimeError("Xiaohongshu returned no photos in this note.")
     media = []
     for item in images:
+        if not prefer_original:
+            variants = {entry.get("imageScene"): entry.get("url") for entry in item.get("infoList", [])}
+            url = item.get("urlDefault") or variants.get("WB_DFT") or variants.get("H5_DTL") or item.get("url")
+            if not url:
+                raise RuntimeError("Xiaohongshu returned an incomplete media set; nothing has been imported.")
+            media.append(("image", media_url(url)))
+            continue
         key = image_key(item)
         if not key:
             raise RuntimeError("Xiaohongshu returned an incomplete original image set; refusing display versions. Nothing has been imported.")
@@ -140,12 +155,42 @@ def download(url, directory, cookie_path=None):
             if state.get("user", {}).get("loggedIn") is False:
                 raise BrowserRequired("This Xiaohongshu note was not available to the public request. Try your browser login or a fresh share link, keeping its access token.")
             raise RuntimeError("Xiaohongshu did not expose this note. Copy a fresh share link from the post and complete any website verification, then retry.")
-        media = note_media(note)  # Validate the whole image set before downloading.
+        try:
+            media = note_media(note)
+            originals = [True] * len(media)
+        except RuntimeError:
+            media, originals = [], []
+            items = [note] if note.get("type") == "video" else [dict(note, imageList=[item]) for item in note.get("imageList", [])]
+            for item in items:
+                try:
+                    media.extend(note_media(item))
+                    originals.append(True)
+                except RuntimeError:
+                    media.extend(note_media(item, prefer_original=False))
+                    originals.append(False)
+            if not media:
+                raise RuntimeError("Xiaohongshu returned no media.")
+        retained = 0
         for index, (kind, target) in enumerate(media, 1):
-            with request(target) as response:
+            used_original = originals[index - 1]
+            try:
+                response = request(target)
+            except HTTPError as error:
+                error.close()
+                if not used_original or error.code not in {403, 404, 410}:
+                    raise
+                fallback_note = note if kind == "video" else dict(note, imageList=[note["imageList"][index - 1]])
+                fallback = note_media(fallback_note, prefer_original=False)[0][1]
+                if fallback == target:
+                    raise
+                response = request(fallback)
+                used_original = False
+            with response:
                 head = response.read(64)
                 suffix = extension(head, kind)
-                path = directory / f"xiaohongshu_{note_id}_{index:03d}_original{suffix}"
+                variant = "original" if used_original else "display"
+                retained += not used_original
+                path = directory / f"xiaohongshu_{note_id}_{index:03d}_{variant}{suffix}"
                 partial = path.with_suffix(suffix + ".part")
                 count = len(head)
                 with partial.open("xb") as output:
@@ -157,8 +202,9 @@ def download(url, directory, cookie_path=None):
                 if expected and count != int(expected):
                     raise RuntimeError("Xiaohongshu download was incomplete; partial files have been kept.")
                 partial.rename(path)
+        return ([f"Xiaohongshu: original unavailable for {retained} item(s); kept best exposed display sources, which may contain watermarks."] if retained else [])
     except HTTPError as error:
         error.close()
-        raise RuntimeError(f"Xiaohongshu request failed (HTTP {error.code}). The original may be unavailable; no display-version fallback was used. Open a fresh share link in your browser and check access or verification.") from None
+        raise RuntimeError(f"Xiaohongshu request failed (HTTP {error.code}). Open a fresh share link in your browser and check access or verification.") from None
     except (URLError, OSError, HTTPException):
         raise RuntimeError("Xiaohongshu download interrupted. Check your connection and retry; partial files have been kept.") from None

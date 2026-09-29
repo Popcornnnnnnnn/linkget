@@ -24,6 +24,7 @@ if __package__:
     from .links import normalize_link
     from .douyin import download as download_douyin
     from .xiaohongshu import download as download_xiaohongshu, BrowserRequired
+    from .weibo import prefer_clean_images
 else:  # Homebrew launches this file directly.
     import accounts
     from photos import originals_directory, retain_originals
@@ -32,6 +33,7 @@ else:  # Homebrew launches this file directly.
     from links import normalize_link
     from douyin import download as download_douyin
     from xiaohongshu import download as download_xiaohongshu, BrowserRequired
+    from weibo import prefer_clean_images
 
 VIDEO = {".mp4", ".mov", ".m4v"}
 MEDIA = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".avif", ".tif", ".tiff"} | VIDEO
@@ -533,7 +535,7 @@ def command_for(args, url, engine, domain, media_dir, tools, cookie_path=None):
                             "-o", "extractor.tiktok.subtitles=false", "-o", "extractor.tiktok.videos=true",
                             "-o", "extractor.tiktok.photos=true", "-o", "extractor.tiktok.filename=tiktok_{id}_{num:03d}.{extension}"])
         elif domain == "weibo.com":
-            command.extend(["-o", "extractor.weibo.videos=true", "-o", "extractor.weibo.retweets=true",
+            command.extend(["--write-metadata", "-o", "extractor.weibo.videos=true", "-o", "extractor.weibo.retweets=true",
                             "-o", "extractor.weibo.text=false", "-o", "extractor.weibo.livephoto=false",
                             "-o", "extractor.weibo.filename=weibo_{status[id]}_{num:03d}.{extension}"])
     else:
@@ -816,6 +818,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         attempt = 0
         while True:
             try:
+                source_notes = []
                 media_dir = stage / ("media" if attempt == 0 else f"signed-in-media-{attempt}")
                 media_dir.mkdir()
                 print()
@@ -834,7 +837,9 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                         if engine in {"douyin", "xiaohongshu"}:
                             try:
                                 downloader = download_douyin if engine == "douyin" else download_xiaohongshu
-                                downloader(url, media_dir, cookie_path)
+                                notes = downloader(url, media_dir, cookie_path)
+                                if isinstance(notes, list):
+                                    source_notes.extend(notes)
                             except BrowserRequired as error:
                                 raise LoginRequired(str(error)) from None
                             except RuntimeError as error:
@@ -844,10 +849,18 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                         else:
                             result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
                 if result is not None and result.returncode:
+                    if domain == "weibo.com" and engine == "gallery-dl":
+                        for metadata in media_dir.glob("*.json"):
+                            metadata.unlink()
                     tail = (stage / "download.log").read_text(errors="replace").splitlines()[-8:]
                     if needs_login("\n".join(tail)):
                         raise LoginRequired(f"{site} requires a signed-in account to download this post.")
                     raise RuntimeError("Download failed.\n" + "\n".join(tail))
+                if domain == "weibo.com" and engine == "gallery-dl":
+                    with activity("Checking sources"):
+                        source_notes = prefer_clean_images(media_dir)
+                for note in source_notes:
+                    status("Media", note)
                 files = sorted(path for path in media_dir.iterdir() if path.is_file() and path.suffix.lower() in MEDIA)
                 unfinished = [path for path in media_dir.iterdir() if path.suffix.lower() not in MEDIA]
                 if unfinished:
@@ -923,6 +936,9 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         if session_dir is not None:
             session_dir.cleanup()
         if stage is not None:
+            if domain == "weibo.com":
+                for metadata in stage.glob("*/*.json"):
+                    metadata.unlink(missing_ok=True)
             status("Files kept", str(stage), "33", stream=sys.stderr)
 
 

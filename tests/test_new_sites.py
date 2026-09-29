@@ -120,6 +120,20 @@ class NewSiteTests(unittest.TestCase):
             xhs.download(NOTE_URL, self.root)
             self.assertTrue((self.root / f"xiaohongshu_{NOTE_ID}_001_original.mp4").is_file())
 
+    def test_xhs_one_rejected_original_does_not_require_display_urls_for_other_images(self):
+        note = {"type": "normal", "imageList": [
+            {"fileId": "notes/one", "urlDefault": "https://sns-webpic-qc.xhscdn.com/one"},
+            {"fileId": "notes/two"}]}
+        image = b"\xff\xd8\xff" + b"image" * 20
+        with patch.object(xhs, "build_opener") as network:
+            network.return_value.open.side_effect = [Response(page(note)),
+                HTTPError("https://sns-img-bd.xhscdn.com/notes/one", 404, "missing", {}, None),
+                Response(image), Response(image)]
+            notes = xhs.download(NOTE_URL, self.root)
+            self.assertIn("1 item(s)", notes[0])
+            self.assertTrue((self.root / f"xiaohongshu_{NOTE_ID}_001_display.jpg").exists())
+            self.assertTrue((self.root / f"xiaohongshu_{NOTE_ID}_002_original.jpg").exists())
+
     def test_xhs_mobile_share_downloads_full_gallery_without_login(self):
         note = {"noteId": NOTE_ID, "type": "normal", "imageList": [
             {"fileId": f"notes_pre_post/full-{index}", "infoList": [{"imageScene": "H5_PRV", "url": "https://sns-webpic-qc.xhscdn.com/preview"},
@@ -142,7 +156,7 @@ class NewSiteTests(unittest.TestCase):
         note = {"type": "normal", "imageList": [{"fileId": "notes_pre_post/one", "urlDefault": "https://sns-webpic-qc.xhscdn.com/one"}, {}]}
         with patch.object(xhs, "build_opener") as network:
             network.return_value.open.return_value = Response(page(note))
-            with self.assertRaisesRegex(RuntimeError, "incomplete original image set"):
+            with self.assertRaisesRegex(RuntimeError, "incomplete media set"):
                 xhs.download(NOTE_URL, self.root)
             self.assertEqual(network.return_value.open.call_count, 1)
         note["imageList"].pop()
@@ -166,17 +180,17 @@ class NewSiteTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 xhs.original_url(key, "image")
 
-    def test_xhs_missing_or_rejected_original_never_falls_back_to_marked_stream(self):
+    def test_xhs_rejected_original_keeps_display_stream_with_explicit_notice(self):
         note = {"type": "video", "video": {"media": {"stream": {"h264": [{"masterUrl": "https://sns-video-bd.xhscdn.com/display"}]}}}}
         with self.assertRaisesRegex(RuntimeError, "original video source"):
             xhs.note_media(note)
         note["video"]["consumer"] = {"originVideoKey": "original/video.mp4"}
         with patch.object(xhs, "build_opener") as network:
-            network.return_value.open.side_effect = [Response(page(note)), HTTPError("https://sns-video-bd.xhscdn.com/original/video.mp4", 404, "not found", {}, None)]
-            with self.assertRaisesRegex(RuntimeError, "no display-version fallback"):
-                xhs.download(NOTE_URL, self.root)
-            self.assertEqual(network.return_value.open.call_count, 2)
-            self.assertFalse(list(self.root.glob('*.mp4')))
+            network.return_value.open.side_effect = [Response(page(note)), HTTPError("https://sns-video-bd.xhscdn.com/original/video.mp4", 404, "not found", {}, None), Response(b"\x00\x00\x00\x18ftypmp42" + b"x" * 100)]
+            notes = xhs.download(NOTE_URL, self.root)
+            self.assertIn("may contain watermarks", notes[0])
+            self.assertEqual(network.return_value.open.call_count, 3)
+            self.assertTrue((self.root / f"xiaohongshu_{NOTE_ID}_001_display.mp4").exists())
 
     def test_youtube_preflight_reuses_metadata_shows_quality_and_merges_audio(self):
         metadata_paths = []

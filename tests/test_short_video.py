@@ -9,6 +9,7 @@ from subprocess import CompletedProcess
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 from linkget import accounts, cli, douyin, links, session
 
@@ -161,6 +162,21 @@ class ShortVideoTests(unittest.TestCase):
         item["video"]["has_watermark"] = False
         self.assertEqual(douyin.media_urls(item), [("video", url)])
 
+    def test_rejected_douyin_clean_source_keeps_available_native_media(self):
+        native_video = "https://aweme.snssdk.com/aweme/v1/playwm/?video_id=example"
+        clean_image = "https://p3.douyinpic.com/1~tplv-dy-aweme-images:q75.webp"
+        native_image = "https://p3.douyinpic.com/1~tplv-dy-water:q75.webp"
+        for item, native, content in [
+            ({"aweme_id": "123", "video": {"play_addr": {"url_list": [native_video]}}}, native_video, b"\x00\x00\x00\x18ftypmp42" + b"x" * 100),
+            ({"aweme_id": "123", "images": [{"url_list": [clean_image], "download_url_list": [native_image]}]}, native_image, b"\xff\xd8\xff" + b"x" * 100)]:
+            with tempfile.TemporaryDirectory() as temp, patch.object(douyin, "build_opener") as network:
+                network.return_value.open.side_effect = [Response(page(item)),
+                    HTTPError("https://cdn.test/missing", 404, "missing", {}, None), Response(content)]
+                notes = douyin.download("https://www.douyin.com/video/123", Path(temp))
+                self.assertIn("may contain watermarks", notes[0])
+                self.assertEqual(network.return_value.open.call_args.args[0].full_url, native)
+                self.assertEqual(next(Path(temp).iterdir()).read_bytes(), content)
+
     def test_douyin_bootstraps_visitor_cookie_once_and_downloads_all_photos(self):
         item = {"aweme_id": "123", "images": [{"url_list": ["https://p3.douyinpic.com/1~tplv-dy-aweme-images:q75.webp"]}, {"url_list": ["https://p3.douyinpic.com/2~tplv-dy-aweme-images:q75.webp"]}]}
         jpg = b"\xff\xd8\xff" + b"image" * 30
@@ -191,14 +207,15 @@ class ShortVideoTests(unittest.TestCase):
         marked = clean.replace("lqen-new:", "lqen-new-water:")
         item = {"aweme_id": "123", "images": [{"url_list": [marked, clean], "download_url_list": [marked]}]}
         self.assertEqual(douyin.media_urls(item), [("image", clean)])
-        # One uncertain image rejects the whole set before even downloading the first.
+        # Prefer the clean first image, retain the marked second only when needed.
         item["images"].append({"url_list": [marked], "download_url_list": [marked]})
         with tempfile.TemporaryDirectory() as t, patch.object(douyin, "build_opener") as build:
-            build.return_value.open.return_value = Response(page(item))
-            with self.assertRaisesRegex(RuntimeError, "watermark-free"):
-                douyin.download("https://www.douyin.com/note/123", Path(t))
-            self.assertEqual(build.return_value.open.call_count, 1)
-            self.assertFalse(list(Path(t).iterdir()))
+            jpg = b"\xff\xd8\xff" + b"image" * 20
+            build.return_value.open.side_effect = [Response(page(item)), Response(jpg), Response(jpg)]
+            notes = douyin.download("https://www.douyin.com/note/123", Path(t))
+            self.assertIn("may contain watermarks", notes[0])
+            self.assertEqual(build.return_value.open.call_count, 3)
+            self.assertEqual(len(list(Path(t).glob('*.jpg'))), 2)
         for url in ("https://p3.douyinpic.com/image~unknown:q80.webp", "https://other.test/image~tplv-dy-lqen-new:q80.webp"):
             item["images"] = [{"url_list": [url]}]
             with self.assertRaises(RuntimeError):

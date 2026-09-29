@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0b11 — prefer clean media sources
+
+- Prefer Weibo's `oslarge` JPEG rendition: all three images in the reported sample lost the platform watermark. Report when the clean rendition is smaller; retain the downloaded original if the alternative is unavailable or invalid.
+- Keep available Douyin and Xiaohongshu fallback media with an explicit notice when a clean/original source is unavailable. Preserve originals for the other items in a mixed gallery.
+- Remove temporary Weibo metadata on success, failure and cancellation.
+- Document live photo/video checks across all eight channels, including embedded logos that remain and the limits of sampled video frames.
+
 ## 0.2.0b10 — session recovery and response handling
 
 - Automatically refresh expired/rejected sessions during interactive `auth`, using one read per authorized browser/profile and saving only verified replacements. Respect logout, public-only mode and noninteractive checks.

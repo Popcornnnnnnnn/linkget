@@ -32,8 +32,8 @@ def share_item(html, post_id):
     return None
 
 
-def media_urls(item):
-    """Require a known non-watermarked platform variant for every media item."""
+def media_urls(item, prefer_clean=True):
+    """Prefer known clean variants; optionally accept exposed native media."""
     images = item.get("images") or (item.get("image_post_info") or {}).get("images")
     if images:
         media = []
@@ -50,7 +50,9 @@ def media_urls(item):
                     clean = candidate
                     break
             if clean is None:
-                raise RuntimeError("No verified watermark-free Douyin image source. Refusing watermarked or unknown variants; nothing has been imported.")
+                if prefer_clean:
+                    raise RuntimeError("No verified watermark-free Douyin image source. Refusing watermarked or unknown variants; nothing has been imported.")
+                clean = urls[0]
             media.append(("image", clean))
         return media
     urls = (item.get("video", {}).get("play_addr") or {}).get("url_list") or []
@@ -59,10 +61,10 @@ def media_urls(item):
     url = urlsplit(urls[0])
     # The mobile share page points at the watermarked distribution variant.
     # Keep the same video ID and query when requesting its ordinary playback variant.
-    if url.hostname == "aweme.snssdk.com" and url.path == "/aweme/v1/playwm/":
+    if prefer_clean and url.hostname == "aweme.snssdk.com" and url.path == "/aweme/v1/playwm/":
         url = url._replace(path="/aweme/v1/play/")
     known_playback = url.hostname == "aweme.snssdk.com" and url.path == "/aweme/v1/play/"
-    if not known_playback and item.get("video", {}).get("has_watermark") is not False:
+    if prefer_clean and not known_playback and item.get("video", {}).get("has_watermark") is not False:
         raise RuntimeError("No verified watermark-free Douyin video source. Refusing watermarked or unknown variants; nothing has been imported.")
     return [("video", url.geturl())]
 
@@ -94,7 +96,6 @@ def download(url, directory, cookie_path=None):
 
     try:
         item = None
-        access = "Public share page"
         if cookie_path:
             # Browser cookies remain scoped to douyin.com; never copy them to iesdouyin.com or a CDN.
             try:
@@ -103,7 +104,6 @@ def download(url, directory, cookie_path=None):
                 if isinstance(detail, dict) and str(detail.get("aweme_id")) == post_id:
                     media_urls(detail)  # A usable API result must also meet the clean-source requirement.
                     item = detail
-                    access = "Website API · browser cookies (login unverified)"
             except (HTTPError, ValueError, AttributeError, RuntimeError):
                 pass
         share_url = f"https://www.iesdouyin.com/share/video/{post_id}/"
@@ -117,8 +117,31 @@ def download(url, directory, cookie_path=None):
                     item = share_item(response.read(8_000_000).decode("utf-8", "replace"), post_id)
         if item is None:
             raise RuntimeError("Douyin did not expose this post's media. Open the post in the selected browser, complete any verification, then retry. The post may also be unavailable; this does not prove your login expired.")
-        for index, (kind, media_url) in enumerate(media_urls(item), 1):
-            with request(media_url, share_url) as response:
+        fallback_used = False
+        try:
+            media = media_urls(item)
+        except RuntimeError:
+            media = media_urls(item, prefer_clean=False)
+            fallback_used = True
+        for index, (kind, media_url) in enumerate(media, 1):
+            try:
+                response = request(media_url, share_url)
+            except HTTPError as error:
+                error.close()
+                if error.code not in {403, 404, 410}:
+                    raise
+                fallback = media_urls(item, prefer_clean=False)[index - 1][1]
+                if kind == "image":
+                    images = item.get("images") or item["image_post_info"]["images"]
+                    image = images[index - 1]
+                    candidates = (image.get("download_url_list") or []) + (image.get("url_list") or (image.get("display_image") or {}).get("url_list") or [])
+                    fallback = next((candidate for candidate in candidates if candidate != media_url), fallback)
+                if fallback == media_url:
+                    raise
+                response = request(fallback, share_url)
+                media_url = fallback
+                fallback_used = True
+            with response:
                 head = response.read(64)
                 extension = media_extension(head, kind)
                 # Photos deduplicates by filename: distinguish this playback variant
@@ -137,7 +160,7 @@ def download(url, directory, cookie_path=None):
                 if expected and count != int(expected):
                     raise RuntimeError("Douyin media download was incomplete; partial files have been kept.")
                 partial.rename(path)
-        return access
+        return (["Douyin: clean source unavailable; kept the exposed media, which may contain watermarks."] if fallback_used else [])
     except HTTPError as error:
         raise RuntimeError(f"Douyin request failed (HTTP {error.code}). Open the post in your browser and check access or verification, then retry.") from None
     except (URLError, OSError, HTTPException):
