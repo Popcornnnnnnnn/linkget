@@ -624,9 +624,14 @@ def configure(args, parser):
     if changed:
         status("Saved", "Used when no --folder or --photos is specified.")
     else:
-        print()
-        status("Change", "linkget config --photos\nlinkget config --folder [PATH]")
-        status("One download", "Use --photos or --folder [PATH] without config.")
+        print("\n  Change default:\n")
+        for command, detail in [
+            ("linkget config --photos", "Photos"),
+            ("linkget config --folder", "Current folder on each run"),
+            ("linkget config --folder ~/Downloads", "Fixed folder; replace with your path"),
+        ]:
+            print(f"  {command:<36} {detail}")
+        print("\n  To override once, omit config. Your saved default stays unchanged.")
     return 0
 
 

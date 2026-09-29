@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.0b5 — clearer config guidance
+
+- `linkget config` displays the current default followed by all three ways to change it, with descriptions and a reminder about one-time overrides.
+
 ## 0.2.0b4 — default save destination
 
 - `linkget config` shows the current default destination.
