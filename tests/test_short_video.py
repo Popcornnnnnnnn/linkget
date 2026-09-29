@@ -177,6 +177,19 @@ class ShortVideoTests(unittest.TestCase):
                 self.assertEqual(network.return_value.open.call_args.args[0].full_url, native)
                 self.assertEqual(next(Path(temp).iterdir()).read_bytes(), content)
 
+    def test_douyin_retains_api_media_if_clean_share_page_is_unavailable(self):
+        item = {"aweme_id": "123", "video": {"play_addr": {"url_list": ["https://cdn.test/native.mp4"]}}}
+        content = b"\x00\x00\x00\x18ftypmp42" + b"x" * 100
+        for share in (Response(b"<html>unavailable</html>"), HTTPError("https://www.iesdouyin.com/", 403, "denied", {}, None)):
+            with tempfile.TemporaryDirectory() as temp, patch.object(douyin, "build_opener") as network:
+                root = Path(temp)
+                jar = session.MozillaCookieJar(str(root / "cookies.txt"))
+                jar.save()
+                network.return_value.open.side_effect = [Response(json.dumps({"aweme_detail": item}).encode()), share, Response(content)]
+                notes = douyin.download("https://www.douyin.com/video/123", root, root / "cookies.txt")
+                self.assertIn("may contain watermarks", notes[0])
+                self.assertEqual((root / "douyin_123_001.mp4").read_bytes(), content)
+
     def test_douyin_bootstraps_visitor_cookie_once_and_downloads_all_photos(self):
         item = {"aweme_id": "123", "images": [{"url_list": ["https://p3.douyinpic.com/1~tplv-dy-aweme-images:q75.webp"]}, {"url_list": ["https://p3.douyinpic.com/2~tplv-dy-aweme-images:q75.webp"]}]}
         jpg = b"\xff\xd8\xff" + b"image" * 30

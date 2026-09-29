@@ -95,26 +95,36 @@ def download(url, directory, cookie_path=None):
         return opener.open(Request(target, headers={"User-Agent": MOBILE_UA, "Referer": referer}), timeout=20)
 
     try:
-        item = None
+        item = fallback_item = None
         if cookie_path:
             # Browser cookies remain scoped to douyin.com; never copy them to iesdouyin.com or a CDN.
             try:
                 with request(f"https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id={post_id}", "https://www.douyin.com/") as response:
                     detail = json.loads(response.read(8_000_000)).get("aweme_detail")
                 if isinstance(detail, dict) and str(detail.get("aweme_id")) == post_id:
-                    media_urls(detail)  # A usable API result must also meet the clean-source requirement.
+                    media_urls(detail, prefer_clean=False)
+                    fallback_item = detail
+                    media_urls(detail)  # Try the public page for a cleaner source when needed.
                     item = detail
             except (HTTPError, ValueError, AttributeError, RuntimeError):
                 pass
         share_url = f"https://www.iesdouyin.com/share/video/{post_id}/"
         if item is None:
-            had_visitor = any(c.name == "ttwid" and "iesdouyin.com" in c.domain for c in jar)
-            with request(share_url, "https://www.iesdouyin.com/") as response:
-                item = share_item(response.read(8_000_000).decode("utf-8", "replace"), post_id)
-            # Observed first response sets a visitor cookie but omits media. Repeat once only when newly issued.
-            if item is None and not had_visitor and any(c.name == "ttwid" and "iesdouyin.com" in c.domain for c in jar):
+            try:
+                had_visitor = any(c.name == "ttwid" and "iesdouyin.com" in c.domain for c in jar)
                 with request(share_url, "https://www.iesdouyin.com/") as response:
                     item = share_item(response.read(8_000_000).decode("utf-8", "replace"), post_id)
+                # Repeat only when the first response newly issues a visitor cookie but omits media.
+                if item is None and not had_visitor and any(c.name == "ttwid" and "iesdouyin.com" in c.domain for c in jar):
+                    with request(share_url, "https://www.iesdouyin.com/") as response:
+                        item = share_item(response.read(8_000_000).decode("utf-8", "replace"), post_id)
+            except (URLError, OSError, HTTPException) as error:
+                if isinstance(error, HTTPError):
+                    error.close()
+                if fallback_item is None:
+                    raise
+            if item is None:
+                item = fallback_item
         if item is None:
             raise RuntimeError("Douyin did not expose this post's media. Open the post in the selected browser, complete any verification, then retry. The post may also be unavailable; this does not prove your login expired.")
         fallback_used = False
