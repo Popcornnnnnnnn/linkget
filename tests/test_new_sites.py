@@ -70,6 +70,17 @@ class NewSiteTests(unittest.TestCase):
                          {"missing": None, "text": "undefined"})
         self.assertEqual(xhs.initial_state('window.__INITIAL_STATE__=evil()'), {})
 
+    def test_xhs_empty_map_store_does_not_hide_authenticated_viewer(self):
+        for user, expected in [({"loggedIn": True, "userInfo": {"userId": "123"}}, "valid"),
+                               ({"loggedIn": False}, "invalid"), ({}, "unverified")]:
+            html = ('window.__INITIAL_STATE__={"AiNoteDetailStore":{"noteDetailMap":new Map([])},'
+                    '"missing":undefined,"text":"new Map([])","user":' + json.dumps(user) + '};')
+            self.assertEqual(xhs.initial_state(html)["text"], "new Map([])")
+            self.assertEqual(session.classify_response("xiaohongshu.com", 200,
+                             session.webpage_login("xiaohongshu.com", html)).state, expected)
+        self.assertEqual(xhs.initial_state('window.__INITIAL_STATE__={"map":new Map( [ ] )}'), {"map": {}})
+        self.assertEqual(xhs.initial_state('window.__INITIAL_STATE__={"map":new Map(evil())}'), {})
+
     def test_xhs_cn_share_text_resolves_across_short_domains_and_keeps_token(self):
         shared = "看看这篇图文笔记 https://xhslink.cn/o/example Copy and open rednote to view the note"
         final = NOTE_URL + "?xsec_token=synthetic%2Btoken%3D&xsec_source=app_share"

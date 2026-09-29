@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0b7 — Xiaohongshu account check
+
+- Handle empty JavaScript Maps in Xiaohongshu page state so unrelated page stores no longer prevent account verification.
+- Continue requiring the website's logged-in flag and current user ID before saving a connection; never execute page JavaScript.
+- Verified a real Chrome session successfully against Xiaohongshu after the parser fix.
+
 ## 0.2.0b6 — Xiaohongshu originals
 
 - Download original Xiaohongshu image files instead of watermarked mobile display images; retain HEIC/HEIF when that is the original format.

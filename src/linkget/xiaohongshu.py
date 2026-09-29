@@ -24,10 +24,11 @@ def initial_state(html):
     match = re.search(r"window\.__INITIAL_STATE__\s*=\s*", html)
     if not match:
         return {}
-    # SSR includes JavaScript undefined values. Never execute page JavaScript,
-    # and leave strings containing the word undefined untouched.
-    source = re.sub(r'"(?:\\.|[^"\\])*"|\bundefined\b',
-                    lambda token: "null" if token[0] == "undefined" else token[0], html[match.end():])
+    # SSR includes undefined and empty Maps in unrelated stores. Normalize only
+    # these known literals, preserving strings and never executing page code.
+    source = re.sub(r'"(?:\\.|[^"\\])*"|\bundefined\b|\bnew\s+Map\s*\(\s*\[\s*\]\s*\)',
+                    lambda token: (token[0] if token[0].startswith('"') else
+                                   "null" if token[0] == "undefined" else "{}"), html[match.end():])
     try:
         value = json.JSONDecoder().raw_decode(source)[0]
         return value if isinstance(value, dict) else {}
