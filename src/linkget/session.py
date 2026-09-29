@@ -35,7 +35,7 @@ ENDPOINTS = {
     "tiktok.com": "https://www.tiktok.com/passport/web/account/info/?aid=1988&app_name=tiktok_web&device_platform=web_pc",
     "douyin.com": "https://www.douyin.com/passport/account/info/v2/?aid=6383",
     "xiaohongshu.com": "https://www.xiaohongshu.com/explore",
-    "weibo.com": "https://weibo.com/ajax/config",
+    "weibo.com": "https://weibo.com/",
     "youtube.com": "https://www.youtube.com/",
 }
 LOGIN_URLS = {
@@ -61,7 +61,21 @@ def login_cookies(jar, domain):
 
 
 def webpage_login(domain, html):
-    if domain == "xiaohongshu.com":
+    if domain == "weibo.com":
+        # The homepage embeds the current viewer in $CONFIG. The config API
+        # only returns feature flags, so it cannot prove an authenticated user.
+        for match in re.finditer(r"window\.\$CONFIG\s*=", html):
+            try:
+                data = json.JSONDecoder().raw_decode(html[match.end():].lstrip())[0]
+            except ValueError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            uid, user = data.get("uid"), data.get("user")
+            if (re.fullmatch(r"[1-9]\d*", str(uid)) and isinstance(user, dict)
+                    and str(uid) == str(user.get("id")) and user.get("screen_name")):
+                return {"authenticated": True}
+    elif domain == "xiaohongshu.com":
         user = initial_state(html).get("user", {})
         if user.get("loggedIn") is True and (user.get("userInfo") or {}).get("userId"):
             return {"authenticated": True}
@@ -137,14 +151,7 @@ def classify_response(domain, code, data):
             return Session("valid", "Valid")
         if code == 200 and data.get("message") == "error" and account.get("error_code") == 13:
             return Session("invalid", "Session rejected")
-    elif domain == "weibo.com":
-        account = data.get("data") or {}
-        if code == 200 and isinstance(account, dict):
-            if account.get("login") is True and account.get("uid"):
-                return Session("valid", "Valid")
-            if account.get("login") is False:
-                return Session("invalid", "Session rejected")
-    elif domain in {"xiaohongshu.com", "youtube.com"} and code == 200:
+    elif domain in {"xiaohongshu.com", "weibo.com", "youtube.com"} and code == 200:
         if data.get("authenticated") is True:
             return Session("valid", "Valid")
         if data.get("authenticated") is False:
@@ -172,7 +179,7 @@ def check_session(jar, domain):
         # Public X web-client identifier, also used by gallery-dl; not a user token.
         headers.update({"authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
                         "x-csrf-token": values["ct0"], "x-twitter-auth-type": "OAuth2Session", "x-twitter-active-user": "yes"})
-    if domain in {"xiaohongshu.com", "youtube.com"}:
+    if domain in {"xiaohongshu.com", "weibo.com", "youtube.com"}:
         headers["Accept"] = "text/html"
     opener = build_opener(HTTPCookieProcessor(jar), NoRedirect())
     try:
@@ -182,6 +189,13 @@ def check_session(jar, domain):
             response = error
         with response:
             code = response.code
+            if domain == "weibo.com" and code in {301, 302, 303, 307, 308}:
+                destination = urlsplit(response.headers.get("Location", ""))
+                if ((destination.hostname in {None, "weibo.com", "www.weibo.com"}
+                     and destination.path == "/login.php")
+                        or (destination.hostname == "passport.weibo.com"
+                            and destination.path in {"/visitor/visitor", "/sso/signin"})):
+                    return Session("invalid", "Session rejected")
             if domain == "instagram.com" and code in {301, 302, 303, 307, 308}:
                 destination = urlsplit(response.headers.get("Location", ""))
                 if (destination.hostname in {None, "www.instagram.com", "instagram.com"}
@@ -190,7 +204,7 @@ def check_session(jar, domain):
             try:
                 body = response.read(4_000_000)
                 data = (webpage_login(domain, body.decode("utf-8", "replace"))
-                        if domain in {"xiaohongshu.com", "youtube.com"} else json.loads(body))
+                        if domain in {"xiaohongshu.com", "weibo.com", "youtube.com"} else json.loads(body))
             except (ValueError, UnicodeError):
                 data = None
         return classify_response(domain, code, data)

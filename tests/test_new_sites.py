@@ -234,8 +234,6 @@ class NewSiteTests(unittest.TestCase):
         for domain, html, expected in cases:
             self.assertEqual(session.classify_response(domain, 200, session.webpage_login(domain, html)).state, expected)
             self.assertEqual(session.classify_response(domain, 403, session.webpage_login(domain, html)).state, "unverified")
-        for value, expected in [({"data": {"login": True, "uid": "123"}}, "valid"), ({"data": {"login": False}}, "invalid"), ({"data": {"uid": "123"}}, "unverified")]:
-            self.assertEqual(session.classify_response("weibo.com", 200, value).state, expected)
         self.assertTrue(cli.needs_login("Sign in to confirm you're not a bot"))
         self.assertTrue(cli.needs_login("HTTP redirect to login page"))
         self.assertFalse(cli.needs_login("HTTP Error 403: Forbidden"))
@@ -252,6 +250,51 @@ class NewSiteTests(unittest.TestCase):
         accounts.logout("youtube")
         self.assertFalse(accounts.copy_saved("youtube.com", self.root / "copy.txt"))
         self.assertIn("youtube.com", accounts.preferences()["blocked"])
+
+    def test_weibo_current_homepage_response_verifies_viewer_not_feature_config(self):
+        # Shape captured from a live homepage; all identity fields are synthetic.
+        viewer = {"serverTime": 0, "enablePopLogin": False, "uid": 123,
+                  "user": {"id": 123, "idstr": "123", "screen_name": "Example"},
+                  "flags": {}, "loginHeader": {}}
+        html = '<script>window.$CONFIG = ' + json.dumps(viewer) + '; window.$CONFIG = {};</script>'
+        jar = MozillaCookieJar()
+        jar.set_cookie(Cookie(0, "SUB", "synthetic", None, False, ".weibo.com", True, True, "/", True, True, None, True, None, None, {}))
+        with patch.object(session, "build_opener") as network:
+            network.return_value.open.return_value = Response(html.encode())
+            self.assertEqual(session.check_session(jar, "weibo.com").state, "valid")
+            request = network.return_value.open.call_args.args[0]
+            self.assertEqual(request.full_url, "https://weibo.com/")
+            self.assertEqual(request.get_header("Accept"), "text/html")
+        for body in [json.dumps({"ok": 1, "data": {"ab_test": {}}}),
+                     json.dumps({"ok": 0, "message": "404"}),
+                     json.dumps({"data": {"login": True, "uid": "123"}}),
+                     'window.$CONFIG = {"user":{"id":123,"screen_name":"Public author"}};',
+                     'window.$CONFIG = {"uid":0,"user":{"id":123,"screen_name":"Public author"}};',
+                     'window.$CONFIG = {"uid":456,"user":{"id":123,"screen_name":"Other user"}};',
+                     'window.$CONFIG = {"uid":123,"user":null};',
+                     'window.$CONFIG = evil();', '<html>Security verification required</html>']:
+            with self.subTest(body=body), patch.object(session, "build_opener") as network:
+                network.return_value.open.return_value = Response(body.encode())
+                self.assertEqual(session.check_session(jar, "weibo.com").state, "unverified")
+        for location, expected in [("https://passport.weibo.com/visitor/visitor", "invalid"),
+                                   ("/login.php", "invalid"),
+                                   ("https://passport.weibo.com/sso/signin", "invalid"),
+                                   ("https://elsewhere.test/login.php", "unverified")]:
+            with patch.object(session, "build_opener") as network:
+                network.return_value.open.side_effect = HTTPError("https://weibo.com/", 302, "redirect", {"Location": location}, io.BytesIO())
+                self.assertEqual(session.check_session(jar, "weibo.com").state, expected)
+
+    def test_weibo_profiles_albums_and_profile_shortlinks_never_start_downloader(self):
+        urls = ["https://weibo.com/u/1234567890", "https://weibo.com/1234567890",
+                "https://weibo.com/example", "https://weibo.com/n/example", "https://weibo.com/p/1005051234567890/home",
+                "https://weibo.com/u/1234567890?tabtype=album", "https://weibo.com/1234567890?tabtype=video",
+                "https://m.weibo.cn/u/1234567890", "https://m.weibo.cn/profile/1234567890", "https://t.cn/example"]
+        for url in urls:
+            with self.subTest(url=url), patch.object(links, "build_opener") as network, patch.object(cli.subprocess, "run") as download, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                network.return_value.open.side_effect = [Response(code=302, headers={"Location": urls[0]}), Response()]
+                self.assertEqual(cli.main([url, "--browser", "none", "--folder", str(self.root / "out")]), 1)
+                download.assert_not_called()
+                self.assertFalse((self.root / "out").exists())
 
 
 if __name__ == "__main__":

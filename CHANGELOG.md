@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0b9 — verified Weibo sessions
+
+- Replace the incorrect Weibo config endpoint with the homepage's authenticated viewer configuration; require matching viewer IDs and an account name.
+- Recognize Weibo visitor/login redirects as rejected sessions. Feature flags, public author data and unknown responses cannot prove login.
+- Add opt-in live browser session checks for development, without changing saved accounts or retaining cookie snapshots. All eight channels passed with an authorized Chrome session; an invalid Weibo cookie was rejected.
+- Verify that Weibo profile, album and profile-shortlink inputs never start the downloader, and that accepted posts select the installed downloader's single-status extractor.
+
 ## 0.2.0b8 — clearer account guidance
 
 - Remove speculative browser permission notices; show permission troubleshooting only after a failed read.
