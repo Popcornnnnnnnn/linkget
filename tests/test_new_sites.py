@@ -103,7 +103,8 @@ class NewSiteTests(unittest.TestCase):
         for body, headers in [(b"<html>verify</html>", {}), (b"\xff\xd8\xffshort", {"Content-Length": "1000"})]:
             with tempfile.TemporaryDirectory() as temp, patch.object(xhs, "build_opener") as network, patch.object(cli, "import_photos") as photos, patch.object(cli.tempfile, "tempdir", temp), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 network.return_value.open.side_effect = [Response(page(note)), Response(body, headers=headers)]
-                self.assertEqual(cli.main([NOTE_URL, "--browser", "none"]), 1)
+                self.assertEqual(cli.main([NOTE_URL, "--browser", "none", "--folder", str(Path(temp) / "out")]), 1)
+                self.assertEqual(network.return_value.open.call_count, 2)
                 photos.assert_not_called()
 
     def test_youtube_preflight_reuses_metadata_shows_quality_and_merges_audio(self):
@@ -131,7 +132,7 @@ class NewSiteTests(unittest.TestCase):
     def test_youtube_live_and_playlists_are_rejected_before_downloading(self):
         for metadata in ({"is_live": True}, {"live_status": "is_upcoming"}, {"_type": "playlist", "entries": []}):
             with patch.object(cli, "find_tool", return_value="tool"), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, json.dumps(metadata), "")) as run, patch.object(cli, "import_photos") as photos, patch.object(cli.tempfile, "tempdir", str(self.root)), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(cli.main([YT_URL, "--browser", "none"]), 1)
+                self.assertEqual(cli.main([YT_URL, "--browser", "none", "--folder", str(self.root / "out")]), 1)
                 self.assertEqual(run.call_count, 1)
                 photos.assert_not_called()
 
