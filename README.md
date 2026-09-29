@@ -75,7 +75,7 @@ Download options override the saved default for that run only. The `Destination`
 
 Live streams, playlists and whole-account downloads are outside this trial. Post text and photo-post background music are not saved. Website availability and account access still apply.
 
-Keep the full Xiaohongshu share link, including `xsec_token` when present. Removing or reusing an expired access token can make an otherwise visible note unavailable to the downloader. Xiaohongshu image sets preserve the order and full web display variants; Live Photo motion and background music are not included. This new adapter still needs live user acceptance with current share links.
+Keep the full Xiaohongshu share link, including `xsec_token` when present. Removing or reusing an expired access token can make an otherwise visible note unavailable to the downloader. Xiaohongshu image sets preserve their order and original formats, including HEIC/HEIF; Live Photo motion and background music are not included. This adapter still needs live user acceptance with current video share links.
 
 YouTube links with a playlist parameter download only the explicitly selected video. Playlist-only URLs and active/upcoming streams are rejected. A browser login does not bypass membership, geographic restrictions or website verification.
 
@@ -96,7 +96,8 @@ Use `linkget auth` to connect a website before downloading. If all websites are 
 - Bilibili and YouTube preserve the best available MP4 video stream, including HEVC/AV1 where offered, and merge audio without re-encoding. Resolution, codec and frame rate are shown when available. Login and paid-tier restrictions still apply; linkget cannot grant higher account permissions.
 - Bilibili platform watermarks are accepted to preserve source quality. There is no crop, blur or watermark repair step.
 - Douyin only accepts the currently recognized clean media sources; if none are available, it fails instead of silently using a known watermarked stream. This does not detect or remove marks baked in by an author.
-- Xiaohongshu and Weibo keep the media supplied by their web pages. No watermark-free guarantee is made for these new adapters; embedded marks are not removed.
+- Xiaohongshu requests original image files and the original video source exposed by the note. If an original is missing or unavailable, it stops instead of using a potentially watermarked display version. Author-embedded marks are not detected or removed. New filenames include `_original`; previously downloaded display versions are not overwritten or deleted.
+- Weibo keeps the media supplied by its web pages. Embedded marks are not removed.
 - **Photos mode retains a full-resolution original** in `~/Library/Application Support/linkget/originals/`. This intentionally uses additional disk space and protects referenced Photos items from temporary-file cleanup.
 - Originals use a SHA-256-derived filename: different contents with the same download name stay distinct; identical contents are reused. Imports made by older versions may be imported once again because they did not use these filenames.
 - Some codecs may not be supported by your Photos/macOS version. If importing fails, the original is retained and linkget reports its location; `--folder` avoids the Photos importer. Files are never transcoded to hide this limitation.

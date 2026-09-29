@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0b6 — Xiaohongshu originals
+
+- Download original Xiaohongshu image files instead of watermarked mobile display images; retain HEIC/HEIF when that is the original format.
+- Request the exposed original video key instead of selecting a display stream. Stop if the original is unavailable; do not fall back to potentially watermarked media.
+- Mark new download filenames with `_original` to distinguish them from earlier display copies. Existing files and Photos items are preserved.
+- An image sample's original was visually checked without the central platform mark, at 1200×1600 versus the 1080×1440 marked display variant. Specific user video samples still need live verification.
+
 ## 0.2.0b5 — clearer config guidance
 
 - `linkget config` displays the current default followed by all three ways to change it, with descriptions and a reminder about one-time overrides.

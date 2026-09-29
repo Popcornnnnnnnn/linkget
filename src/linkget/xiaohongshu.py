@@ -1,4 +1,4 @@
-"""Download one Xiaohongshu note's images or best exposed video stream."""
+"""Download one Xiaohongshu note's original images or video."""
 
 from http.cookiejar import MozillaCookieJar
 from http.client import HTTPException
@@ -45,28 +45,46 @@ def media_url(value):
     return parsed._replace(scheme="https").geturl()
 
 
+def original_url(key, kind):
+    if (not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_./-]+", key)
+            or any(part in {"", ".", ".."} for part in key.split("/"))):
+        raise RuntimeError(f"Xiaohongshu did not expose an original {kind} source. Refusing a potentially watermarked display version.")
+    host = "sns-video-bd.xhscdn.com" if kind == "video" else "sns-img-bd.xhscdn.com"
+    return "https://" + host + "/" + key
+
+
+def image_key(item):
+    if item.get("fileId"):
+        return item["fileId"]
+    variants = {entry.get("imageScene"): entry.get("url") for entry in item.get("infoList", [])}
+    url = item.get("urlDefault") or variants.get("WB_DFT") or variants.get("H5_DTL") or item.get("url")
+    if not url:
+        return None
+    parsed = urlsplit(media_url(url))
+    path = parsed.path.lstrip("/").partition("!")[0]
+    if parsed.hostname == "sns-img-bd.xhscdn.com":
+        return path
+    if (parsed.hostname or "").startswith("sns-webpic-"):
+        # Display URLs prepend an expiry timestamp and signature to the file ID.
+        match = re.fullmatch(r"\d{8,14}/[a-fA-F0-9]{32}/(.+)", path)
+        if match:
+            return match[1]
+    return None
+
+
 def note_media(note):
     if note.get("type") == "video":
-        streams = (note.get("video") or {}).get("media", {}).get("stream", {})
-        candidates = [item for group in streams.values() if isinstance(group, list)
-                      for item in group if isinstance(item, dict) and item.get("masterUrl")]
-        if not candidates:
-            raise RuntimeError("Xiaohongshu returned no playable video. Open the original share link and check access.")
-        def rank(item):
-            return tuple(float(item.get(key) or 0) for key in ("height", "width", "fps", "avgBitrate"))
-        best = max(candidates, key=rank)
-        return [("video", media_url(best["masterUrl"]))]
+        key = ((note.get("video") or {}).get("consumer") or {}).get("originVideoKey")
+        return [("video", original_url(key, "video"))]
     images = note.get("imageList") or []
     if not images:
         raise RuntimeError("Xiaohongshu returned no photos in this note.")
     media = []
     for item in images:
-        # The display variant is the full web image; urlPre is only a preview.
-        variants = {entry.get("imageScene"): entry.get("url") for entry in item.get("infoList", [])}
-        full = variants.get("WB_DFT") or item.get("urlDefault") or variants.get("H5_DTL") or item.get("url")
-        if not full:
-            raise RuntimeError("Xiaohongshu returned an incomplete image set; nothing has been imported.")
-        media.append(("image", media_url(full)))
+        key = image_key(item)
+        if not key:
+            raise RuntimeError("Xiaohongshu returned an incomplete original image set; refusing display versions. Nothing has been imported.")
+        media.append(("image", original_url(key, "image")))
     return media
 
 
@@ -74,8 +92,13 @@ def extension(head, kind):
     if len(head) >= 12 and head[4:8] == b"ftyp":
         if kind == "video":
             return ".mp4"
-        if head[8:12] in {b"avif", b"avis"}:
+        brands = {head[8:12]} | {head[i:i + 4] for i in range(16, min(len(head), int.from_bytes(head[:4], "big")), 4)}
+        if brands & {b"avif", b"avis"}:
             return ".avif"
+        if brands & {b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"hevm", b"hevs"}:
+            return ".heic"
+        if brands & {b"mif1", b"msf1"}:
+            return ".heif"
     if kind == "image":
         if head.startswith(b"\xff\xd8\xff"):
             return ".jpg"
@@ -121,7 +144,7 @@ def download(url, directory, cookie_path=None):
             with request(target) as response:
                 head = response.read(64)
                 suffix = extension(head, kind)
-                path = directory / f"xiaohongshu_{note_id}_{index:03d}{suffix}"
+                path = directory / f"xiaohongshu_{note_id}_{index:03d}_original{suffix}"
                 partial = path.with_suffix(suffix + ".part")
                 count = len(head)
                 with partial.open("xb") as output:
@@ -134,6 +157,7 @@ def download(url, directory, cookie_path=None):
                     raise RuntimeError("Xiaohongshu download was incomplete; partial files have been kept.")
                 partial.rename(path)
     except HTTPError as error:
-        raise RuntimeError(f"Xiaohongshu request failed (HTTP {error.code}). Open a fresh share link in your browser and check access or verification.") from None
+        error.close()
+        raise RuntimeError(f"Xiaohongshu request failed (HTTP {error.code}). The original may be unavailable; no display-version fallback was used. Open a fresh share link in your browser and check access or verification.") from None
     except (URLError, OSError, HTTPException):
         raise RuntimeError("Xiaohongshu download interrupted. Check your connection and retry; partial files have been kept.") from None
