@@ -48,8 +48,8 @@ On macOS, data lives in `~/Library/Application Support/linkget/`:
 The GitHub release includes a wheel. Use an isolated installer:
 
 ```sh
-uv tool install ./linkget-0.2.0b2-py3-none-any.whl
-# or: pipx install ./linkget-0.2.0b2-py3-none-any.whl
+uv tool install ./linkget-0.2.0b3-py3-none-any.whl
+# or: pipx install ./linkget-0.2.0b3-py3-none-any.whl
 ```
 
 This installs linkget but not its external download engines. On macOS:

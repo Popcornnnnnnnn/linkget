@@ -54,7 +54,7 @@ Use straight ASCII quotes (`'` or `"`) around command-line URLs. Shells interpre
 | Bilibili | BV/av videos and Opus media; one selected part per URL |
 | TikTok | Photo posts and videos, including supported share links |
 | Douyin | Photo posts and videos, including copied share text and short links |
-| Xiaohongshu (trial) | Note image sets and videos; full links and `xhslink.com` shares |
+| Xiaohongshu (trial) | Note image sets and videos; full links, `xhslink.com` and `xhslink.cn` shares |
 | Weibo | Post photos and videos; mobile links, video pages and `t.cn` shares |
 | YouTube | Single videos and Shorts; `youtu.be` shares |
 

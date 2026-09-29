@@ -69,6 +69,22 @@ class NewSiteTests(unittest.TestCase):
                          {"missing": None, "text": "undefined"})
         self.assertEqual(xhs.initial_state('window.__INITIAL_STATE__=evil()'), {})
 
+    def test_xhs_cn_share_text_resolves_across_short_domains_and_keeps_token(self):
+        shared = "看看这篇图文笔记 https://xhslink.cn/o/example Copy and open rednote to view the note"
+        final = NOTE_URL + "?xsec_token=synthetic%2Btoken%3D&xsec_source=app_share"
+        with patch.object(links, "build_opener") as network:
+            network.return_value.open.side_effect = [
+                Response(code=302, headers={"Location": "https://xhslink.com/a/example"}),
+                Response(code=302, headers={"Location": final}),
+            ]
+            self.assertEqual(links.normalize_link(shared), final)
+            self.assertEqual(cli.route(final)[1], "xiaohongshu")
+            self.assertEqual(network.return_value.open.call_count, 2)
+        with patch.object(links, "build_opener") as network:
+            network.return_value.open.return_value = Response(code=302, headers={"Location": "https://xhslink.cn.evil.test/o/example"})
+            with self.assertRaisesRegex(ValueError, "outside its platform"):
+                links.normalize_link(shared)
+
     def test_xhs_saves_every_image_in_order_and_skips_preview_urls(self):
         note = {"type": "normal", "noteId": NOTE_ID, "imageList": [
             {"urlPre": "https://sns-webpic-qc.xhscdn.com/thumb", "urlDefault": "https://sns-webpic-qc.xhscdn.com/one"},
@@ -91,6 +107,24 @@ class NewSiteTests(unittest.TestCase):
             network.return_value.open.side_effect = [Response(page(note)), Response(b"\x00\x00\x00\x18ftypmp42" + b"x" * 100)]
             xhs.download(NOTE_URL, self.root)
             self.assertTrue((self.root / f"xiaohongshu_{NOTE_ID}_001.mp4").is_file())
+
+    def test_xhs_mobile_share_downloads_full_gallery_without_login(self):
+        note = {"noteId": NOTE_ID, "type": "normal", "imageList": [
+            {"infoList": [{"imageScene": "H5_PRV", "url": "https://sns-webpic-qc.xhscdn.com/preview"},
+                          {"imageScene": "H5_DTL", "url": f"https://sns-webpic-qc.xhscdn.com/full-{index}"}]}
+            for index in range(3)]}
+        mobile = ('window.__INITIAL_STATE__=' + json.dumps({"noteData": {"data": {"noteData": note}}})).encode()
+        image = b"\xff\xd8\xff" + b"image" * 20
+        with patch.object(xhs, "build_opener") as network:
+            network.return_value.open.side_effect = [
+                Response(b'window.__INITIAL_STATE__={"user":{"loggedIn":false}}'),
+                Response(mobile), Response(image), Response(image), Response(image)]
+            xhs.download(NOTE_URL + "?xsec_token=synthetic", self.root)
+            self.assertEqual(len(list(self.root.glob('*.jpg'))), 3)
+            request = network.return_value.open.call_args_list[1].args[0]
+            self.assertIn('/discovery/item/' + NOTE_ID + '?xsec_token=synthetic', request.full_url)
+            self.assertIn('iPhone', request.get_header('User-agent'))
+            self.assertNotIn('/preview', str(network.return_value.open.call_args_list))
 
     def test_xhs_incomplete_gallery_challenge_and_truncation_do_not_import(self):
         note = {"type": "normal", "imageList": [{"urlDefault": "https://sns-webpic-qc.xhscdn.com/one"}, {}]}

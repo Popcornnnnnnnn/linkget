@@ -14,7 +14,7 @@ Covered behaviors include:
 - folder collisions and duplicate handling, progress cleanup, bare `--folder`, and invalid command guidance;
 - isolated source/wheel installation and Homebrew formula smoke tests.
 
-Local live checks include Bilibili downloads, a public Weibo video, and a public YouTube video with merged audio. These checks are samples, not a guarantee for every post or network. Old public Xiaohongshu test links returned no note data; its image/video extraction is covered by simulated responses but still needs live acceptance with current share links. The new sites' signed-in endpoint checks also need user acceptance; tests do not read personal browser sessions.
+Local live checks include Bilibili downloads, a public Weibo video, and a public YouTube video with merged audio. These checks are samples, not a guarantee for every post or network. A current xhslink.cn share was downloaded anonymously as three JPEG images through its mobile share page. Xiaohongshu video selection remains covered by simulated responses and needs live user acceptance. The new sites' signed-in endpoint checks also need user acceptance; tests do not read personal browser sessions.
 
 ## Manual acceptance needed
 

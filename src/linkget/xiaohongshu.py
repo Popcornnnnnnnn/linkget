@@ -8,6 +8,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
+if __package__:
+    from .links import MOBILE_UA
+else:
+    from links import MOBILE_UA
+
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36"
 
 
@@ -57,9 +62,8 @@ def note_media(note):
     media = []
     for item in images:
         # The display variant is the full web image; urlPre is only a preview.
-        full = next((entry.get("url") for entry in item.get("infoList", [])
-                     if entry.get("imageScene") == "WB_DFT" and entry.get("url")), None)
-        full = full or item.get("urlDefault")
+        variants = {entry.get("imageScene"): entry.get("url") for entry in item.get("infoList", [])}
+        full = variants.get("WB_DFT") or item.get("urlDefault") or variants.get("H5_DTL") or item.get("url")
         if not full:
             raise RuntimeError("Xiaohongshu returned an incomplete image set; nothing has been imported.")
         media.append(("image", media_url(full)))
@@ -91,14 +95,23 @@ def download(url, directory, cookie_path=None):
         jar.load(ignore_discard=True)
     opener = build_opener(HTTPCookieProcessor(jar))
 
-    def request(target):
-        return opener.open(Request(target, headers={"User-Agent": USER_AGENT,
+    def request(target, user_agent=USER_AGENT):
+        return opener.open(Request(target, headers={"User-Agent": user_agent,
                                                     "Referer": "https://www.xiaohongshu.com/"}), timeout=20)
     try:
         with request(url) as response:
             state = initial_state(response.read(8_000_000).decode("utf-8", "replace"))
         notes = state.get("note", {}).get("noteDetailMap", {})
         note = (notes.get(note_id) or {}).get("note")
+        if not isinstance(note, dict) or note.get("noteId", note_id) != note_id:
+            # App shares can expose their media on the mobile page while the
+            # desktop page redirects an anonymous request to /login.
+            mobile_url = urlsplit(url)._replace(path="/discovery/item/" + note_id).geturl()
+            with request(mobile_url, MOBILE_UA) as response:
+                mobile = initial_state(response.read(8_000_000).decode("utf-8", "replace"))
+            candidate = mobile.get("noteData", {}).get("data", {}).get("noteData")
+            if isinstance(candidate, dict) and candidate.get("noteId") == note_id:
+                note = candidate
         if not isinstance(note, dict) or note.get("noteId", note_id) != note_id:
             if state.get("user", {}).get("loggedIn") is False:
                 raise BrowserRequired("This Xiaohongshu note was not available to the public request. Try your browser login or a fresh share link, keeping its access token.")

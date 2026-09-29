@@ -666,7 +666,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         setup_results = first_run(args) or {}
         url = args.link or (input("  Paste a link (no quotes needed): ") if sys.stdin.isatty() else sys.stdin.read())
         started = time.monotonic()
-        with activity("Resolving") if any(host in url for host in ("v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/", "xhslink.com", "t.cn/")) else nullcontext():
+        with activity("Resolving") if any(host in url for host in ("v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/", "xhslink.com", "xhslink.cn", "t.cn/")) else nullcontext():
             url = normalize_link(url)
         site, engine, domain = route(url)
         if not args.folder and sys.platform != "darwin":

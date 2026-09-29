@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0b3 — Xiaohongshu short-link fix
+
+- Recognize xhslink.cn share links, including full copied share text and redirects between Xiaohongshu's short-link domains.
+- Preserve post access tokens and show resolving progress for both .cn and .com short links.
+- Read the mobile share page when the desktop page has no note data; download the complete H5 image set without requiring login when the share is public.
+
 ## 0.2.0b2 — more websites (trial)
 
 - Xiaohongshu note image sets and best exposed video stream; share tokens and xhslink redirects are preserved. Live user acceptance is pending.

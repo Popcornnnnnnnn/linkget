@@ -8,7 +8,8 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 MOBILE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1"
 DOUYIN_HOSTS = {"douyin.com", "www.douyin.com", "v.douyin.com", "iesdouyin.com", "www.iesdouyin.com"}
 TIKTOK_HOSTS = {"tiktok.com", "www.tiktok.com", "vm.tiktok.com", "vt.tiktok.com", "www.tiktokv.com"}
-XHS_HOSTS = {"xiaohongshu.com", "www.xiaohongshu.com", "xhslink.com", "www.xhslink.com"}
+XHS_SHORT_HOSTS = {"xhslink.com", "www.xhslink.com", "xhslink.cn", "www.xhslink.cn"}
+XHS_HOSTS = {"xiaohongshu.com", "www.xiaohongshu.com"} | XHS_SHORT_HOSTS
 WEIBO_HOSTS = {"weibo.com", "www.weibo.com", "m.weibo.cn", "weibo.cn", "video.weibo.com", "t.cn"}
 
 
@@ -69,13 +70,13 @@ def normalize_link(text):
     if canonical:
         return canonical
     parsed = urlsplit(url)
-    short = parsed.hostname in {"v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "xhslink.com", "www.xhslink.com", "t.cn"} or (
+    short = parsed.hostname in {"v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "t.cn"} | XHS_SHORT_HOSTS or (
         parsed.hostname in {"www.tiktok.com", "tiktok.com"} and parsed.path.startswith("/t/"))
     if not short:
         return url
     if parsed.hostname == "v.douyin.com":
         allowed = DOUYIN_HOSTS
-    elif parsed.hostname in {"xhslink.com", "www.xhslink.com"}:
+    elif parsed.hostname in XHS_SHORT_HOSTS:
         allowed = XHS_HOSTS
     elif parsed.hostname == "t.cn":
         allowed = WEIBO_HOSTS
