@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "linkget"
+dynamic = ["version"]
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Popcornnnnnnnn"}]
+description = "Save media from supported links to macOS Photos or a folder"
+readme = "README.md"
+requires-python = ">=3.10"
+
+[project.scripts]
+linkget = "linkget.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+linkget = ["*.applescript"]
+
+[tool.setuptools.dynamic]
+version = {attr = "linkget.version.VERSION"}
+
+[project.urls]
+Homepage = "https://github.com/Popcornnnnnnnn/linkget"
+Issues = "https://github.com/Popcornnnnnnnn/linkget/issues"
