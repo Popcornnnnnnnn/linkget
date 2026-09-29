@@ -593,6 +593,43 @@ def doctor():
     return 1 if missing else 0
 
 
+def configured_destination():
+    setting = accounts.preferences().get("destination", {"mode": "photos"})
+    if not isinstance(setting, dict) or setting.get("mode") not in {"photos", "cwd", "folder"}:
+        raise ValueError("Invalid default destination. Run linkget config --photos or linkget config --folder.")
+    if setting["mode"] == "folder" and (not isinstance(setting.get("path"), str) or not Path(setting["path"]).is_absolute()):
+        raise ValueError("Invalid default folder. Run linkget config --folder PATH.")
+    return setting
+
+
+def configure(args, parser):
+    if args.link != ["config"] or args.browser != "auto" or args.profile or args.date_now:
+        parser.error("Use linkget config, linkget config --photos, or linkget config --folder [PATH].")
+    if args.photos:
+        setting = {"mode": "photos"}
+    elif args.folder is True:
+        setting = {"mode": "cwd"}
+    elif args.folder is not None:
+        folder = args.folder.expanduser().resolve()
+        if folder.exists() and not folder.is_dir():
+            raise ValueError(f"Not a folder: {folder}")
+        setting = {"mode": "folder", "path": str(folder)}
+    else:
+        setting = configured_destination()
+    changed = args.photos or args.folder is not None
+    if changed:
+        accounts.set_preferences(destination=setting)
+    description = {"photos": "Photos", "cwd": "Current folder (where you run linkget)", "folder": setting.get("path")}[setting["mode"]]
+    status("Default", description)
+    if changed:
+        status("Saved", "Used when no --folder or --photos is specified.")
+    else:
+        print()
+        status("Change", "linkget config --photos\nlinkget config --folder [PATH]")
+        status("One download", "Use --photos or --folder [PATH] without config.")
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="linkget",
@@ -602,6 +639,7 @@ def main(argv=None):
   help                 Show this help (also -h or --help)
   sites                List supported sites and media
   doctor               Check download tools and installation
+  config               View or change the default save destination
   auth                 View website logins and connect a website
   logout SITE          Remove a saved login and disable automatic browser access
   logout all           Disconnect all websites
@@ -610,18 +648,25 @@ Account sites: instagram, x, bilibili, tiktok, douyin, xiaohongshu, weibo, youtu
 
 Examples:
   linkget                              Paste a link or sharing text at the prompt
-  linkget https://v.douyin.com/CODE/    Save to Photos
+  linkget https://v.douyin.com/CODE/    Save to the configured default
+  linkget URL --photos                 Save to Photos this time
   linkget URL --folder                 Save to the current folder
   linkget URL --folder ~/Downloads     Save to a folder
   linkget auth                         View or connect website logins
+  linkget config                       View the default save destination
+  linkget config --photos              Default to Photos (initial setting)
+  linkget config --folder              Default to the current folder each time
+  linkget config --folder ~/Downloads  Default to a fixed folder
 
 First use guides you through connecting a browser. You can skip it.
 Downloads use public access first, then your connected logins when needed.
 Paste sharing text at the prompt to avoid shell quoting and special characters.""")
     parser.add_argument("link", nargs="*", metavar="LINK_OR_COMMAND", help="post URL, sharing text, or a command listed below")
     parser.add_argument("--version", action="version", version="%(prog)s " + VERSION)
-    parser.add_argument("--folder", nargs="?", const=Path("."), type=Path,
-                        help="save to FOLDER, or the current folder if omitted; without --folder, save to Photos")
+    destination_options = parser.add_mutually_exclusive_group()
+    destination_options.add_argument("--folder", nargs="?", const=True, type=Path,
+                                     help="save to FOLDER, or the current folder if omitted; overrides the default")
+    destination_options.add_argument("--photos", action="store_true", help="save to Photos; overrides the default")
     parser.add_argument("--browser", choices=["auto", "none", "chrome", "firefox", "safari", "edge", "brave"], default="auto", help="auto: public first, then saved login and browser refresh if needed; none: public only; specify a browser to use its login")
     parser.add_argument("--profile", help="path to the selected browser profile")
     parser.add_argument("--date-now", action="store_true", help="set the date of newly imported Photos items to now")
@@ -634,6 +679,12 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     if args.link == ["help"]:
         parser.print_help()
         return 0
+    if args.link and args.link[0] == "config":
+        try:
+            return configure(args, parser)
+        except (OSError, ValueError, RuntimeError) as error:
+            status("Error", str(error), "31", stream=sys.stderr)
+            return 1
     if args.link and args.link[0] == "login":
         parser.error("Browser connection is now part of the normal flow. Run linkget or linkget URL.")
     if args.link and args.link[0] in {"auth", "logout"}:
@@ -646,7 +697,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             status("Cancelled", "Stopped", "33", stream=sys.stderr)
             return 130
     if args.link and not any("http://" in item or "https://" in item for item in args.link) and args.link not in (["doctor"], ["sites"]):
-        parser.error("Unknown command. Use linkget sites, linkget auth, or linkget help. To download, paste a post URL.")
+        parser.error("Unknown command. Use linkget sites, linkget auth, linkget config, or linkget help. To download, paste a post URL.")
     args.link = " ".join(args.link)
     if args.link == "doctor":
         return doctor()
@@ -655,14 +706,24 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             status(site, content)
         print("\n  Media only. Post text is not saved. Availability varies by URL.")
         return 0
-    if args.folder and args.date_now:
-        parser.error("--date-now applies to Photos imports and cannot be used with --folder.")
     if args.profile and args.browser in {"auto", "none"}:
         parser.error("--profile requires an explicit --browser, such as chrome or firefox.")
     stage = None
     session_dir = None
     info_path = None
     try:
+        if args.photos:
+            args.folder = None
+        elif args.folder is True:
+            args.folder = Path.cwd()
+        elif args.folder is None:
+            setting = configured_destination()
+            if setting["mode"] == "cwd":
+                args.folder = Path.cwd()
+            elif setting["mode"] == "folder":
+                args.folder = Path(setting["path"])
+        if args.folder is not None and args.date_now:
+            parser.error("--date-now applies to Photos imports. Use --photos --date-now to override a folder default.")
         setup_results = first_run(args) or {}
         url = args.link or (input("  Paste a link (no quotes needed): ") if sys.stdin.isatty() else sys.stdin.read())
         started = time.monotonic()

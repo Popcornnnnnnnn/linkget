@@ -44,6 +44,7 @@ args.output.write_text('''class Linkget < Formula
   def caveats
     <<~EOS
       Run linkget and paste a post link. Use --folder to save to the current folder.
+      Use linkget config to view or change your default save destination.
       Photos imports retain originals in ~/Library/Application Support/linkget/originals.
       Uninstalling does not remove your downloads or saved account data.
     EOS
@@ -54,6 +55,11 @@ args.output.write_text('''class Linkget < Formula
     assert_match "Instagram", shell_output("#{bin}/linkget sites")
     assert_match "--folder [FOLDER]", shell_output("#{bin}/linkget help")
     assert_match "Not connected", shell_output("LINKGET_HOME=#{testpath}/data #{bin}/linkget auth")
+    with_env("LINKGET_HOME" => "#{testpath}/data") do
+      assert_match "Photos", shell_output("#{bin}/linkget config")
+      assert_match "Saved", shell_output("#{bin}/linkget config --folder")
+      assert_match "Current folder", shell_output("#{bin}/linkget config")
+    end
   end
 end
 ''' % (url, version, digest, version))

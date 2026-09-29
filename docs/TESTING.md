@@ -12,6 +12,7 @@ Covered behaviors include:
 - new-site session classification, alternate YouTube login cookies and excluding Google account cookies;
 - persistent Photos originals, content-based filenames, repeated content, same-name different content, and import/copy failures;
 - folder collisions and duplicate handling, progress cleanup, bare `--folder`, and invalid command guidance;
+- saved destinations, dynamic current-directory defaults, fixed relative-path resolution, per-run overrides, and retaining account settings;
 - isolated source/wheel installation and Homebrew formula smoke tests.
 
 Local live checks include Bilibili downloads, a public Weibo video, and a public YouTube video with merged audio. These checks are samples, not a guarantee for every post or network. A current xhslink.cn share was downloaded anonymously as three JPEG images through its mobile share page. Xiaohongshu video selection remains covered by simulated responses and needs live user acceptance. The new sites' signed-in endpoint checks also need user acceptance; tests do not read personal browser sessions.

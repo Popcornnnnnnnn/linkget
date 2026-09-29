@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0b4 — default save destination
+
+- `linkget config` shows the current default destination.
+- `linkget config --photos`, `--folder`, or `--folder PATH` saves a default for future runs.
+- `--photos` and `--folder [PATH]` override the saved default for a single download.
+- Bare folder defaults follow the working directory at download time; explicit relative paths are saved as fixed absolute paths.
+- Existing users retain Photos as the default until they change it. Browser preferences and website sessions are preserved.
+
 ## 0.2.0b3 — Xiaohongshu short-link fix
 
 - Recognize xhslink.cn share links, including full copied share text and redirects between Xiaohongshu's short-link domains.

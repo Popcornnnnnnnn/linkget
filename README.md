@@ -21,7 +21,8 @@ Homebrew installs the download engines, Python and Deno (needed for YouTube). Se
 The simplest way avoids shell quoting entirely:
 
 ```sh
-linkget                  # paste a link when prompted; save to Photos
+linkget                  # paste a link; use your default (initially Photos)
+linkget --photos         # save to Photos this time
 linkget --folder         # paste a link; save to the current folder
 linkget --folder ~/Downloads
 ```
@@ -39,11 +40,25 @@ Use straight ASCII quotes (`'` or `"`) around command-line URLs. Shells interpre
 | `linkget help` | Commands, options and examples |
 | `linkget sites` | Supported websites and post types |
 | `linkget doctor` | Check download tools, without account requests |
+| `linkget config` | View or change the default save destination |
 | `linkget auth` | Check website logins; connect missing sites interactively |
 | `linkget logout bilibili` | Remove Bilibili login and disable its automatic browser access |
 | `linkget logout all` | Disconnect all sites |
 
-`--folder [PATH]` selects a folder; omit the path for the current directory. Without `--folder`, the destination is Photos. `--date-now` changes the date of new Photos items. Files are not overwritten.
+`--folder [PATH]` selects a folder; omit the path for the current directory. `--photos` selects Photos. Without either option, linkget uses your saved default, initially Photos. The two options cannot be combined. `--date-now` changes the date of new Photos items; use `--photos --date-now` when your default is a folder. Files are not overwritten.
+
+## Default save destination
+
+```sh
+linkget config                       # show the current default
+linkget config --photos              # default to Photos
+linkget config --folder              # default to the current folder on each run
+linkget config --folder ~/Downloads  # default to a fixed folder
+```
+
+Relative folder paths supplied to `config --folder PATH` are resolved when saved. Bare `config --folder` follows your working directory on each subsequent download. Configuration does not create the destination folder; it is created when downloading.
+
+Download options override the saved default for that run only. The `Destination` line shows the actual resolved destination. Updating the default preserves your browser choice and saved website sessions.
 
 ## Supported posts
 

@@ -36,7 +36,7 @@ On macOS, data lives in `~/Library/Application Support/linkget/`:
 | Path | Contents | Removal |
 | --- | --- | --- |
 | `sessions/` | Website login copies; restricted to your user | `linkget logout all` removes them |
-| `preferences.json` | Browser choice and disconnected sites | Can be removed manually after uninstall |
+| `preferences.json` | Default save destination, browser choice and disconnected sites | Can be removed manually after uninstall |
 | `originals/` | Full-resolution originals used for Photos imports | Keep these files: Photos may reference them |
 
 **Do not delete `originals/` just to uninstall linkget.** If Photos uses referenced files, deleting originals breaks the items in your library. To reclaim the retained copies, first use Photos > File > Consolidate for those items and verify that the library has its own originals. linkget does not automate this operation.
@@ -48,8 +48,8 @@ On macOS, data lives in `~/Library/Application Support/linkget/`:
 The GitHub release includes a wheel. Use an isolated installer:
 
 ```sh
-uv tool install ./linkget-0.2.0b3-py3-none-any.whl
-# or: pipx install ./linkget-0.2.0b3-py3-none-any.whl
+uv tool install ./linkget-0.2.0b4-py3-none-any.whl
+# or: pipx install ./linkget-0.2.0b4-py3-none-any.whl
 ```
 
 This installs linkget but not its external download engines. On macOS:
