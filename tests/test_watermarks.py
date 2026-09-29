@@ -35,8 +35,8 @@ class WatermarkTests(unittest.TestCase):
         decoder.start()
         self.addCleanup(decoder.stop)
 
-    def test_clean_rendition_is_used_and_size_tradeoff_reported(self):
-        clean = jpeg(690, 920)
+    def test_same_size_clean_rendition_is_used_without_lowering_resolution(self):
+        clean = jpeg(1200, 1600) + b'\xff\xd9'
         with patch.object(weibo, 'urlopen', side_effect=[Response(clean), Response(clean)]) as network, patch.object(weibo, 'compare_sources', return_value=True):
             notes = weibo.prefer_clean_images(self.root)
         self.assertEqual(network.call_args_list[0].args[0].full_url, 'https://wx1.sinaimg.cn/oslarge/example.jpg')
@@ -44,7 +44,19 @@ class WatermarkTests(unittest.TestCase):
         self.assertEqual((self.root/'weibo_123_001_preferred.jpg').read_bytes(), clean)
         self.assertFalse(self.source.exists())
         self.assertFalse(self.metadata.exists())
-        self.assertIn('lower resolution: 1', notes[0])
+        self.assertIn('original resolution preserved', notes[0])
+
+    def test_watermark_improvement_never_allows_either_dimension_to_shrink(self):
+        for width, height in ((690, 920), (1600, 1200), (2400, 800), (800, 2400)):
+            self.metadata.write_text(json.dumps({'url':'https://wx1.sinaimg.cn/large/example.jpg'}))
+            candidate = jpeg(width, height)
+            with patch.object(weibo, 'urlopen', side_effect=[Response(candidate), Response(candidate)]), patch.object(weibo, 'compare_sources', return_value=True):
+                notes = weibo.prefer_clean_images(self.root)
+            self.assertEqual(self.source.read_bytes(), self.original)
+            self.assertFalse((self.root / 'weibo_123_001_preferred.jpg').exists())
+            self.assertFalse(self.metadata.exists())
+            self.assertIn('watermark removal unavailable at this resolution', ' '.join(notes))
+            self.assertNotIn('selected alternate', ' '.join(notes))
 
     def test_failed_or_invalid_alternative_keeps_original_and_cleans_sidecars(self):
         for response in [HTTPError('https://wx1.sinaimg.cn/oslarge/example.jpg', 404, 'missing', {}, None),

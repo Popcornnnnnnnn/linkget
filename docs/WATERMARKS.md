@@ -6,7 +6,7 @@ Checked locally for 0.2.0b11 on 2026-09-30. Download success and session verific
 
 Prefer usable sources without added platform marks. If none can be obtained, retain the available media instead of refusing the whole post. Douyin, Xiaohongshu and Weibo report known source fallbacks. This is not a visual watermark detector: logos burned into an upload can still appear, including on an otherwise clean rendition. There is no pixel erasure, cropping, blurring or re-encoding.
 
-Weibo's alternate image rendition can be smaller than its marked image. Since 0.2.0b12 it is selected only when image comparison supports a localized watermark improvement; otherwise original quality is retained. Selected reductions are reported. Video downloads preserve source quality. Previously saved files and Photos items are not changed; redownload to apply new source selection.
+Weibo's alternate image rendition can be smaller than its marked image. Since 0.2.0b13, selection requires both a supported watermark improvement and no reduction in either dimension. Smaller alternatives are never saved as the output; the original file is kept with a notice when watermark removal at its resolution is unavailable. Version 0.2.0b12 still allowed smaller output and did not satisfy the requested quality requirement. Video downloads preserve source quality. Previously saved files and Photos items are not changed; redownload to apply new source selection.
 
 ## Actual samples
 

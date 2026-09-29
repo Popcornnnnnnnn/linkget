@@ -109,7 +109,7 @@ def fetch_image(url):
 
 
 def prefer_clean_images(directory, ffmpeg=None):
-    selected, smaller, retained, unchanged = 0, 0, 0, 0
+    selected, resolution_limited, retained, unchanged = 0, 0, 0, 0
     ffmpeg = ffmpeg or shutil.which("ffmpeg")
     images = {path for path in directory.iterdir() if path.suffix.lower() in {".jpg", ".jpeg"}}
     seen = set()
@@ -142,7 +142,11 @@ def prefer_clean_images(directory, ffmpeg=None):
                     retained += 1
                 continue
             size, original_size = jpeg_size(data), jpeg_size(original)
-            smaller += bool(size[0] * size[1] < original_size[0] * original_size[1])
+            # Removing a mark must never trade away image detail. A smaller
+            # rendition is diagnostic only, even when its watermark is gone.
+            if size[0] < original_size[0] or size[1] < original_size[1]:
+                resolution_limited += 1
+                continue
             # Keep a distinct name so an older marked copy is not deduplicated.
             destination = source.with_name(source.stem + "_preferred" + source.suffix)
             partial = destination.with_suffix(destination.suffix + ".part")
@@ -159,7 +163,9 @@ def prefer_clean_images(directory, ffmpeg=None):
     retained += len(images - seen)
     notes = []
     if selected:
-        notes.append(f"Weibo: selected alternate images: {selected}" + (f"; lower resolution: {smaller}." if smaller else ".") + " Embedded marks may remain.")
+        notes.append(f"Weibo: selected alternate images: {selected}; original resolution preserved. Embedded marks may remain.")
+    if resolution_limited:
+        notes.append(f"Weibo: kept original resolution for {resolution_limited} image(s); watermark removal unavailable at this resolution.")
     if unchanged:
         notes.append(f"Weibo: kept original quality for {unchanged} image(s); no added watermark difference detected.")
     if retained:

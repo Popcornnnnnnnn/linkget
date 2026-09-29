@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0b13 — never downgrade resolution for watermark removal
+
+- Correct the requirement missed by 0.2.0b11/b12: a cleaner source must not reduce either image dimension. Keep the original bytes when only a smaller alternative exists and explicitly report that watermark removal at that resolution was unavailable.
+- Do not upscale, crop, blur, synthesize or re-encode the output to disguise a missing full-resolution clean source.
+- Checked Weibo's original-download endpoint and alternate `lz` CDN on the reported image: both full-size responses were identical to the marked native file; the unmarked alternative remained smaller. Full-resolution watermark removal for that example remains unresolved.
+
 ## 0.2.0b12 — preserve clean Weibo originals
 
 - Stop unconditionally replacing Weibo JPEGs with smaller `oslarge` images. Compare same-size renditions and the actual downloaded large image; select the alternate only when localized changes support a watermark improvement.

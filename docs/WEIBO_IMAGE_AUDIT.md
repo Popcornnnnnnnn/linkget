@@ -68,3 +68,21 @@ The comparison decodes `mw690` and `oslarge` at their matching dimensions, disco
 Two live CLI checks also verified end-to-end source selection: the cat post retained both 3024×4032 JPEGs, and the reported cycling post selected the three alternate images at 690×863, 690×951 and 690×610. Downloads were directed to temporary folders, not Photos.
 
 This is a conservative heuristic verified against these samples and synthetic regression scenarios. It can miss faint or unusual watermark layouts; ambiguous cases retain the large image with a notice instead of sacrificing detail. Passing this set is not proof of accuracy for all Weibo images.
+
+## 0.2.0b13 requirement correction: full resolution AND watermark improvement
+
+The user clarified that reduced resolution is not an acceptable substitute for removing a watermark. The b12 policy therefore did not satisfy the request, even when its image-comparison decisions matched the visual review.
+
+The output selection now refuses any candidate whose width or height is below the native large image's dimensions, even if it has a demonstrated watermark improvement. No upscaling, synthesis, patching or output re-encoding is used. The smaller rendition can be used for comparison only. If no eligible alternative is found, the native file is retained and the CLI explicitly states that watermark removal was unavailable at that resolution. This fixes the incorrect downgrade; it does not claim to solve full-resolution watermark removal for the reported post.
+
+Additional direct-source checks on the reported first cycling image:
+
+| Request | Returned size | Result |
+| --- | --- | --- |
+| Native `wx4.sinaimg.cn/large/…` | 896×1120 | Marked baseline |
+| Alternate `lz.sinaimg.cn/large/…` | 896×1120 | Byte-for-byte identical to marked baseline |
+| Weibo `ajax/common/download?pid=…`, with existing scoped login | 896×1120 | Byte-for-byte identical to marked baseline |
+| Native `wx4.sinaimg.cn/oslarge/…` | 690×863 | Smaller alternative, ineligible for output |
+| Alternate `lz.sinaimg.cn/oslarge/…` | 690×863 | Byte-for-byte identical to the smaller native alternative |
+
+The inspected [public Weibo script](https://github.com/fmz200/wool_scripts/blob/main/Scripts/weibo/weibo_main.js) also labels its `oslarge` substitution as lower quality. The inspected [image parser](https://github.com/5ime/images_spider/blob/master/src/images_spider.php) returns `lz.sinaimg.cn/oslarge/…`, not evidence of a separate full-resolution source. No third-party session credentials were used. These checks found no full-resolution clean alternative for this image; they do not prove that none exists anywhere.

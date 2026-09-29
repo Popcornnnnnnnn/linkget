@@ -10,7 +10,7 @@ Covered behaviors include:
 - malformed account payloads, interrupted HTTP responses, saving cookies renewed during verification, and rotated-cookie warnings after anonymous video metadata fallback;
 - public downloads, quality restrictions, using an existing Bilibili login before format selection, and media routing;
 - Xiaohongshu complete image sets, original video selection, HEIC/HEIF detection, per-item display fallback with notices, preserved share tokens, invalid media and interrupted downloads;
-- Weibo source comparison, reduced-resolution notices, retained clean/uncertain originals, encoding noise, distributed image changes, marked previews of clean originals, missing/timed-out decoders, invalid/truncated alternatives and metadata cleanup; Douyin clean-source rejection with native-media fallback;
+- Weibo source comparison, refusal of any width/height reduction even when watermark comparison passes, retained clean/uncertain originals, encoding noise, distributed image changes, marked previews of clean originals, missing/timed-out decoders, invalid/truncated alternatives and metadata cleanup; Douyin clean-source rejection with native-media fallback;
 - Weibo mixed media, YouTube video/Shorts routing, runtime guidance, quality display and playlist/live rejection;
 - new-site session classification, alternate YouTube login cookies and excluding Google account cookies;
 - persistent Photos originals, content-based filenames, repeated content, same-name different content, and import/copy failures;
