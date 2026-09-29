@@ -3,10 +3,16 @@
 from dataclasses import dataclass
 from http.cookiejar import MozillaCookieJar
 import json
+import re
 import subprocess
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPCookieProcessor, Request, build_opener
+
+if __package__:
+    from .xiaohongshu import initial_state
+else:
+    from xiaohongshu import initial_state
 
 
 ENDPOINTS = {
@@ -28,6 +34,9 @@ ENDPOINTS = {
     "bilibili.com": "https://api.bilibili.com/x/web-interface/nav",
     "tiktok.com": "https://www.tiktok.com/passport/web/account/info/?aid=1988&app_name=tiktok_web&device_platform=web_pc",
     "douyin.com": "https://www.douyin.com/passport/account/info/v2/?aid=6383",
+    "xiaohongshu.com": "https://www.xiaohongshu.com/explore",
+    "weibo.com": "https://weibo.com/ajax/config",
+    "youtube.com": "https://www.youtube.com/",
 }
 LOGIN_URLS = {
     "instagram.com": "https://www.instagram.com/accounts/login/",
@@ -35,8 +44,43 @@ LOGIN_URLS = {
     "bilibili.com": "https://passport.bilibili.com/login",
     "tiktok.com": "https://www.tiktok.com/login",
     "douyin.com": "https://www.douyin.com/",
+    "xiaohongshu.com": "https://www.xiaohongshu.com/",
+    "weibo.com": "https://weibo.com/login.php",
+    "youtube.com": "https://www.youtube.com/",
 }
-AUTH_COOKIE = {"instagram.com": "sessionid", "x.com": "auth_token", "bilibili.com": "SESSDATA", "tiktok.com": "sessionid", "douyin.com": "sessionid"}
+AUTH_COOKIE = {"instagram.com": "sessionid", "x.com": "auth_token", "bilibili.com": "SESSDATA", "tiktok.com": "sessionid", "douyin.com": "sessionid",
+               "xiaohongshu.com": "web_session", "weibo.com": "SUB", "youtube.com": "SAPISID"}
+
+
+def login_cookies(jar, domain):
+    names = {AUTH_COOKIE[domain]}
+    if domain == "youtube.com":
+        names.update({"__Secure-1PAPISID", "__Secure-3PAPISID"})
+    return [cookie for cookie in jar if cookie.name in names and cookie.value
+            and (cookie.domain.lstrip(".") == domain or cookie.domain.endswith("." + domain))]
+
+
+def webpage_login(domain, html):
+    if domain == "xiaohongshu.com":
+        user = initial_state(html).get("user", {})
+        if user.get("loggedIn") is True and (user.get("userInfo") or {}).get("userId"):
+            return {"authenticated": True}
+        if user.get("loggedIn") is False:
+            return {"authenticated": False}
+    elif domain == "youtube.com":
+        for match in re.finditer(r"ytcfg\.set\s*\(|(?:var\s+)?ytInitialData\s*=", html):
+            try:
+                data = json.JSONDecoder().raw_decode(html[match.end():].lstrip())[0]
+                if not isinstance(data, dict):
+                    continue
+                if isinstance(data.get("LOGGED_IN"), bool):
+                    return {"authenticated": data["LOGGED_IN"]}
+                logged_out = data.get("responseContext", {}).get("mainAppWebResponseContext", {}).get("loggedOut")
+                if isinstance(logged_out, bool):
+                    return {"authenticated": not logged_out}
+            except (ValueError, AttributeError):
+                continue
+    return {}
 
 
 @dataclass(frozen=True)
@@ -93,11 +137,23 @@ def classify_response(domain, code, data):
             return Session("valid", "Valid")
         if code == 200 and data.get("message") == "error" and account.get("error_code") == 13:
             return Session("invalid", "Session rejected")
+    elif domain == "weibo.com":
+        account = data.get("data") or {}
+        if code == 200 and isinstance(account, dict):
+            if account.get("login") is True and account.get("uid"):
+                return Session("valid", "Valid")
+            if account.get("login") is False:
+                return Session("invalid", "Session rejected")
+    elif domain in {"xiaohongshu.com", "youtube.com"} and code == 200:
+        if data.get("authenticated") is True:
+            return Session("valid", "Valid")
+        if data.get("authenticated") is False:
+            return Session("invalid", "Session rejected")
     return Session("unverified", "Website check inconclusive")
 
 
 def check_session(jar, domain):
-    candidates = [cookie for cookie in jar if cookie.name == AUTH_COOKIE[domain] and cookie.value]
+    candidates = login_cookies(jar, domain)
     if not candidates:
         return Session("missing", "Not signed in")
     if all(cookie.is_expired() for cookie in candidates):
@@ -116,6 +172,8 @@ def check_session(jar, domain):
         # Public X web-client identifier, also used by gallery-dl; not a user token.
         headers.update({"authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
                         "x-csrf-token": values["ct0"], "x-twitter-auth-type": "OAuth2Session", "x-twitter-active-user": "yes"})
+    if domain in {"xiaohongshu.com", "youtube.com"}:
+        headers["Accept"] = "text/html"
     opener = build_opener(HTTPCookieProcessor(jar), NoRedirect())
     try:
         try:
@@ -130,7 +188,9 @@ def check_session(jar, domain):
                         and destination.path.rstrip("/") == "/accounts/login"):
                     return Session("invalid", "Session rejected")
             try:
-                data = json.loads(response.read(1_048_576))
+                body = response.read(4_000_000)
+                data = (webpage_login(domain, body.decode("utf-8", "replace"))
+                        if domain in {"xiaohongshu.com", "youtube.com"} else json.loads(body))
             except (ValueError, UnicodeError):
                 data = None
         return classify_response(domain, code, data)
@@ -182,6 +242,6 @@ def prepare_session(gallery_dl, browser_spec, cookie_path, domain):
         return error
     jar = site_cookies(jar, domain, cookie_path)
     jar.save(ignore_discard=True, ignore_expires=True)
-    if error and not any(c.name == AUTH_COOKIE[domain] and c.value for c in jar):
+    if error and not login_cookies(jar, domain):
         return error
     return check_session(jar, domain)

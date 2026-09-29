@@ -23,6 +23,7 @@ if __package__:
     from .session import LOGIN_URLS, prepare_session
     from .links import normalize_link
     from .douyin import download as download_douyin
+    from .xiaohongshu import download as download_xiaohongshu, BrowserRequired
 else:  # Homebrew launches this file directly.
     import accounts
     from photos import originals_directory, retain_originals
@@ -30,10 +31,11 @@ else:  # Homebrew launches this file directly.
     from session import LOGIN_URLS, prepare_session
     from links import normalize_link
     from douyin import download as download_douyin
+    from xiaohongshu import download as download_xiaohongshu, BrowserRequired
 
 VIDEO = {".mp4", ".mov", ".m4v"}
 MEDIA = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".avif", ".tif", ".tiff"} | VIDEO
-SITES = "Instagram, X/Twitter, Bilibili, TikTok and Douyin posts (photos and videos)"
+SITES = "Instagram, X/Twitter, Bilibili, TikTok, Douyin, Xiaohongshu and Weibo posts; YouTube videos and Shorts"
 
 
 class LoginRequired(RuntimeError):
@@ -46,7 +48,7 @@ def needs_login(message):
         r"login[_ -]required|log[ -]?in (?:is )?required|(?:please|must|need to) (?:log[ -]?in|sign in)|"
         r"(?:account|login) credentials (?:required|needed)|invalid login credentials|"
         r"(?:cookies|authentication|authorization)['\"]? (?:are |is )?(?:required|needed)|"
-        r"fresh cookies.*needed|登录后|请(?:先)?登录|需要登录",
+        r"fresh cookies.*needed|sign in (?:to|if)|redirect to login page|登录后|请(?:先)?登录|需要登录",
         message, re.I))
 
 
@@ -312,6 +314,37 @@ def selected_quality(info_path):
     return text
 
 
+def prepare_video(command, info_path, log, domain):
+    if domain == "bilibili.com":
+        return prepare_bilibili(command, info_path, log)
+    site = "YouTube" if domain == "youtube.com" else "Weibo"
+    probe = command[:-1] + ["--skip-download", "--dump-single-json", "--no-quiet", command[-1]]
+    result = subprocess.run(probe, capture_output=True, text=True, timeout=90)
+    lines = result.stdout.rstrip().splitlines()
+    messages = "\n".join(lines[:-1]) + "\n" + result.stderr
+    log.write(messages)
+    log.flush()
+    if result.returncode:
+        if needs_login(messages):
+            raise LoginRequired(f"{site} asks you to sign in or complete verification for this video.")
+        if domain == "youtube.com" and ("PO Token" in messages or "JavaScript" in messages or "challenge" in messages.lower()):
+            raise RuntimeError("YouTube's verification could not be completed. Run brew upgrade yt-dlp deno, then retry.\n" + "\n".join(messages.splitlines()[-6:]))
+        raise RuntimeError(f"Could not read this {site} video.\n" + "\n".join(messages.splitlines()[-8:]))
+    try:
+        info = json.loads(lines[-1])
+        if not isinstance(info, dict):
+            raise ValueError()
+    except (IndexError, ValueError):
+        raise RuntimeError(f"{site} returned unreadable video information; nothing has been downloaded.") from None
+    if info.get("_type") in {"playlist", "multi_video"} or "entries" in info:
+        raise ValueError(f"Use a single {site} video link, not a playlist or channel.")
+    if info.get("is_live") or info.get("live_status") in {"is_live", "is_upcoming", "post_live"}:
+        raise ValueError(f"Live or upcoming {site} streams are not supported. Try the processed replay after it ends.")
+    info_path.write_text(json.dumps(info))
+    info_path.chmod(0o600)
+    return command[:-1] + ["--load-info-json", str(info_path)]
+
+
 def status(label, value, color="0", stream=None):
     """Aligned terminal output; redirected output remains plain text."""
     stream = stream if stream is not None else sys.stdout
@@ -432,6 +465,14 @@ def route(url):
         return "TikTok", "gallery-dl", "tiktok.com"
     if host in {"douyin.com", "www.douyin.com"} and re.fullmatch(r"/(video|note)/\d+/?", path):
         return "Douyin", "douyin", "douyin.com"
+    if host == "www.xiaohongshu.com" and re.fullmatch(r"/explore/[\da-f]{24}", path):
+        return "Xiaohongshu", "xiaohongshu", "xiaohongshu.com"
+    if host == "weibo.com" and re.fullmatch(r"/detail/[A-Za-z0-9]+", path):
+        return "Weibo", "gallery-dl", "weibo.com"
+    if host == "weibo.com" and re.fullmatch(r"/tv/show/\d+:[A-Za-z0-9]+", path):
+        return "Weibo video", "yt-dlp", "weibo.com"
+    if host == "www.youtube.com" and re.fullmatch(r"/watch", path) and re.fullmatch(r"v=[\w-]{11}", parsed.query):
+        return "YouTube", "yt-dlp", "youtube.com"
     if host == "b23.tv":
         raise ValueError("Use the full bilibili.com URL. b23.tv short links are not supported yet.")
     raise ValueError("Unsupported URL. Supported: " + SITES)
@@ -458,11 +499,17 @@ def command_for(args, url, engine, domain, media_dir, tools, cookie_path=None):
             command.extend(["-o", "extractor.tiktok.audio=false", "-o", "extractor.tiktok.covers=false",
                             "-o", "extractor.tiktok.subtitles=false", "-o", "extractor.tiktok.videos=true",
                             "-o", "extractor.tiktok.photos=true", "-o", "extractor.tiktok.filename=tiktok_{id}_{num:03d}.{extension}"])
+        elif domain == "weibo.com":
+            command.extend(["-o", "extractor.weibo.videos=true", "-o", "extractor.weibo.retweets=true",
+                            "-o", "extractor.weibo.text=false", "-o", "extractor.weibo.livephoto=false",
+                            "-o", "extractor.weibo.filename=weibo_{status[id]}_{num:03d}.{extension}"])
     else:
         command = [tools[engine], "--ignore-config", "--no-playlist", "--no-progress",
                    "--ffmpeg-location", str(Path(tools["ffmpeg"]).parent),
                    "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]",
-                   "-S", "res,fps,hdr", "--merge-output-format", "mp4", "-o", str(media_dir / "bilibili_%(id)s.%(ext)s")]
+                   "-S", "res,fps,hdr", "--merge-output-format", "mp4", "-o", str(media_dir / (domain.split(".")[0] + "_%(id)s.%(ext)s"))]
+        if domain == "youtube.com":
+            command.extend(["--js-runtimes", "deno:" + tools["deno"]])
     if cookie_path is not None:
         command.extend(["--cookies", str(cookie_path)])
     command.append(url)
@@ -523,7 +570,7 @@ def import_photos(files, date_now):
 def doctor():
     missing = []
     print("  Tools\n")
-    for name in ("gallery-dl", "yt-dlp", "ffmpeg", "ffprobe"):
+    for name in ("gallery-dl", "yt-dlp", "ffmpeg", "ffprobe", "deno"):
         path = find_tool(name)
         if not path:
             missing.append(name)
@@ -559,7 +606,7 @@ def main(argv=None):
   logout SITE          Remove a saved login and disable automatic browser access
   logout all           Disconnect all websites
 
-Account sites: instagram, x, bilibili, tiktok, douyin
+Account sites: instagram, x, bilibili, tiktok, douyin, xiaohongshu, weibo, youtube
 
 Examples:
   linkget                              Paste a link or sharing text at the prompt
@@ -604,7 +651,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     if args.link == "doctor":
         return doctor()
     if args.link == "sites":
-        for site, content in [("Instagram", "Photos, videos and reels"), ("X / Twitter", "Post photos and videos"), ("Bilibili", "BV/av videos and Opus media"), ("TikTok", "Post photos and videos; share links"), ("Douyin", "Post photos and videos; share links")]:
+        for site, content in [("Instagram", "Photos, videos and reels"), ("X / Twitter", "Post photos and videos"), ("Bilibili", "BV/av videos and Opus media"), ("TikTok", "Post photos and videos; share links"), ("Douyin", "Post photos and videos; share links"), ("Xiaohongshu", "Note photos and videos; xhslink shares"), ("Weibo", "Post photos and videos; t.cn shares"), ("YouTube", "Videos and Shorts; youtu.be links")]:
             status(site, content)
         print("\n  Media only. Post text is not saved. Availability varies by URL.")
         return 0
@@ -619,12 +666,14 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         setup_results = first_run(args) or {}
         url = args.link or (input("  Paste a link (no quotes needed): ") if sys.stdin.isatty() else sys.stdin.read())
         started = time.monotonic()
-        with activity("Resolving") if any(host in url for host in ("v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/")) else nullcontext():
+        with activity("Resolving") if any(host in url for host in ("v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/", "xhslink.com", "t.cn/")) else nullcontext():
             url = normalize_link(url)
         site, engine, domain = route(url)
         if not args.folder and sys.platform != "darwin":
             raise ValueError("Photos is available on macOS only. Use --folder to choose a destination.")
-        required = ([] if engine == "douyin" else [engine]) + (["ffmpeg", "ffprobe"] if engine == "yt-dlp" else [])
+        required = ([] if engine in {"douyin", "xiaohongshu"} else [engine]) + (["ffmpeg", "ffprobe"] if engine == "yt-dlp" else [])
+        if domain == "youtube.com":
+            required.append("deno")
         cookie_spec = browser_spec(args, "gallery-dl", domain) if args.browser not in {"auto", "none"} else None
         if cookie_spec and "gallery-dl" not in required:
             required.append("gallery-dl")
@@ -658,7 +707,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 accounts.save(cookie_path, domain)
                 accounts.remember_source(domain, cookie_spec)
         used_browser = cookie_path is not None
-        if engine == "yt-dlp" and args.browser == "auto" and domain not in accounts.preferences().get("blocked", []):
+        if domain == "bilibili.com" and args.browser == "auto" and domain not in accounts.preferences().get("blocked", []):
             session_dir = tempfile.TemporaryDirectory(prefix="linkget-session-")
             candidate = Path(session_dir.name) / "cookies.txt"
             if accounts.copy_saved(domain, candidate):
@@ -674,19 +723,22 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 print()
                 with (stage / "download.log").open("w") as log:
                     command = None
-                    if engine != "douyin":
+                    if engine not in {"douyin", "xiaohongshu"}:
                         command = command_for(args, url, engine, domain, media_dir, tools, cookie_path)
                     if engine == "yt-dlp":
                         info_path = stage / "video-info.json"
                         with activity("Preparing"):
-                            command = prepare_bilibili(command, info_path, log)
+                            command = prepare_video(command, info_path, log, domain)
                         quality = selected_quality(info_path)
                         if quality:
                             status("Quality", quality)
                     with activity("Downloading", media_dir):
-                        if engine == "douyin":
+                        if engine in {"douyin", "xiaohongshu"}:
                             try:
-                                download_douyin(url, media_dir, cookie_path)
+                                downloader = download_douyin if engine == "douyin" else download_xiaohongshu
+                                downloader(url, media_dir, cookie_path)
+                            except BrowserRequired as error:
+                                raise LoginRequired(str(error)) from None
                             except RuntimeError as error:
                                 log.write(str(error) + "\n")
                                 raise

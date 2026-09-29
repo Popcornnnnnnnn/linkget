@@ -2,12 +2,14 @@
 
 import re
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, urljoin, urlsplit
+from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 MOBILE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1"
 DOUYIN_HOSTS = {"douyin.com", "www.douyin.com", "v.douyin.com", "iesdouyin.com", "www.iesdouyin.com"}
 TIKTOK_HOSTS = {"tiktok.com", "www.tiktok.com", "vm.tiktok.com", "vt.tiktok.com", "www.tiktokv.com"}
+XHS_HOSTS = {"xiaohongshu.com", "www.xiaohongshu.com", "xhslink.com", "www.xhslink.com"}
+WEIBO_HOSTS = {"weibo.com", "www.weibo.com", "m.weibo.cn", "weibo.cn", "video.weibo.com", "t.cn"}
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -31,6 +33,30 @@ def canonical_post(url):
         match = re.fullmatch(r"/(@[\w.-]+|share)/(photo|video)/(\d+)/?", parsed.path)
         if match:
             return f"https://www.tiktok.com/{match[1]}/{match[2]}/{match[3]}"
+    elif parsed.hostname in XHS_HOSTS:
+        match = re.fullmatch(r"/(?:explore|discovery/item)/([\da-f]{24})/?", parsed.path)
+        if match:
+            # The share token is needed for many posts. Do not strip it as tracking.
+            return f"https://www.xiaohongshu.com/explore/{match[1]}" + ("?" + parsed.query if parsed.query else "")
+    elif parsed.hostname in WEIBO_HOSTS:
+        match = re.fullmatch(r"/tv/show/(\d+:[A-Za-z0-9]+)/?", parsed.path)
+        if match:
+            return f"https://weibo.com/tv/show/{match[1]}"
+        ids = parse_qs(parsed.query).get("fid", [])
+        if parsed.hostname == "video.weibo.com" and parsed.path == "/show" and len(ids) == 1 and re.fullmatch(r"\d+:[A-Za-z0-9]+", ids[0]):
+            return f"https://weibo.com/tv/show/{ids[0]}"
+        match = re.fullmatch(r"/(?:detail|status|\d+)/([A-Za-z0-9]+)/?", parsed.path)
+        if match:
+            return f"https://weibo.com/detail/{match[1]}"
+    elif parsed.hostname in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}:
+        match = re.fullmatch(r"/(?:shorts/|live/|embed/)?([\w-]{11})/?", parsed.path)
+        video_id = match[1] if match and (parsed.hostname == "youtu.be" or parsed.path.startswith(("/shorts/", "/live/", "/embed/"))) else None
+        if parsed.path == "/watch":
+            ids = parse_qs(parsed.query).get("v", [])
+            if len(ids) == 1 and re.fullmatch(r"[\w-]{11}", ids[0]):
+                video_id = ids[0]
+        if video_id:
+            return "https://www.youtube.com/watch?" + urlencode({"v": video_id})
     return None
 
 
@@ -43,11 +69,18 @@ def normalize_link(text):
     if canonical:
         return canonical
     parsed = urlsplit(url)
-    short = parsed.hostname in {"v.douyin.com", "vm.tiktok.com", "vt.tiktok.com"} or (
+    short = parsed.hostname in {"v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "xhslink.com", "www.xhslink.com", "t.cn"} or (
         parsed.hostname in {"www.tiktok.com", "tiktok.com"} and parsed.path.startswith("/t/"))
     if not short:
         return url
-    allowed = DOUYIN_HOSTS if parsed.hostname == "v.douyin.com" else TIKTOK_HOSTS
+    if parsed.hostname == "v.douyin.com":
+        allowed = DOUYIN_HOSTS
+    elif parsed.hostname in {"xhslink.com", "www.xhslink.com"}:
+        allowed = XHS_HOSTS
+    elif parsed.hostname == "t.cn":
+        allowed = WEIBO_HOSTS
+    else:
+        allowed = TIKTOK_HOSTS
     opener = build_opener(NoRedirect())
     for _ in range(5):
         parsed = urlsplit(url)

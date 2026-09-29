@@ -1,6 +1,7 @@
 """Local per-site browser authorizations. No passwords or cookie values in output."""
 
 from http.cookiejar import MozillaCookieJar
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import plistlib
@@ -10,12 +11,13 @@ import sys
 import tempfile
 
 if __package__:
-    from .session import AUTH_COOKIE, Session, check_session, prepare_session, export_browser, site_cookies
+    from .session import Session, check_session, prepare_session, export_browser, site_cookies, login_cookies
 else:
-    from session import AUTH_COOKIE, Session, check_session, prepare_session, export_browser, site_cookies
+    from session import Session, check_session, prepare_session, export_browser, site_cookies, login_cookies
 
 SITES = {"instagram": "instagram.com", "x": "x.com", "bilibili": "bilibili.com",
-         "tiktok": "tiktok.com", "douyin": "douyin.com"}
+         "tiktok": "tiktok.com", "douyin": "douyin.com", "xiaohongshu": "xiaohongshu.com",
+         "weibo": "weibo.com", "youtube": "youtube.com"}
 
 
 def directory():
@@ -91,10 +93,13 @@ def connect_browser(tool, browser, profile=None):
             if not any(host == domain or host.endswith("." + domain) for domain in SITES.values()):
                 jar.clear(cookie.domain, cookie.path, cookie.name)
         jar.save(ignore_discard=True, ignore_expires=True)
-        for domain in SITES.values():
+        snapshots = {domain: site_cookies(jar, domain, root / (domain + ".txt")) for domain in SITES.values()}
+        with ThreadPoolExecutor(max_workers=len(snapshots)) as executor:
+            checks = {domain: executor.submit(check_session, filtered, domain) for domain, filtered in snapshots.items()}
+            states = {domain: check.result() for domain, check in checks.items()}
+        for domain, filtered in snapshots.items():
             path = root / (domain + ".txt")
-            filtered = site_cookies(jar, domain, path)
-            state = check_session(filtered, domain)
+            state = states[domain]
             if state.state == "missing" and error:
                 state = error
             if state.state == "valid":
@@ -118,7 +123,7 @@ def read_session(path, domain):
     for cookie in list(jar):
         if cookie.expires == 0:
             cookie.expires = None
-    candidates = [c for c in jar if c.name == AUTH_COOKIE[domain] and c.value]
+    candidates = login_cookies(jar, domain)
     if not candidates:
         return jar, Session("missing", "No saved login")
     if all(c.is_expired() for c in candidates):
