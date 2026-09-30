@@ -5,8 +5,9 @@ from http.client import HTTPException
 import json
 import re
 from urllib.error import HTTPError, URLError
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit
 from urllib.request import HTTPCookieProcessor, Request, build_opener
+import concurrent.futures
 
 if __package__:
     from .links import MOBILE_UA
@@ -32,6 +33,77 @@ def share_item(html, post_id):
     return None
 
 
+# The public playback endpoint clamps a request to the best gear the post
+# actually has, so asking for 1080p never upscales and recovers detail that
+# the share page's 720p default drops. Unsupported ratios fall back to it.
+BEST_PLAYBACK_RATIO = "1080p"
+
+
+def playback_url(url, best_ratio=False):
+    """Point an snssdk play address at ordinary playback, optionally top gear."""
+    parsed = urlsplit(url)
+    if parsed.hostname != "aweme.snssdk.com" or parsed.path not in {"/aweme/v1/play/", "/aweme/v1/playwm/"}:
+        return url
+    # The mobile share page points at the watermarked distribution variant.
+    # Keep the same video ID and query when requesting its ordinary playback variant.
+    if parsed.path == "/aweme/v1/playwm/":
+        parsed = parsed._replace(path="/aweme/v1/play/")
+    if not best_ratio:
+        return parsed.geturl()
+    query = [(key, BEST_PLAYBACK_RATIO if key == "ratio" else value)
+             for key, value in parse_qsl(parsed.query, keep_blank_values=True)]
+    if not any(key == "ratio" for key, _ in query):
+        query.append(("ratio", BEST_PLAYBACK_RATIO))
+    return parsed._replace(query=urlencode(query)).geturl()
+
+
+def known_playback(url):
+    return urlsplit(url).path.rstrip("/").endswith("/aweme/v1/play")
+
+
+def address_urls(address):
+    return [url for url in (address or {}).get("url_list") or [] if isinstance(url, str) and url]
+
+
+def video_candidates(item, prefer_clean=True):
+    """Exposed video renditions as (quality, url), best quality first.
+
+    Douyin lists its gears in video.bit_rate, each with its own play_addr;
+    video.play_addr is only the default one. Rank by pixel count, then the
+    declared bitrate and size, so the ordinary playback variant is not
+    assumed to be the best available copy.
+    """
+    video = item.get("video") or {}
+    candidates = []
+    for entry in video.get("bit_rate") or []:
+        if not isinstance(entry, dict):
+            continue
+        address = entry.get("play_addr") or {}
+        quality = (int(address.get("width") or 0) * int(address.get("height") or 0),
+                   int(entry.get("bit_rate") or 0), int(address.get("data_size") or 0))
+        candidates += [(quality, playback_url(url) if prefer_clean else url) for url in address_urls(address)]
+    for field in ("play_addr", "play_addr_h264", "play_addr_265"):
+        address = video.get(field) or {}
+        quality = (int(address.get("width") or 0) * int(address.get("height") or 0), 0,
+                   int(address.get("data_size") or 0))
+        # A default play_addr carries whatever ratio the API chose; ask the
+        # endpoint for the best it will serve. Explicit gears keep their own.
+        candidates += [(quality, playback_url(url, best_ratio=True) if prefer_clean else url)
+                       for url in address_urls(address)]
+    candidates.sort(key=lambda candidate: candidate[0], reverse=True)
+    return candidates
+
+
+def video_urls(item, prefer_clean=True):
+    """Ordered unique video URLs, best quality first."""
+    ordered, seen = [], set()
+    for _, url in video_candidates(item, prefer_clean):
+        if url not in seen:
+            seen.add(url)
+            ordered.append(url)
+    return ordered
+
+
 def media_urls(item, prefer_clean=True):
     """Prefer known clean variants; optionally accept exposed native media."""
     images = item.get("images") or (item.get("image_post_info") or {}).get("images")
@@ -55,18 +127,13 @@ def media_urls(item, prefer_clean=True):
                 clean = urls[0]
             media.append(("image", clean))
         return media
-    urls = (item.get("video", {}).get("play_addr") or {}).get("url_list") or []
+    urls = video_urls(item, prefer_clean)
     if not urls:
         raise RuntimeError("Douyin did not return downloadable photos or video.")
-    url = urlsplit(urls[0])
-    # The mobile share page points at the watermarked distribution variant.
-    # Keep the same video ID and query when requesting its ordinary playback variant.
-    if prefer_clean and url.hostname == "aweme.snssdk.com" and url.path == "/aweme/v1/playwm/":
-        url = url._replace(path="/aweme/v1/play/")
-    known_playback = url.hostname == "aweme.snssdk.com" and url.path == "/aweme/v1/play/"
-    if prefer_clean and not known_playback and item.get("video", {}).get("has_watermark") is not False:
+    url = urls[0]
+    if prefer_clean and not known_playback(url) and (item.get("video") or {}).get("has_watermark") is not False:
         raise RuntimeError("No verified watermark-free Douyin video source. Refusing watermarked or unknown variants; nothing has been imported.")
-    return [("video", url.geturl())]
+    return [("video", url)]
 
 
 def media_extension(head, kind):
@@ -127,13 +194,16 @@ def download(url, directory, cookie_path=None):
                 item = fallback_item
         if item is None:
             raise RuntimeError("Douyin did not expose this post's media. Open the post in the selected browser, complete any verification, then retry. The post may also be unavailable; this does not prove your login expired.")
+
         fallback_used = False
         try:
             media = media_urls(item)
         except RuntimeError:
             media = media_urls(item, prefer_clean=False)
             fallback_used = True
-        for index, (kind, media_url) in enumerate(media, 1):
+
+        def _download_one(index, kind, media_url):
+            local_fallback = False
             try:
                 response = request(media_url, share_url)
             except HTTPError as error:
@@ -150,14 +220,13 @@ def download(url, directory, cookie_path=None):
                     raise
                 response = request(fallback, share_url)
                 media_url = fallback
-                fallback_used = True
+                local_fallback = True
             with response:
                 head = response.read(64)
                 extension = media_extension(head, kind)
                 # Photos deduplicates by filename: distinguish this playback variant
                 # from an older watermarked download without replacing either file.
-                playback = urlsplit(media_url)
-                variant = "_clean" if kind == "video" and playback.hostname == "aweme.snssdk.com" and playback.path == "/aweme/v1/play/" else ""
+                variant = "_clean" if kind == "video" and known_playback(media_url) else ""
                 path = directory / f"douyin_{post_id}_{index:03d}{variant}{extension}"
                 partial = path.with_suffix(extension + ".part")
                 count = len(head)
@@ -170,6 +239,14 @@ def download(url, directory, cookie_path=None):
                 if expected and count != int(expected):
                     raise RuntimeError("Douyin media download was incomplete; partial files have been kept.")
                 partial.rename(path)
+            return local_fallback
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(_download_one, index, kind, media_url) for index, (kind, media_url) in enumerate(media, 1)]
+            for future in concurrent.futures.as_completed(futures):
+                if future.result():
+                    fallback_used = True
+
         return (["Douyin: clean source unavailable; kept the exposed media, which may contain watermarks."] if fallback_used else [])
     except HTTPError as error:
         raise RuntimeError(f"Douyin request failed (HTTP {error.code}). Open the post in your browser and check access or verification, then retry.") from None

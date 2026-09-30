@@ -7,6 +7,7 @@ import re
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPCookieProcessor, Request, build_opener
+import concurrent.futures
 
 if __package__:
     from .links import MOBILE_UA
@@ -73,6 +74,18 @@ def image_key(item):
     return None
 
 
+def display_image_url(item):
+    """Largest exposed display rendition when its dimensions prove it larger."""
+    entries = [entry for entry in item.get("infoList") or [] if isinstance(entry, dict) and entry.get("url")]
+    if item.get("urlDefault"):
+        entries.append({"url": item["urlDefault"]})
+    sized = [entry for entry in entries if int(entry.get("width") or 0) * int(entry.get("height") or 0) > 0]
+    if sized:
+        return max(sized, key=lambda entry: int(entry["width"]) * int(entry["height"]))["url"]
+    variants = {entry.get("imageScene"): entry.get("url") for entry in item.get("infoList") or []}
+    return item.get("urlDefault") or variants.get("WB_DFT") or variants.get("H5_DTL") or item.get("url")
+
+
 def note_media(note, prefer_original=True):
     if note.get("type") == "video":
         if not prefer_original:
@@ -91,8 +104,7 @@ def note_media(note, prefer_original=True):
     media = []
     for item in images:
         if not prefer_original:
-            variants = {entry.get("imageScene"): entry.get("url") for entry in item.get("infoList", [])}
-            url = item.get("urlDefault") or variants.get("WB_DFT") or variants.get("H5_DTL") or item.get("url")
+            url = display_image_url(item)
             if not url:
                 raise RuntimeError("Xiaohongshu returned an incomplete media set; nothing has been imported.")
             media.append(("image", media_url(url)))
@@ -170,9 +182,7 @@ def download(url, directory, cookie_path=None):
                     originals.append(False)
             if not media:
                 raise RuntimeError("Xiaohongshu returned no media.")
-        retained = 0
-        for index, (kind, target) in enumerate(media, 1):
-            used_original = originals[index - 1]
+        def _download_one(index, kind, target, used_original):
             try:
                 response = request(target)
             except HTTPError as error:
@@ -189,7 +199,6 @@ def download(url, directory, cookie_path=None):
                 head = response.read(64)
                 suffix = extension(head, kind)
                 variant = "original" if used_original else "display"
-                retained += not used_original
                 path = directory / f"xiaohongshu_{note_id}_{index:03d}_{variant}{suffix}"
                 partial = path.with_suffix(suffix + ".part")
                 count = len(head)
@@ -202,6 +211,15 @@ def download(url, directory, cookie_path=None):
                 if expected and count != int(expected):
                     raise RuntimeError("Xiaohongshu download was incomplete; partial files have been kept.")
                 partial.rename(path)
+            return not used_original
+
+        retained = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(_download_one, index, kind, target, originals[index - 1]) for index, (kind, target) in enumerate(media, 1)]
+            for future in concurrent.futures.as_completed(futures):
+                if future.result():
+                    retained += 1
+
         return ([f"Xiaohongshu: original unavailable for {retained} item(s); kept best exposed display sources, which may contain watermarks."] if retained else [])
     except HTTPError as error:
         error.close()

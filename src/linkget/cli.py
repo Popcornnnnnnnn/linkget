@@ -508,8 +508,6 @@ def route(url):
         return "Weibo video", "yt-dlp", "weibo.com"
     if host == "www.youtube.com" and re.fullmatch(r"/watch", path) and re.fullmatch(r"v=[\w-]{11}", parsed.query):
         return "YouTube", "yt-dlp", "youtube.com"
-    if host == "b23.tv":
-        raise ValueError("Use the full bilibili.com URL. b23.tv short links are not supported yet.")
     raise ValueError("Unsupported URL. Supported: " + SITES)
 
 
@@ -542,7 +540,7 @@ def command_for(args, url, engine, domain, media_dir, tools, cookie_path=None):
         command = [tools[engine], "--ignore-config", "--no-playlist", "--no-progress",
                    "--ffmpeg-location", str(Path(tools["ffmpeg"]).parent),
                    "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]",
-                   "-S", "res,fps,hdr", "--merge-output-format", "mp4", "-o", str(media_dir / (domain.split(".")[0] + "_%(id)s.%(ext)s"))]
+                   "-S", "res,fps,hdr,vbr", "--merge-output-format", "mp4", "-o", str(media_dir / (domain.split(".")[0] + "_%(id)s.%(ext)s"))]
         if domain == "youtube.com":
             command.extend(["--js-runtimes", "deno:" + tools["deno"]])
     if cookie_path is not None:
@@ -853,9 +851,14 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                         for metadata in media_dir.glob("*.json"):
                             metadata.unlink()
                     tail = (stage / "download.log").read_text(errors="replace").splitlines()[-8:]
-                    if needs_login("\n".join(tail)):
+                    log_text = "\n".join(tail)
+                    if needs_login(log_text):
                         raise LoginRequired(f"{site} requires a signed-in account to download this post.")
-                    raise RuntimeError("Download failed.\n" + "\n".join(tail))
+                    if any(msg in log_text for msg in ("Video unavailable", "HTTP Error 404: Not Found", "not found")):
+                        raise RuntimeError(f"This {site} post is unavailable, deleted, or private.")
+                    if "blocked by copyright" in log_text.lower() or "region" in log_text.lower():
+                        raise RuntimeError(f"This {site} post is blocked due to copyright or region restrictions.")
+                    raise RuntimeError("Download failed.\n" + log_text)
                 if domain == "weibo.com" and engine == "gallery-dl":
                     with activity("Checking sources"):
                         source_notes = prefer_clean_images(media_dir, find_tool("ffmpeg"))
