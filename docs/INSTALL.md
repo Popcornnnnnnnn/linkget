@@ -11,7 +11,7 @@ linkget
 
 The tap installs Python, gallery-dl, yt-dlp, ffmpeg and Deno as dependencies. Deno runs YouTube's JavaScript challenges. Homebrew may ask you to confirm trust in this third-party formula. After installation, `linkget` is available on PATH; follow Homebrew's shellenv instructions if `brew` itself is not on PATH.
 
-To update the trial and download engines:
+To update linkget and its download engines:
 
 ```sh
 brew update
@@ -28,6 +28,8 @@ brew uninstall linkget
 Homebrew may also remove dependencies installed only for this tool when no other installed package needs them. Dependencies explicitly installed by you, or still required elsewhere, are preserved. Inspect unused dependencies with `brew autoremove --dry-run`; `brew autoremove` removes them. It applies to all unused Homebrew dependencies, not just linkget.
 
 Your downloads, Photos items, and linkget user data are not removed by package uninstallation.
+
+Release acceptance was performed on Apple Silicon with macOS 27.0.1 and a clean macOS 27.0 virtual machine. Intel Macs, older macOS versions and browser permission flows outside the tested Chrome/local-Terminal path have not been physically validated. Folder mode avoids Photos automation permissions; Photos imports should be run from a local Terminal.
 
 ## User data
 
@@ -48,8 +50,8 @@ On macOS, data lives in `~/Library/Application Support/linkget/`:
 The GitHub release includes a wheel. Use an isolated installer:
 
 ```sh
-uv tool install ./linkget-0.2.0b4-py3-none-any.whl
-# or: pipx install ./linkget-0.2.0b4-py3-none-any.whl
+uv tool install ./linkget-0.2.0-py3-none-any.whl
+# or: pipx install ./linkget-0.2.0-py3-none-any.whl
 ```
 
 This installs linkget but not its external download engines. On macOS:
@@ -61,4 +63,4 @@ linkget doctor
 
 Uninstall with the same installer (`uv tool uninstall linkget` or `pipx uninstall linkget`). Avoid keeping both a Homebrew and a uv/pipx installation on PATH: use `which -a linkget` to see which command is running.
 
-No PyPI release is available for this trial. Do not assume a similarly named package belongs to this project.
+No PyPI release is available for this project. Do not assume a similarly named package belongs to this project.

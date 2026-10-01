@@ -22,6 +22,15 @@ def cookie(name, domain, expires=None):
 
 
 class SessionTests(unittest.TestCase):
+    def test_kuaishou_guest_state_never_proves_login(self):
+        for html, expected in [
+            ('{"userInfo":{},"isLogin":false}', "invalid"),
+            ('{"userInfo":{"id":"123"},"isLogin":true}', "valid"),
+            ('{"userInfo":{},"isLogin":"unknown"}', "unverified"),
+        ]:
+            data = session.webpage_login("kuaishou.com", html)
+            self.assertEqual(session.classify_response("kuaishou.com", 200, data).state, expected)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

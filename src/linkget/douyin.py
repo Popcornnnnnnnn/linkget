@@ -15,6 +15,10 @@ else:
     from links import MOBILE_UA
 
 
+class MediaUnavailable(RuntimeError):
+    """Post metadata was absent; this does not establish login expiry."""
+
+
 def share_item(html, post_id):
     match = re.search(r"window\._ROUTER_DATA\s*=\s*", html)
     if not match:
@@ -193,7 +197,7 @@ def download(url, directory, cookie_path=None):
             if item is None:
                 item = fallback_item
         if item is None:
-            raise RuntimeError("Douyin did not expose this post's media. Open the post in the selected browser, complete any verification, then retry. The post may also be unavailable; this does not prove your login expired.")
+            raise MediaUnavailable("Douyin did not expose this post's media. Open the post in the selected browser, complete any verification, then retry. The post may also be unavailable; this does not prove your login expired.")
 
         fallback_used = False
         try:

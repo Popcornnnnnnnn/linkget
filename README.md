@@ -3,7 +3,7 @@
 Save photos and videos from a post link to **macOS Photos** or a folder.
 A small command-line tool with English prompts, browser login reuse and no hosted service.
 
-**Public trial · macOS first · MIT license**
+**macOS command-line tool · MIT license**
 
 ## Install
 
@@ -41,7 +41,8 @@ Use straight ASCII quotes (`'` or `"`) around command-line URLs. Shells interpre
 | `linkget sites` | Supported websites and post types |
 | `linkget doctor` | Check download tools, without account requests |
 | `linkget config` | View or change the default save destination |
-| `linkget auth` | Check website logins; connect missing sites interactively |
+| `linkget auth` | Check logins and public access without sign-in prompts |
+| `linkget auth SITE` | Explicitly connect one optional login, e.g. `auth bilibili` |
 | `linkget logout bilibili` | Remove Bilibili login and disable its automatic browser access |
 | `linkget logout all` | Disconnect all sites |
 
@@ -72,10 +73,15 @@ Download options override the saved default for that run only. The `Destination`
 | Xiaohongshu (trial) | Note image sets and videos; full links, `xhslink.com` and `xhslink.cn` shares |
 | Weibo | Post photos and videos; mobile links, video pages and `t.cn` shares |
 | YouTube | Single videos and Shorts; `youtu.be` shares |
+| Reddit (trial) | Post photos, galleries and videos through gallery-dl |
+| Kuaishou (trial) | Videos from full `/short-video/` post links; image galleries are not implemented |
+| LOFTER (trial) | Post photos and videos through gallery-dl; video sample retains a LOFTER mark |
+| Pixiv (trial) | Original static pages of a single artwork; Ugoira is not supported |
+| Pinterest (trial) | Pins and boards through gallery-dl |
 
-Live streams, playlists and whole-account downloads are outside this trial. Post text and photo-post background music are not saved. Website availability and account access still apply.
+Live streams, playlists and whole-account downloads are outside this release. Post text and photo-post background music are not saved. Website availability and account access still apply.
 
-Keep the full Xiaohongshu share link, including `xsec_token` when present. Removing or reusing an expired access token can make an otherwise visible note unavailable to the downloader. Xiaohongshu image sets preserve their order and original formats, including HEIC/HEIF; Live Photo motion and background music are not included. This adapter still needs live user acceptance with current video share links.
+Keep the full Xiaohongshu share link, including `xsec_token` when present. Removing or reusing an expired access token can make an otherwise visible note unavailable to the downloader. Xiaohongshu image sets preserve their order and original formats, including HEIC/HEIF; Exposed Live Photo motion tracks are saved as separate video files; background music is not included. This adapter still needs live user acceptance with current video share links.
 
 YouTube links with a playlist parameter download only the explicitly selected video. Playlist-only URLs and active/upcoming streams are rejected. A browser login does not bypass membership, geographic restrictions or website verification.
 
@@ -87,7 +93,9 @@ On macOS, Chrome/Edge may need Keychain access. The system request may name `sec
 
 Normal downloads use public access first. Bilibili uses an already-connected login before selecting formats so anonymous quality restrictions do not hide available quality. When a download needs a login, linkget can refresh the previously chosen browser; if you need to sign in, the same command provides the website URL and waits for Enter. There is no separate login/import/refresh command.
 
-Use `linkget auth` to connect a website before downloading. If all websites are connected, it prints the results and exits. Network check failures do not remove saved logins. After logout, reconnecting requires your explicit choice.
+`linkget auth` lists all 13 integrated channels, including sites with no saved login. It verifies access to an account, not maximum quality or watermark-free output. Public posts may download without login; Bilibili may expose higher-quality formats after login, while account permissions still apply. The five newly connected channels remain trial integrations with post-specific coverage in the acceptance corpus. Pixiv static artworks use the website's original-page URLs and browser sessions rather than the downloader's OAuth flow. Profiles, collections and Ugoira animations are not supported.
+
+`linkget auth` displays a compact list: tested public channels (including Kuaishou videos and Pixiv static artworks) show `Public access`, Instagram shows its connection or `Login for tested posts`, Reddit shows `Public access unverified`, and Bilibili shows its higher-quality login status. Optional login states are shown only when explicitly requesting `auth SITE`. It exits without a general note or sign-in prompts. Public access varies by post and does not prove maximum quality or watermark-free media. Use `linkget auth SITE` to explicitly connect a login. First-run browser connection skips unsolicited sign-in links for public routes. Network check failures do not remove saved logins. After logout, reconnecting requires your explicit choice. See the [real media corpus and current sample findings](docs/MEDIA_VALIDATION.md).
 
 In an interactive terminal, `auth` automatically refreshes expired or rejected saved logins from the previously connected browser/profile. Sites using the same browser/profile share one read. Only newly verified sessions replace saved data; network errors, rate limits and website verification challenges do not trigger automatic refresh. `--browser none` and noninteractive account checks never read browsers automatically.
 
@@ -97,9 +105,10 @@ In an interactive terminal, `auth` automatically refreshes expired or rejected s
 
 - Bilibili and YouTube preserve the best available MP4 video stream, including HEVC/AV1 where offered, and merge audio without re-encoding. Resolution, codec and frame rate are shown when available. Login and paid-tier restrictions still apply; linkget cannot grant higher account permissions.
 - Prefer sources without platform watermarks. When no usable clean alternative is available, keep the available media. There is no crop, blur, re-encoding or AI watermark repair; marks embedded in an upload may remain.
-- Douyin prefers recognized clean image variants and ordinary video playback. Xiaohongshu prefers original images and the exposed original video. If these are unavailable, exposed fallback media are retained with a notice; one unavailable original does not downgrade the rest of a gallery.
+- Douyin prefers recognized clean image variants and ordinary video playback, ranks the exposed `video.bit_rate` gears, and requests the best ratio the playback endpoint serves (the watermarked distribution variant is only a fallback). Xiaohongshu prefers original images and the exposed original video. If these are unavailable, exposed fallback media are retained with a notice; one unavailable original does not downgrade the rest of a gallery.
+- Kuaishou reads the public desktop or mobile post state and selects the largest exposed resolution. HEVC is preferred at equal resolution; that preference does not prove better visual quality than an H.264 alternative. Website verification and post availability still apply.
 - Weibo JPEGs use an alternate rendition only when comparison supports a localized watermark improvement **and neither image dimension is reduced**. A smaller `oslarge` image is never used as the output. If no qualifying source is available, the large file is kept unchanged and the CLI states that watermark removal was unavailable at that resolution. The comparison uses ffmpeg; if missing or unable to decode the image, original quality is retained with a notice. This is a heuristic, not a universal watermark detector, and earlier embedded marks may remain. See the [19-image batch audit and follow-up verification](docs/WEIBO_IMAGE_AUDIT.md). Videos retain the best exposed source.
-- Instagram, X and TikTok use playback/original media from the download engine. Bilibili and YouTube keep the best available stream; embedded logos are retained when no clean alternative is available. These are source-selection strategies, not an automatic watermark detector or a guarantee for every post. See the [eight-channel media audit](docs/WATERMARKS.md).
+- Instagram, X and TikTok use playback/original media from the download engine. Bilibili and YouTube keep the best available stream; embedded logos are retained when no clean alternative is available. These are source-selection strategies, not an automatic watermark detector or a guarantee for every post. See the [current media acceptance corpus](docs/MEDIA_VALIDATION.md).
 - **Photos mode retains the downloaded file unchanged** in `~/Library/Application Support/linkget/originals/`. This can be a smaller clean rendition, not necessarily the largest platform image. Retention uses additional disk space and protects referenced Photos items from temporary-file cleanup. Previously downloaded or imported marked copies are not modified or deleted; download the link again for the new source selection.
 - Originals use a SHA-256-derived filename: different contents with the same download name stay distinct; identical contents are reused. Imports made by older versions may be imported once again because they did not use these filenames.
 - Some codecs may not be supported by your Photos/macOS version. If importing fails, the original is retained and linkget reports its location; `--folder` avoids the Photos importer. Files are never transcoded to hide this limitation.

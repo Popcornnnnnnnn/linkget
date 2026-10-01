@@ -158,6 +158,14 @@ class CommandTests(unittest.TestCase):
         self.assertIn("brew install gallery-dl", stderr.getvalue())
         run.assert_not_called()
 
+    def test_reddit_missing_video_engine_is_reported_before_download(self):
+        stderr = io.StringIO()
+        with patch.object(cli, "find_tool", side_effect=lambda name: None if name == "yt-dlp" else "tool"), patch.object(cli.subprocess, "run") as run, contextlib.redirect_stderr(stderr):
+            result = cli.main(["https://www.reddit.com/r/test/comments/abc123/post/", "--folder", "/tmp/not-created-linkget", "--browser", "none"])
+        self.assertEqual(result, 1)
+        self.assertIn("brew install yt-dlp", stderr.getvalue())
+        run.assert_not_called()
+
     def test_folder_download_and_failure_preservation(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

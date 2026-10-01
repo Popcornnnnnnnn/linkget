@@ -136,3 +136,16 @@ class WatermarkTests(unittest.TestCase):
         note={'type':'video','video':{'media':{'stream':{'h264':[{'height':720,'width':1280,'masterUrl':'https://sns-video-bd.xhscdn.com/low'}],
                                                       'h265':[{'height':1080,'width':1920,'masterUrl':'https://sns-video-bd.xhscdn.com/high'}]}}}}
         self.assertEqual(xiaohongshu.note_media(note, prefer_original=False), [('video','https://sns-video-bd.xhscdn.com/high')])
+
+    def test_xhs_display_fallback_keeps_the_largest_declared_rendition(self):
+        note = {'type': 'normal', 'imageList': [{
+            'urlDefault': 'https://sns-webpic-qc.xhscdn.com/default',
+            'infoList': [
+                {'imageScene': 'H5_PRV', 'url': 'https://sns-webpic-qc.xhscdn.com/preview', 'width': 360, 'height': 480},
+                {'imageScene': 'H5_DTL', 'url': 'https://sns-webpic-qc.xhscdn.com/full', 'width': 1440, 'height': 1920}]}]}
+        self.assertEqual(xiaohongshu.note_media(note, prefer_original=False),
+                         [('image', 'https://sns-webpic-qc.xhscdn.com/full')])
+        # Without declared dimensions, keep the previous preference order.
+        note['imageList'][0]['infoList'] = [{'imageScene': 'H5_PRV', 'url': 'https://sns-webpic-qc.xhscdn.com/preview'}]
+        self.assertEqual(xiaohongshu.note_media(note, prefer_original=False),
+                         [('image', 'https://sns-webpic-qc.xhscdn.com/default')])

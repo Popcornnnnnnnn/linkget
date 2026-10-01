@@ -134,6 +134,47 @@ class NewSiteTests(unittest.TestCase):
             self.assertTrue((self.root / f"xiaohongshu_{NOTE_ID}_001_display.jpg").exists())
             self.assertTrue((self.root / f"xiaohongshu_{NOTE_ID}_002_original.jpg").exists())
 
+    def test_xhs_live_photo_without_video_does_not_shift_later_image_fallback(self):
+        note = {"type": "normal", "imageList": [
+            {"fileId": "notes/one", "livePhoto": True,
+             "urlDefault": "https://sns-webpic-qc.xhscdn.com/one"},
+            {"fileId": "notes/two", "urlDefault": "https://sns-webpic-qc.xhscdn.com/two"}]}
+        first = b"\xff\xd8\xff" + b"first" * 20
+        second = b"\xff\xd8\xff" + b"second" * 20
+
+        def request(req, **kwargs):
+            if req.full_url == NOTE_URL:
+                return Response(page(note))
+            if req.full_url == "https://sns-img-bd.xhscdn.com/notes/two":
+                raise HTTPError(req.full_url, 404, "missing", {}, None)
+            return Response(second if req.full_url.endswith("/two") else first)
+
+        with patch.object(xhs, "build_opener") as network:
+            network.return_value.open.side_effect = request
+            xhs.download(NOTE_URL, self.root)
+        self.assertEqual((self.root / f"xiaohongshu_{NOTE_ID}_002_display.jpg").read_bytes(), second)
+
+    def test_xhs_rejected_live_video_never_substitutes_another_gallery_items_track(self):
+        note = {"type": "normal", "imageList": [
+            {"fileId": "notes/" + name, "livePhoto": True,
+             "urlDefault": "https://sns-webpic-qc.xhscdn.com/" + name,
+             "stream": {"h264": [{"masterUrl": "https://sns-video-bd.xhscdn.com/" + name}]}}
+            for name in ("one", "two")]}
+        video = b"\x00\x00\x00\x18ftypmp42" + b"video" * 20
+
+        def request(req, **kwargs):
+            if req.full_url == NOTE_URL:
+                return Response(page(note))
+            if req.full_url == "https://sns-video-bd.xhscdn.com/two":
+                raise HTTPError(req.full_url, 404, "missing", {}, None)
+            return Response(video if "sns-video" in req.full_url else b"\xff\xd8\xffimage")
+
+        with patch.object(xhs, "build_opener") as network:
+            network.return_value.open.side_effect = request
+            with self.assertRaisesRegex(RuntimeError, "HTTP 404"):
+                xhs.download(NOTE_URL, self.root)
+        self.assertFalse((self.root / f"xiaohongshu_{NOTE_ID}_004_display.mp4").exists())
+
     def test_xhs_mobile_share_downloads_full_gallery_without_login(self):
         note = {"noteId": NOTE_ID, "type": "normal", "imageList": [
             {"fileId": f"notes_pre_post/full-{index}", "infoList": [{"imageScene": "H5_PRV", "url": "https://sns-webpic-qc.xhscdn.com/preview"},

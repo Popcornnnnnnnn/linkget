@@ -108,11 +108,19 @@ def note_media(note, prefer_original=True):
             if not url:
                 raise RuntimeError("Xiaohongshu returned an incomplete media set; nothing has been imported.")
             media.append(("image", media_url(url)))
-            continue
-        key = image_key(item)
-        if not key:
-            raise RuntimeError("Xiaohongshu returned an incomplete original image set; refusing display versions. Nothing has been imported.")
-        media.append(("image", original_url(key, "image")))
+        else:
+            key = image_key(item)
+            if not key:
+                raise RuntimeError("Xiaohongshu returned an incomplete original image set; refusing display versions. Nothing has been imported.")
+            media.append(("image", original_url(key, "image")))
+
+        if item.get("livePhoto"):
+            streams = item.get("stream") or {}
+            variants = [entry for entries in streams.values() if isinstance(entries, list)
+                        for entry in entries if isinstance(entry, dict) and entry.get("masterUrl")]
+            if variants:
+                best = max(variants, key=lambda entry: (entry.get("width", 0) * entry.get("height", 0), entry.get("videoBitrate", 0)))
+                media.append(("video", media_url(best["masterUrl"])))
     return media
 
 
@@ -167,21 +175,22 @@ def download(url, directory, cookie_path=None):
             if state.get("user", {}).get("loggedIn") is False:
                 raise BrowserRequired("This Xiaohongshu note was not available to the public request. Try your browser login or a fresh share link, keeping its access token.")
             raise RuntimeError("Xiaohongshu did not expose this note. Copy a fresh share link from the post and complete any website verification, then retry.")
-        try:
-            media = note_media(note)
-            originals = [True] * len(media)
-        except RuntimeError:
-            media, originals = [], []
-            items = [note] if note.get("type") == "video" else [dict(note, imageList=[item]) for item in note.get("imageList", [])]
-            for item in items:
-                try:
-                    media.extend(note_media(item))
-                    originals.append(True)
-                except RuntimeError:
-                    media.extend(note_media(item, prefer_original=False))
-                    originals.append(False)
-            if not media:
-                raise RuntimeError("Xiaohongshu returned no media.")
+        media, originals, source_notes = [], [], []
+        items = [note] if note.get("type") == "video" else [dict(note, imageList=[item]) for item in note.get("imageList", [])]
+        for item in items:
+            try:
+                added = note_media(item)
+                used_original = True
+            except RuntimeError:
+                added = note_media(item, prefer_original=False)
+                used_original = False
+            media.extend(added)
+            originals.extend([used_original] * len(added))
+            # Track actual outputs, including live photos with no video stream.
+            source_notes.extend([item] * len(added))
+        if not media:
+            raise RuntimeError("Xiaohongshu returned no media.")
+
         def _download_one(index, kind, target, used_original):
             try:
                 response = request(target)
@@ -189,8 +198,8 @@ def download(url, directory, cookie_path=None):
                 error.close()
                 if not used_original or error.code not in {403, 404, 410}:
                     raise
-                fallback_note = note if kind == "video" else dict(note, imageList=[note["imageList"][index - 1]])
-                fallback = note_media(fallback_note, prefer_original=False)[0][1]
+                fallbacks = note_media(source_notes[index - 1], prefer_original=False)
+                fallback = next((url for media_kind, url in fallbacks if media_kind == kind), target)
                 if fallback == target:
                     raise
                 response = request(fallback)

@@ -18,11 +18,13 @@ Covered behaviors include:
 - saved destinations, dynamic current-directory defaults, fixed relative-path resolution, per-run overrides, and retaining account settings;
 - isolated source/wheel installation and Homebrew formula smoke tests.
 
-Local live checks include actual media inspection for all eight channels; see [watermark findings and limitations](WATERMARKS.md). These checks are samples, not a guarantee for every post or network. Xiaohongshu original images and video were downloaded and visually sampled. On 2026-09-29, opt-in live checks verified all eight sites with an authorized Chrome session; an invalid Weibo cookie was rejected. This does not verify other browsers or all account configurations. Ordinary automated tests do not read personal browser sessions.
+The current [13-channel media corpus and acceptance protocol](MEDIA_VALIDATION.md) separates anonymous availability, quality references and visual watermark findings. Historical [eight-channel watermark findings](WATERMARKS.md) include authenticated samples and do not prove anonymous access. These checks are samples, not a guarantee for every post or network. On 2026-09-29, opt-in live checks verified eight sites with an authorized Chrome session; an invalid Weibo cookie was rejected. This does not verify other browsers or all account configurations. Ordinary automated tests do not read personal browser sessions.
 
 ## Manual acceptance needed
 
 Real OS permission prompts, a brand-new Mac installation, browser profile combinations, and actual Photos imports vary by machine. The automated suite does not prove these UI flows. Photos mode keeps the originals specifically so a referenced library or a failed import does not lose the source media. Check the imported item, audio, dimensions and duplicate handling before relying on the trial for an archive.
+
+For 0.2.0, source tests passed on Python 3.10, 3.13 and the VM's 3.14; the isolated installed wheel passed on 3.14. Homebrew upgrade/test checks passed on the host and clean VM without changing preferences. The user accepted a Pixiv image and the Kuaishou HEVC video in Photos, including video playback. The installed CLI downloaded the full/shortened Kuaishou URL and a second video anonymously in the VM; all three decoded completely, and the user file matched the accepted Photos original. These concrete acceptances do not establish Intel/older-macOS compatibility or universal watermark/quality guarantees.
 
 ## Live session acceptance before release
 

@@ -54,7 +54,7 @@ args.output.write_text('''class Linkget < Formula
     assert_match "%s", shell_output("#{bin}/linkget --version")
     assert_match "Instagram", shell_output("#{bin}/linkget sites")
     assert_match "--folder [FOLDER]", shell_output("#{bin}/linkget help")
-    assert_match "Not connected", shell_output("LINKGET_HOME=#{testpath}/data #{bin}/linkget auth")
+    assert_match "Public access", shell_output("LINKGET_HOME=#{testpath}/data #{bin}/linkget auth")
     with_env("LINKGET_HOME" => "#{testpath}/data") do
       assert_match "Photos", shell_output("#{bin}/linkget config")
       assert_match "Saved", shell_output("#{bin}/linkget config --folder")

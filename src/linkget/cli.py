@@ -22,8 +22,10 @@ if __package__:
     from .version import VERSION
     from .session import LOGIN_URLS, prepare_session
     from .links import normalize_link
-    from .douyin import download as download_douyin
+    from .douyin import download as download_douyin, MediaUnavailable as DouyinMediaUnavailable
     from .xiaohongshu import download as download_xiaohongshu, BrowserRequired
+    from .kuaishou import download as download_kuaishou, BrowserRequired as KuaishouBrowserRequired
+    from .pixiv import download as download_pixiv, BrowserRequired as PixivBrowserRequired
     from .weibo import prefer_clean_images
 else:  # Homebrew launches this file directly.
     import accounts
@@ -31,13 +33,15 @@ else:  # Homebrew launches this file directly.
     from version import VERSION
     from session import LOGIN_URLS, prepare_session
     from links import normalize_link
-    from douyin import download as download_douyin
+    from douyin import download as download_douyin, MediaUnavailable as DouyinMediaUnavailable
     from xiaohongshu import download as download_xiaohongshu, BrowserRequired
+    from kuaishou import download as download_kuaishou, BrowserRequired as KuaishouBrowserRequired
+    from pixiv import download as download_pixiv, BrowserRequired as PixivBrowserRequired
     from weibo import prefer_clean_images
 
 VIDEO = {".mp4", ".mov", ".m4v"}
 MEDIA = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".avif", ".tif", ".tiff"} | VIDEO
-SITES = "Instagram, X/Twitter, Bilibili, TikTok, Douyin, Xiaohongshu and Weibo posts; YouTube videos and Shorts"
+SITES = "Instagram, X/Twitter, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, Weibo, Reddit, Lofter, Pixiv and Pinterest posts; YouTube videos and Shorts"
 
 
 class LoginRequired(RuntimeError):
@@ -64,20 +68,37 @@ def login_guidance(args, domain, url, reason):
         status("Next", "Run linkget in an interactive terminal to connect a browser and continue.", stream=sys.stderr)
 
 
-def login_result(site, state, saved=False):
+def login_result(site, state, saved=False, public_summary=False):
+    domain = accounts.SITES[site]
+    if public_summary:
+        if domain == "instagram.com":
+            if state.state == "valid":
+                status(site, "Connected", "1;32")
+            else:
+                status(site, "Login for tested posts", "1;33")
+            return
+        if domain == "reddit.com":
+            status(site, "Public access unverified", "1;33")
+            return
+        if domain in accounts.PUBLIC_ACCESS and domain != "bilibili.com":
+            status(site, "Public access", "1")
+            return
+    suffix = " · higher quality" if public_summary and domain == "bilibili.com" else ""
     if state.state == "valid":
-        status(site, "Connected", "1;32")
+        status(site, "Connected" + suffix, "1;32")
     elif state.state == "missing":
-        status(site, "Not connected" if state.detail == "Not saved" else "Not signed in", "1")
+        detail = ("Login for higher quality" if suffix else
+                  "Not connected" if state.detail == "Not saved" else "Not signed in")
+        status(site, detail, "1")
     elif state.state == "unverified":
         detail = ("Network error · login unchanged" if saved and state.detail == "Network check failed"
                   else "Could not verify: " + state.detail)
-        status(site, detail, "1;33")
+        status(site, detail + suffix, "1;33")
     else:
-        status(site, state.detail, "1;33")
+        status(site, state.detail + suffix, "1;33")
 
 
-def show_logins(args=None):
+def show_logins(args=None, detailed_site=None):
     settings = accounts.preferences()
     states = {}
     pending = {site: domain for site, domain in accounts.SITES.items()
@@ -98,11 +119,12 @@ def show_logins(args=None):
                     results[site] = refreshed[domain]
     for site, domain in accounts.SITES.items():
         if domain in settings.get("blocked", []):
-            status(site, "Disconnected", "1")
+            login_result(site, accounts.Session("disconnected", "Disconnected"), saved=True,
+                         public_summary=site != detailed_site)
             states[site] = "disconnected"
         else:
             state = results[site]
-            login_result(site, state, saved=True)
+            login_result(site, state, saved=True, public_summary=site != detailed_site)
             states[site] = state.state
     return states
 
@@ -110,32 +132,16 @@ def show_logins(args=None):
 def account_command(args, parser):
     command, *sites = args.link
     if command == "auth":
-        if sites:
-            parser.error("Use linkget auth, then choose a website to connect.")
+        if len(sites) > 1 or (sites and sites[0] not in accounts.SITES):
+            parser.error("Use linkget auth to check all sites, or linkget auth SITE to connect one.")
         if args.profile and args.browser in {"auto", "none"}:
             parser.error("--profile requires an explicit --browser.")
-        states = show_logins(args)
-        while sys.stdin.isatty() and args.browser != "none":
-            if all(state == "valid" for state in states.values()):
-                break
-            default = next((site for site, state in states.items() if state == "disconnected"), None)
-            if default is None:
-                default = next((site for site, state in states.items() if state in {"missing", "invalid"}), None)
-            prompt = (f"\n  Press Enter to connect {emphasis(default)}.\n"
-                      "  To connect a different website, type its name (e.g. instagram).\n"
-                      "  Type q and press Enter to exit.\n  > " if default else
-                      "\n  To connect a website, type its name (e.g. bilibili).\n"
-                      "  Press Enter to exit.\n  > ")
-            site = input(prompt).strip().lower()
-            if site == "q" or (not site and default is None):
-                break
-            site = site or default
-            if site not in accounts.SITES:
-                print("  Choose: " + ", ".join(accounts.SITES))
-                continue
-            if recover_login(args, accounts.SITES[site], "Connect " + site, proactive=True):
-                status(site, "Connected", "1;32")
-                states[site] = "valid"
+        states = show_logins(args, detailed_site=sites[0] if sites else None)
+        if sites:
+            site = sites[0]
+            if states[site] != "valid" and sys.stdin.isatty() and args.browser != "none":
+                if recover_login(args, accounts.SITES[site], "Connect " + site, proactive=True):
+                    login_result(site, accounts.Session("valid", "Valid"))
         return 0
     if len(sites) != 1 or sites[0] not in {*accounts.SITES, "all"}:
         parser.error("Use linkget logout SITE, or linkget logout all.")
@@ -197,10 +203,12 @@ def first_run(args):
             browser_access_help(browser)
         else:
             for site, domain in accounts.SITES.items():
-                login_result(site, results[domain])
-                if results[domain].state in {"missing", "invalid", "unverified"}:
+                login_result(site, results[domain], public_summary=True)
+                if (domain not in accounts.PUBLIC_ACCESS and domain != "pixiv.net"
+                        and results[domain].state in {"missing", "invalid", "unverified"}):
                     sign_in_link(domain)
-            if any(state.state in {"missing", "invalid", "unverified"} for state in results.values()):
+            if any(domain not in accounts.PUBLIC_ACCESS and domain != "pixiv.net"
+                   and state.state in {"missing", "invalid", "unverified"} for domain, state in results.items()):
                 status("Next", f"Open these links in {browser.capitalize()}" + (" (the selected profile)" if profile else "")
                        + ", sign in or complete verification, then return here and type r to check again.")
         usable_read = any(state.state != "unavailable" for state in results.values())
@@ -334,7 +342,7 @@ def selected_quality(info_path):
 def prepare_video(command, info_path, log, domain):
     if domain == "bilibili.com":
         return prepare_bilibili(command, info_path, log)
-    site = "YouTube" if domain == "youtube.com" else "Weibo"
+    site = "YouTube" if domain == "youtube.com" else "Weibo" if domain == "weibo.com" else "Reddit" if domain == "reddit.com" else "Site"
     probe = command[:-1] + ["--skip-download", "--dump-single-json", "--no-quiet", command[-1]]
     result = subprocess.run(probe, capture_output=True, text=True, timeout=90)
     lines = result.stdout.rstrip().splitlines()
@@ -346,6 +354,10 @@ def prepare_video(command, info_path, log, domain):
             raise LoginRequired(f"{site} asks you to sign in or complete verification for this video.")
         if domain == "youtube.com" and ("PO Token" in messages or "JavaScript" in messages or "challenge" in messages.lower()):
             raise RuntimeError("YouTube's verification could not be completed. Run brew upgrade yt-dlp deno, then retry.\n" + "\n".join(messages.splitlines()[-6:]))
+        if domain == "reddit.com" and "HTTP Error 404" in messages:
+            if "--cookies" not in command:
+                raise LoginRequired(f"{site} returned 404. This post may be deleted, age-restricted, or quarantined. Run linkget auth reddit to connect a Reddit login and retry.")
+            raise RuntimeError(f"This {site} post is unavailable, deleted, or private.")
         raise RuntimeError(f"Could not read this {site} video.\n" + "\n".join(messages.splitlines()[-8:]))
     try:
         info = json.loads(lines[-1])
@@ -508,6 +520,18 @@ def route(url):
         return "Weibo video", "yt-dlp", "weibo.com"
     if host == "www.youtube.com" and re.fullmatch(r"/watch", path) and re.fullmatch(r"v=[\w-]{11}", parsed.query):
         return "YouTube", "yt-dlp", "youtube.com"
+    if host in {"reddit.com", "www.reddit.com", "old.reddit.com"} and "/comments/" in path:
+        return "Reddit", "gallery-dl", "reddit.com"
+    if host == "redd.it":
+        return "Reddit", "gallery-dl", "reddit.com"
+    if host in {"kuaishou.com", "www.kuaishou.com", "v.kuaishou.com"} or host.endswith(".kuaishou.com"):
+        return "Kuaishou", "kuaishou", "kuaishou.com"
+    if host in {"lofter.com", "www.lofter.com"} or host.endswith(".lofter.com"):
+        return "Lofter", "gallery-dl", "lofter.com"
+    if host in {"pixiv.net", "www.pixiv.net"} and re.fullmatch(r"/(?:en/)?artworks/\d+/?", path):
+        return "Pixiv", "pixiv", "pixiv.net"
+    if host in {"pinterest.com", "www.pinterest.com", "pin.it"} or host.endswith(".pinterest.com") or host.endswith(".pinterest.co.uk"):
+        return "Pinterest", "gallery-dl", "pinterest.com"
     raise ValueError("Unsupported URL. Supported: " + SITES)
 
 
@@ -534,13 +558,27 @@ def command_for(args, url, engine, domain, media_dir, tools, cookie_path=None):
                             "-o", "extractor.tiktok.photos=true", "-o", "extractor.tiktok.filename=tiktok_{id}_{num:03d}.{extension}"])
         elif domain == "weibo.com":
             command.extend(["--write-metadata", "-o", "extractor.weibo.videos=true", "-o", "extractor.weibo.retweets=true",
-                            "-o", "extractor.weibo.text=false", "-o", "extractor.weibo.livephoto=false",
+                            "-o", "extractor.weibo.text=false", "-o", "extractor.weibo.livephoto=true",
                             "-o", "extractor.weibo.filename=weibo_{status[id]}_{num:03d}.{extension}"])
+        elif domain == "reddit.com":
+            # Homebrew/pipx isolate gallery-dl from yt-dlp's Python package.
+            module = next((Path(tools["yt-dlp"]).resolve().parent.parent / "lib").glob(
+                "python*/site-packages/yt_dlp"), None)
+            if module is not None:
+                command.extend(["-o", "downloader.ytdl.module=" + str(module)])
+            command.extend(["-o", "downloader.ytdl.format=bestvideo+bestaudio/best",
+                            "-o", "downloader.ytdl.raw-options=" + json.dumps({
+                                "merge_output_format": "mp4",
+                                "ffmpeg_location": str(Path(tools["ffmpeg"]).parent),
+                            })])
     else:
         command = [tools[engine], "--ignore-config", "--no-playlist", "--no-progress",
-                   "--ffmpeg-location", str(Path(tools["ffmpeg"]).parent),
-                   "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]",
-                   "-S", "res,fps,hdr,vbr", "--merge-output-format", "mp4", "-o", str(media_dir / (domain.split(".")[0] + "_%(id)s.%(ext)s"))]
+                   "--ffmpeg-location", str(Path(tools["ffmpeg"]).parent)]
+        if domain == "reddit.com":
+            command.extend(["-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4"])
+        else:
+            command.extend(["-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]", "-S", "res,fps,hdr,vbr", "--merge-output-format", "mp4"])
+        command.extend(["-o", str(media_dir / (domain.split(".")[0] + "_%(id)s.%(ext)s"))])
         if domain == "youtube.com":
             command.extend(["--js-runtimes", "deno:" + tools["deno"]])
     if cookie_path is not None:
@@ -678,11 +716,12 @@ def main(argv=None):
   sites                List supported sites and media
   doctor               Check download tools and installation
   config               View or change the default save destination
-  auth                 View website logins and connect a website
+  auth                 Check logins and public access without sign-in prompts
+  auth SITE            Connect one website explicitly (e.g. auth bilibili)
   logout SITE          Remove a saved login and disable automatic browser access
   logout all           Disconnect all websites
 
-Account sites: instagram, x, bilibili, tiktok, douyin, xiaohongshu, weibo, youtube
+Account sites: instagram, x, bilibili, tiktok, douyin, xiaohongshu, weibo, youtube, reddit, kuaishou, lofter, pixiv, pinterest
 
 Examples:
   linkget                              Paste a link or sharing text at the prompt
@@ -690,7 +729,8 @@ Examples:
   linkget URL --photos                 Save to Photos this time
   linkget URL --folder                 Save to the current folder
   linkget URL --folder ~/Downloads     Save to a folder
-  linkget auth                         View or connect website logins
+  linkget auth                         Check website logins and public access
+  linkget auth bilibili                Connect Bilibili for higher quality
   linkget config                       View the default save destination
   linkget config --photos              Default to Photos (initial setting)
   linkget config --folder              Default to the current folder each time
@@ -740,7 +780,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     if args.link == "doctor":
         return doctor()
     if args.link == "sites":
-        for site, content in [("Instagram", "Photos, videos and reels"), ("X / Twitter", "Post photos and videos"), ("Bilibili", "BV/av videos and Opus media"), ("TikTok", "Post photos and videos; share links"), ("Douyin", "Post photos and videos; share links"), ("Xiaohongshu", "Note photos and videos; xhslink shares"), ("Weibo", "Post photos and videos; t.cn shares"), ("YouTube", "Videos and Shorts; youtu.be links")]:
+        for site, content in [("Instagram", "Photos, videos and reels"), ("X / Twitter", "Post photos and videos"), ("Bilibili", "BV/av videos and Opus media"), ("TikTok", "Post photos and videos; share links"), ("Douyin", "Post photos and videos; share links"), ("Kuaishou", "Post videos; image galleries not supported"), ("Xiaohongshu", "Note photos and videos; xhslink shares"), ("Weibo", "Post photos and videos; t.cn shares"), ("YouTube", "Videos and Shorts; youtu.be links"), ("Reddit", "Post photos and videos"), ("Lofter", "Post photos and videos (trial)"), ("Pixiv", "Artwork images (trial); Ugoira not supported"), ("Pinterest", "Pins and boards")]:
             status(site, content)
         print("\n  Media only. Post text is not saved. Availability varies by URL.")
         return 0
@@ -770,7 +810,9 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         site, engine, domain = route(url)
         if not args.folder and sys.platform != "darwin":
             raise ValueError("Photos is available on macOS only. Use --folder to choose a destination.")
-        required = ([] if engine in {"douyin", "xiaohongshu"} else [engine]) + (["ffmpeg", "ffprobe"] if engine == "yt-dlp" else [])
+        required = ([] if engine in {"douyin", "xiaohongshu", "kuaishou", "pixiv"} else [engine]) + (["ffmpeg", "ffprobe"] if engine == "yt-dlp" else [])
+        if domain == "reddit.com" and engine == "gallery-dl":
+            required.extend(["yt-dlp", "ffmpeg"])
         if domain == "youtube.com":
             required.append("deno")
         cookie_spec = browser_spec(args, "gallery-dl", domain) if args.browser not in {"auto", "none"} else None
@@ -822,7 +864,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 print()
                 with (stage / "download.log").open("w") as log:
                     command = None
-                    if engine not in {"douyin", "xiaohongshu"}:
+                    if engine not in {"douyin", "xiaohongshu", "kuaishou", "pixiv"}:
                         command = command_for(args, url, engine, domain, media_dir, tools, cookie_path)
                     if engine == "yt-dlp":
                         info_path = stage / "video-info.json"
@@ -832,13 +874,20 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                         if quality:
                             status("Quality", quality)
                     with activity("Downloading", media_dir):
-                        if engine in {"douyin", "xiaohongshu"}:
+                        if engine in {"douyin", "xiaohongshu", "kuaishou", "pixiv"}:
                             try:
-                                downloader = download_douyin if engine == "douyin" else download_xiaohongshu
+                                if engine == "douyin":
+                                    downloader = download_douyin
+                                elif engine == "xiaohongshu":
+                                    downloader = download_xiaohongshu
+                                elif engine == "pixiv":
+                                    downloader = download_pixiv
+                                else:
+                                    downloader = download_kuaishou
                                 notes = downloader(url, media_dir, cookie_path)
                                 if isinstance(notes, list):
                                     source_notes.extend(notes)
-                            except BrowserRequired as error:
+                            except (BrowserRequired, KuaishouBrowserRequired, PixivBrowserRequired) as error:
                                 raise LoginRequired(str(error)) from None
                             except RuntimeError as error:
                                 log.write(str(error) + "\n")
@@ -854,6 +903,8 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                     log_text = "\n".join(tail)
                     if needs_login(log_text):
                         raise LoginRequired(f"{site} requires a signed-in account to download this post.")
+                    if domain == "reddit.com" and "blocked by network security" in log_text.lower():
+                        raise LoginRequired(f"{site} requires a signed-in account to download this post. Run linkget auth reddit to connect a Reddit login.")
                     if any(msg in log_text for msg in ("Video unavailable", "HTTP Error 404: Not Found", "not found")):
                         raise RuntimeError(f"This {site} post is unavailable, deleted, or private.")
                     if "blocked by copyright" in log_text.lower() or "region" in log_text.lower():
@@ -876,6 +927,20 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                         raise RuntimeError("TikTok returned no downloadable media. Open the post in your browser and check its availability or website verification, then retry.")
                     raise RuntimeError("No photos or videos were downloaded from this post.")
                 break
+            except DouyinMediaUnavailable:
+                # A missing public response can still work with an already
+                # authorized session. Do not infer expiry or prompt for login.
+                if (args.browser == "auto" and not tried_saved
+                        and domain not in accounts.preferences().get("blocked", [])):
+                    tried_saved = True
+                    if session_dir is None:
+                        session_dir = tempfile.TemporaryDirectory(prefix="linkget-session-")
+                    candidate = Path(session_dir.name) / "cookies.txt"
+                    if accounts.copy_saved(domain, candidate):
+                        cookie_path = candidate
+                        attempt += 1
+                        continue
+                raise
             except LoginRequired as failure:
                 if args.browser == "none":
                     raise

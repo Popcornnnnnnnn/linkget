@@ -1,5 +1,73 @@
 # Changelog
 
+## 0.2.0 — public mobile Kuaishou extraction and release acceptance
+
+- Recover Kuaishou videos when desktop HTML contains only site configuration by reading the same post's public mobile page. Match the requested post ID before selecting media; reject invalid MP4 responses and incomplete downloads.
+- Select the largest exposed Kuaishou resolution, preserving the HEVC preference at equal resolution. Codec preference is not a claim of absolute highest quality. Full `/short-video/` links are supported; profiles and image galleries are rejected.
+- If Douyin's public response omits media, try an existing authorized login once in automatic mode. Respect public-only mode and logout; do not infer expiry, refresh a browser or prompt for sign-in from this failure alone.
+- Keep Xiaohongshu fallback media tied to the same gallery item, including Live Photos without exposed video tracks. Never substitute another item's video when a live track is unavailable.
+- Include native Pixiv extraction in the saved-session corpus comparison. Static Pixiv originals, Reddit image/video download, clean macOS installation/upgrades and user-reviewed Photos image/video imports have separate acceptance evidence.
+- Keep account status compact and distinguish public access from quality and watermark guarantees. Website restrictions, unsupported media routes and unverified browser/architecture combinations remain documented.
+
+## 0.2.0b16.dev7 — verified public Kuaishou sample
+
+- Mark Kuaishou as `Public access` in the compact account overview after an ordinary anonymous download passed on both the host and clean macOS VM. Image galleries remain unsupported.
+- Add the user-provided video to the opt-in corpus: 720×1280 HEVC, 114.2 seconds, audible audio and complete decode. Five sampled frames show no observed Kuaishou-added mark; uploader maximum quality remains unproven.
+- Record the user's successful Pixiv image import into Photos separately from pending video import/playback acceptance.
+
+## 0.2.0b16.dev6 — Pixiv web originals and browser login
+
+- Download every original static page of a single Pixiv artwork through the website API, without requiring gallery-dl OAuth authorization. Reject incomplete page lists, non-image responses and Ugoira covers; retain partial files on an interrupted original download.
+- Verify Pixiv browser sessions through its viewer-only JSON endpoint instead of searching homepage text for login links. Live Chrome verification passed; anonymous and invalid-cookie controls were rejected.
+- Show `Public access` for Pixiv static artworks without optional-login clutter. Public single-image and three-page samples downloaded; the three-page artwork also passed the normal Chrome-login flow.
+
+## 0.2.0b16.dev5 — Reddit video engine connection
+
+- Connect gallery-dl to the yt-dlp package in its separate Homebrew/pipx installation when available. Reddit videos request the best exposed video/audio streams and merge to MP4 using the installed ffmpeg; Reddit image posts still use gallery-dl.
+- Check Reddit's video dependencies before downloading, instead of failing later with `Cannot import yt-dlp or youtube-dl`.
+- Verify the ordinary installed CLI against a user-provided image and native video: 1100×1429 JPEG and 1280×720 MP4 with audible audio. Keep both posts in the opt-in regression corpus; remove full test downloads and temporary login snapshots after acceptance.
+
+## 0.2.0b16.dev4 — real media corpus and evidence-based access labels
+
+- Replace the overbroad `No login needed` claim with `Public access`. Instagram's tested posts required login; Reddit and Kuaishou anonymous access remain unverified. No general sign-in prompts are added.
+- Add an opt-in corpus covering all 13 channels, image/video routes and explicit unsupported slots, plus isolated anonymous downloads and existing-session comparisons. Preserve originals, hashes, metadata and five video frames for review.
+- Record maximum quality separately from request-exposed resolution and visible watermarks. Weibo image/video, LOFTER video and one Bilibili video retain visible platform marks; successful downloading does not prove a clean original.
+
+## 0.2.0b16.dev3 — compact account overview
+
+- Show `No login needed` for public channels instead of optional account states and repeated explanations. Retain Bilibili's higher-quality login state and mark Pixiv as `Not ready`.
+- Remove the general note from `auth`; explicit `auth SITE` requests still show that website's login state.
+
+## 0.2.0b16.dev2 — optional logins for public access
+
+- Annotate account status with each adapter's public access capability, Bilibili's higher-quality login requirement and Pixiv's incomplete downloader authorization.
+- Ordinary `auth` checks exit without sign-in prompts. `auth SITE` explicitly connects an optional website login; first-run browser checks no longer invite sign-in for public channels.
+- Downloads continue to request a login when a specific post requires it.
+
+## 0.2.0b16.dev1 — local channel synchronization
+
+- Synchronize the local command with all 13 channel entries and document the five trial integrations. This development build is not a published Homebrew release.
+- Clarify that account connection does not guarantee maximum quality or watermark-free media; correct the Kuaishou gallery and Pixiv Ugoira listings.
+- Handle Kuaishou login requests through the existing saved-session recovery and reject an explicit `isLogin: false` response during account checks.
+
+## 0.2.0b16 — Reddit and Kuaishou support
+
+- Reddit images, galleries, and videos with audio are now supported natively. You can use `--browser` or `linkget auth` to authorize an active Reddit session and download age-restricted or quarantined content.
+- Initial Kuaishou (快手) video support reads exposed sources from `window.__APOLLO_STATE__` and prefers HEVC (H.265). This did not establish the uploader's highest quality or universal watermark absence; 0.2.0 adds mobile-page recovery.
+
+## 0.2.0b15 — Live Photos support for Xiaohongshu and Weibo
+
+- Xiaohongshu Live Photos (`livePhoto: true`) save the original still image (HEIC/JPEG) and an exposed MP4 motion track when available. Track resolution depends on the post; the files remain separate rather than being paired as a native Photos Live Photo.
+- Weibo extraction arguments now set `extractor.weibo.livephoto=true` instead of `false`, enabling the simultaneous download of Weibo Live Photos (Dynamic Photos) as paired images and videos.
+
+## 0.2.0b14 — best available Douyin quality, audited source selection
+
+- Douyin videos no longer stop at the share page's 720p default. Ask the public playback endpoint for the best ratio it serves (1080p, clamped down when the post has less), and rank `video.bit_rate` gears by pixels, then declared bitrate and size. The watermarked distribution variant remains only a fallback with a notice.
+- Live check: sample 7675556744459143529 changed from H.264 720×1280 (5,162,997 bytes) to H.264 1080×1920 (6,396,748 bytes); the watermarked variant at the same ratio was still 720×1280. A horizontal sample whose public ceiling is 720p was unchanged, so the change only fills in missing gears.
+- Xiaohongshu display fallback keeps the largest declared image rendition instead of the default URL; originals remain the primary source.
+- yt-dlp format sort adds `vbr`, so Bilibili, Weibo and YouTube prefer the higher-bitrate stream when resolution, fps and HDR are equal.
+- Re-checked all eight channels live and re-ran the Weibo no-downgrade audit (20 images, zero reductions); the Weibo video sample kept its best exposed 720p stream and its burned-in 视频号 mark is disclosed. See `docs/WATERMARKS.md` and `docs/validation.md`.
+
 ## 0.2.0b13 — never downgrade resolution for watermark removal
 
 - Correct the requirement missed by 0.2.0b11/b12: a cleaner source must not reduce either image dimension. Keep the original bytes when only a smaller alternative exists and explicitly report that watermark removal at that resolution was unavailable.

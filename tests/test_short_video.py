@@ -35,6 +35,41 @@ class ShortVideoTests(unittest.TestCase):
         mocked = patch.object(accounts, "directory", return_value=root)
         mocked.start()
         self.addCleanup(mocked.stop)
+
+    def test_douyin_missing_public_metadata_uses_only_an_allowed_saved_session(self):
+        for mode in ("auto", "none", "blocked", "signed_unavailable"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                settings = root / "settings" / "sessions"
+                settings.mkdir(parents=True)
+                with patch.object(accounts, "directory", return_value=settings):
+                    jar = session.MozillaCookieJar(str(accounts.path_for("douyin.com")))
+                    jar.set_cookie(Cookie(0, "sessionid", "synthetic", None, False, ".douyin.com", True, True,
+                                         "/", True, True, None, True, None, None, {}))
+                    jar.save(ignore_discard=True)
+                    if mode == "blocked":
+                        accounts.set_preferences(blocked=["douyin.com"])
+                    calls = []
+
+                    def download(url, folder, cookie_path=None):
+                        calls.append(cookie_path is not None)
+                        if cookie_path is None or mode == "signed_unavailable":
+                            raise douyin.MediaUnavailable("Douyin did not expose this post's media.")
+                        (folder / "video.mp4").write_bytes(b"video")
+
+                    real_mkdtemp = tempfile.mkdtemp
+
+                    def stage(*args, **kwargs):
+                        return real_mkdtemp(dir=root)
+
+                    with patch.object(cli, "download_douyin", side_effect=download), patch.object(cli.tempfile, "mkdtemp", side_effect=stage), patch.object(cli, "recover_login") as recover, patch.object(accounts, "import_auto") as browser, patch("builtins.input") as prompt, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                        code = cli.main(["https://www.douyin.com/video/123", "--folder", str(root / "output"), "--browser", "none" if mode == "none" else "auto"])
+                    self.assertEqual(code, 0 if mode == "auto" else 1)
+                    self.assertEqual(calls, [False, True] if mode in {"auto", "signed_unavailable"} else [False])
+                    recover.assert_not_called()
+                    browser.assert_not_called()
+                    prompt.assert_not_called()
+
     def test_full_sharing_text_as_words_quoted_text_or_prompt(self):
         text = "3.53 复制打开抖音，看看【笛笛的坐标系的作品】还有比pro20x更有性价比的消费吗？ # cod... https://v.douyin.com/lnufhXLTfmU/ ban:/ :5pm M@J.Iv 01/01"
 
@@ -143,7 +178,7 @@ class ShortVideoTests(unittest.TestCase):
     def test_douyin_prefers_playback_variant_and_rejects_unknown_sources(self):
         original = "https://aweme.snssdk.com/aweme/v1/playwm/?video_id=example&ratio=720p&line=0"
         item = {"aweme_id": "123", "video": {"play_addr": {"url_list": [original]}}}
-        expected = original.replace("/playwm/", "/play/")
+        expected = original.replace("/playwm/", "/play/").replace("ratio=720p", "ratio=1080p")
         self.assertEqual(douyin.media_urls(item), [("video", expected)])
         mp4 = b"\x00\x00\x00\x18ftypmp42" + b"x" * 100
         with tempfile.TemporaryDirectory() as t, patch.object(douyin, "build_opener") as build:
@@ -161,6 +196,31 @@ class ShortVideoTests(unittest.TestCase):
                 douyin.media_urls(item)
         item["video"]["has_watermark"] = False
         self.assertEqual(douyin.media_urls(item), [("video", url)])
+
+    def test_douyin_selects_highest_quality_gear_not_the_default_playback(self):
+        def play(ratio):
+            return f"https://aweme.snssdk.com/aweme/v1/play/?video_id=example&ratio={ratio}&line=0"
+
+        item = {"aweme_id": "123", "video": {
+            "play_addr": {"url_list": [play("720p")]},
+            "bit_rate": [
+                {"gear_name": "normal_720_0", "bit_rate": 1000000, "play_addr": {"width": 720, "height": 1280, "url_list": [play("720p")]}},
+                {"gear_name": "normal_1080_0", "bit_rate": 2000000, "play_addr": {"width": 1080, "height": 1920, "url_list": [play("1080p")]}},
+                {"gear_name": "normal_4k_0", "bit_rate": 3000000, "play_addr": {"width": 2160, "height": 3840, "url_list": [play("4k")]}}]}}
+        self.assertEqual(douyin.media_urls(item), [("video", play("4k"))])
+        # Equal pixels: the higher declared bitrate wins.
+        item["video"]["bit_rate"] = [
+            {"bit_rate": 900000, "play_addr": {"width": 1080, "height": 1920, "url_list": [play("1080p")]}},
+            {"bit_rate": 1500000, "play_addr": {"width": 1080, "height": 1920, "url_list": [play("1080p") + "1"]}}]
+        self.assertEqual(douyin.media_urls(item), [("video", play("1080p") + "1")])
+        # An unknown host still ranks, but only when the API marks it clean.
+        item["video"]["bit_rate"] = [{"bit_rate": 500000, "play_addr": {"width": 2160, "height": 3840, "url_list": ["https://cdn.test/video.mp4"]}}]
+        with self.assertRaises(RuntimeError):
+            douyin.media_urls(item)
+        item["video"]["has_watermark"] = False
+        self.assertEqual(douyin.media_urls(item), [("video", "https://cdn.test/video.mp4")])
+        # Native fallback keeps the exposed watermarked rendition, not the rewrite.
+        self.assertEqual(douyin.media_urls(item, prefer_clean=False), [("video", "https://cdn.test/video.mp4")])
 
     def test_rejected_douyin_clean_source_keeps_available_native_media(self):
         native_video = "https://aweme.snssdk.com/aweme/v1/playwm/?video_id=example"
