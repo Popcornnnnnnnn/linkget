@@ -9,6 +9,7 @@ from subprocess import CompletedProcess
 import tempfile
 import unittest
 from unittest.mock import patch
+from media_stub import uninspected
 from urllib.error import HTTPError
 
 from linkget import accounts, cli, douyin, links, session
@@ -29,6 +30,9 @@ def page(item):
 
 class ShortVideoTests(unittest.TestCase):
     def setUp(self):
+        probe = patch.object(cli, "inspect_files", side_effect=uninspected)
+        probe.start()
+        self.addCleanup(probe.stop)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name) / "sessions"
@@ -233,7 +237,7 @@ class ShortVideoTests(unittest.TestCase):
                 network.return_value.open.side_effect = [Response(page(item)),
                     HTTPError("https://cdn.test/missing", 404, "missing", {}, None), Response(content)]
                 notes = douyin.download("https://www.douyin.com/video/123", Path(temp))
-                self.assertIn("may contain watermarks", notes[0])
+                self.assertIn("may contain watermarks", notes.notes[0])
                 self.assertEqual(network.return_value.open.call_args.args[0].full_url, native)
                 self.assertEqual(next(Path(temp).iterdir()).read_bytes(), content)
 
@@ -247,7 +251,7 @@ class ShortVideoTests(unittest.TestCase):
                 jar.save()
                 network.return_value.open.side_effect = [Response(json.dumps({"aweme_detail": item}).encode()), share, Response(content)]
                 notes = douyin.download("https://www.douyin.com/video/123", root, root / "cookies.txt")
-                self.assertIn("may contain watermarks", notes[0])
+                self.assertIn("may contain watermarks", notes.notes[0])
                 self.assertEqual((root / "douyin_123_001.mp4").read_bytes(), content)
 
     def test_douyin_bootstraps_visitor_cookie_once_and_downloads_all_photos(self):
@@ -286,7 +290,7 @@ class ShortVideoTests(unittest.TestCase):
             jpg = b"\xff\xd8\xff" + b"image" * 20
             build.return_value.open.side_effect = [Response(page(item)), Response(jpg), Response(jpg)]
             notes = douyin.download("https://www.douyin.com/note/123", Path(t))
-            self.assertIn("may contain watermarks", notes[0])
+            self.assertIn("may contain watermarks", notes.notes[0])
             self.assertEqual(build.return_value.open.call_count, 3)
             self.assertEqual(len(list(Path(t).glob('*.jpg'))), 2)
         for url in ("https://p3.douyinpic.com/image~unknown:q80.webp", "https://other.test/image~tplv-dy-lqen-new:q80.webp"):

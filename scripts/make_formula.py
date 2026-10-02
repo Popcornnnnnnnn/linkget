@@ -28,6 +28,7 @@ args.output.write_text('''class Linkget < Formula
 
   depends_on "deno"
   depends_on "ffmpeg"
+  depends_on "exiftool"
   depends_on "gallery-dl"
   depends_on :macos
   depends_on "python@3.14"

@@ -8,11 +8,17 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+from media_stub import uninspected
 
 from linkget import cli
 
 
 class CommandTests(unittest.TestCase):
+    def setUp(self):
+        probe = patch.object(cli, "inspect_files", side_effect=uninspected)
+        probe.start()
+        self.addCleanup(probe.stop)
+
     def test_bare_folder_before_url_uses_current_directory(self):
         from subprocess import CompletedProcess
         def download(command, **kwargs):

@@ -14,6 +14,9 @@ PYTHONPATH=src python3 scripts/validate_media.py --sites instagram x --compare-s
 PYTHONPATH=src python3 scripts/validate_media.py --extra .local/media-validation/private-cases.json --compare-saved
 # Regenerate a report after recording review findings in results.json:
 PYTHONPATH=src python3 scripts/validate_media.py --report-only --output .local/media-validation/RUN
+# Fail on lost completion, invalid media, changed counts or reduced dimensions
+# in previously successful controls; existing failed cases remain evidence gaps:
+PYTHONPATH=src python3 scripts/validate_media.py --compare-saved --baseline .local/media-validation/BASELINE/results.json
 ```
 
 Every download uses the actual CLI, folder mode, `--browser none`, isolated settings and ignored engine configuration. It never opens Photos or a browser. With `--compare-saved`, an existing per-site cookie snapshot is copied temporarily and forced into the downloader for the same URL. This is a controlled comparison, not the normal CLI's automatic session selection. No browser cookie store is read, no session is refreshed, and user accounts/preferences are unchanged. A missing saved session is recorded as missing evidence, not a successful comparison.
@@ -28,6 +31,14 @@ Results go into an owner-only directory under `.local/media-validation/`, which 
 4. **Coverage:** video-only platforms, unsupported gallery/live routes and missing fresh links must remain explicit gaps. Test names and older sample notes are hypotheses, not current evidence.
 
 Record manual findings in each row's `review`, each mode's `review`/`watermark`, and each file's `review`/`watermark`. `--report-only` preserves these fields. Human visual judgments should identify the reviewed file/mode, preview scope, observer and date. Keep full-resolution and full-video acceptance separate from preview inspection.
+
+## 0.2.1.dev2 native Live Photo evidence
+
+The Bilibili Opus control exposes one 4096×3072 still and its 1440×1080 motion video. The actual development CLI exported a paired copy while preserving both downloaded originals. Offline `PHLivePhoto.request` recognized the pair, decoded image pixels were identical and encoded motion packets were identical. A generated audio/video control reproduced sequential-track writer stalling; concurrent track draining resolved it and preserved both audio and video packet bytes. Generated container timestamps are normalized so repeat exports have identical bytes and are skipped.
+
+These checks prove source pairing and media preservation for those controls. They do not prove original camera timing, uploader maximum quality, watermark absence, Photos library import/playback or live multi-item gallery acceptance. The macOS VM was suspended, so library UI acceptance remains pending. Local evidence: `.local/media-validation/round2/`.
+
+The full 13-channel development corpus on 2026-10-02 completed 24/31 public requests and 17/19 saved-session controls, with 111 valid output media files. The baseline gate flagged one lost anonymous Douyin control: no media was exposed, while its saved-session request succeeded. A targeted Douyin recheck completed all three public controls with no baseline regression, while one previously failing saved-session control remained intermittent. Keep both runs as availability evidence; do not turn a successful retry into an unconditional public-access claim. There was no new count or dimension regression in completed controls. Evidence: `.local/media-validation/2026-10-02-round2-corpus/` and `.local/media-validation/2026-10-02-round2-douyin-recheck/`.
 
 ## 2026-10-01 local audit
 

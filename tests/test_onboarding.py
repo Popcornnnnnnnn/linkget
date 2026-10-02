@@ -9,6 +9,7 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+from media_stub import uninspected
 
 from linkget import accounts, cli, session
 
@@ -20,6 +21,9 @@ def add_cookie(jar, domain, name="sessionid"):
 
 class OnboardingTests(unittest.TestCase):
     def setUp(self):
+        probe = patch.object(cli, "inspect_files", side_effect=uninspected)
+        probe.start()
+        self.addCleanup(probe.stop)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)

@@ -16,12 +16,16 @@ Covered behaviors include:
 - persistent Photos originals, content-based filenames, repeated content, same-name different content, and import/copy failures;
 - folder collisions and duplicate handling, progress cleanup, bare `--folder`, and invalid command guidance;
 - batch ordering, middle-item failure continuation, partial-file preservation, invalid input, multiline sharing text, one-time setup, duplicate handling, cancellation, Photos option forwarding and failure guidance without browser reads;
+- exposed gallery-count completeness, exact per-item Live Photo pairs, missing motion, invalid format refusal, opt-in token-free reports and inconclusive quality comparisons;
+- Live Photo shared collision suffixes, repeated-export deduplication, partial-copy cleanup, retained-component races/content mismatches, persistent raw/paired resources and Photos file-count bookkeeping without accessing Photos;
 - saved destinations, dynamic current-directory defaults, fixed relative-path resolution, per-run overrides, and retaining account settings;
 - isolated source/wheel installation and Homebrew formula smoke tests.
 
 The current [13-channel media corpus and acceptance protocol](MEDIA_VALIDATION.md) separates anonymous availability, quality references and visual watermark findings. Historical [eight-channel watermark findings](WATERMARKS.md) include authenticated samples and do not prove anonymous access. These checks are samples, not a guarantee for every post or network. On 2026-09-29, opt-in live checks verified eight sites with an authorized Chrome session; an invalid Weibo cookie was rejected. This does not verify other browsers or all account configurations. Ordinary automated tests do not read personal browser sessions.
 
 ## Manual acceptance needed
+
+For the development `--live-photos` feature, macOS recognizes the generated resources in an offline PhotoKit check. This does not prove actual library import or playback. In a test library, import one pair from a local Terminal: it should become one item with a LIVE badge and playable motion; repeat the same import and confirm there is no additional item. Also test a fresh multi-item Live Photo share before claiming live gallery acceptance. Keep retained originals while Photos could reference them. Do not launch Photos for unattended tests or change the user's focus. The macOS VM was suspended during this round; real library acceptance remains pending.
 
 Real OS permission prompts, a brand-new Mac installation, browser profile combinations, and actual Photos imports vary by machine. The automated suite does not prove these UI flows. Photos mode keeps the originals specifically so a referenced library or a failed import does not lose the source media. Check the imported item, audio, dimensions and duplicate handling before relying on the trial for an archive.
 

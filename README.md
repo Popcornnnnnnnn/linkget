@@ -52,7 +52,7 @@ Use straight ASCII quotes (`'` or `"`) around command-line URLs. Shells interpre
 
 ## Batch downloads
 
-In the next development version (`0.2.1.dev1`), use `linkget batch` to paste several links, one per line. Each line can contain sharing text around one URL. A blank line starts the downloads. You can also pass individually quoted links or pipe a text file:
+In the next development version (`0.2.1.dev2`), use `linkget batch` to paste several links, one per line. Each line can contain sharing text around one URL. A blank line starts the downloads. You can also pass individually quoted links or pipe a text file:
 
 ```sh
 linkget batch 'URL1' 'URL2' --folder ~/Downloads
@@ -62,6 +62,29 @@ linkget batch --folder ~/Downloads < links.txt
 Items run in input order through the normal downloader. A failed item keeps its diagnostics and does not stop the remaining links. The summary identifies failed item numbers; retry just those links. Existing duplicate handling and save options still apply. Ctrl-C stops the batch and keeps the interrupted item's files. Exit status is 0 when all items complete, 1 when any item fails, 130 when cancelled; invalid command options or an empty batch exit with 2.
 
 Download errors distinguish known network failures, website checks, HTTP access refusal, rate limits and unavailable posts, with a next step. A generic HTTP 403 does not trigger login recovery. Explicit login requirements keep the existing browser flow.
+
+## Download evidence and Live Photos (development version)
+
+The development version checks downloaded formats with ffprobe when available and verifies gallery completeness against exposed source counts where supported. An invalid or incomplete set is kept for review and is not imported. When the source count is unknown, the output says so. Actual dimensions, codec and available video frame rate, bitrate and audio presence are shown; fallback sources are identified.
+
+Use an optional report to compare two downloads of the same links in the same order, for example public access versus an already-connected login:
+
+```sh
+linkget 'URL' --browser none --folder ~/Downloads/public --report public.json
+linkget 'URL' --folder ~/Downloads/connected --report connected.json
+linkget compare public.json connected.json
+```
+
+Reports include post references, filenames, hashes, file properties, source counts, fallback choices, exposed Live Photo pairs and failure categories. They exclude share query tokens, cookies and raw request logs. They are saved only when requested and never overwrite an existing report. They still contain post references and should be reviewed before sharing. Matching bytes establish identical downloads; equal dimensions or different encodings do not establish the uploader's highest quality or absence of watermarks.
+
+On macOS, `--live-photos` packages explicit picture/motion pairs exposed by Xiaohongshu, Weibo and Bilibili. It needs ExifTool and Apple's command-line developer tools (`brew install exiftool`; `xcode-select --install` if missing). Without this option the picture and video stay separate.
+
+```sh
+linkget 'URL' --folder ~/Downloads --live-photos
+linkget 'URL' --photos --live-photos
+```
+
+Folder mode saves unchanged downloaded originals and puts paired copies in `Live Photos/`. Photos mode retains both original downloads and paired copies in its persistent originals folder and submits the paired resources together. Picture pixels and encoded video/audio streams are preserved; only pairing/container metadata is changed on copies. Packaging dates are normalized for repeat-export deduplication. The still-frame marker is placed at the start; the source camera's original key-frame timing is not recovered. A social-network motion track may have lower resolution than its still picture. Missing exposed motion is reported. macOS offline pair recognition is checked before saving, but actual Photos library pairing/playback needs manual acceptance; it remains unverified for this development version.
 
 ## Default save destination
 

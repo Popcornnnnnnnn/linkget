@@ -8,6 +8,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
+if __package__:
+    from .media import DownloadResult
+else:
+    from media import DownloadResult
+
 
 class BrowserRequired(RuntimeError):
     pass
@@ -57,6 +62,7 @@ def download(url, directory, cookie_path=None):
             if parsed.scheme != "https" or not (parsed.hostname or "").endswith(".pximg.net"):
                 raise RuntimeError("Pixiv did not expose original images for every page.")
             targets.append(target)
+        variants = {}
         for index, target in enumerate(targets):
             with request(target) as response:
                 head = response.read(64)
@@ -82,7 +88,8 @@ def download(url, directory, cookie_path=None):
                 if expected and count != int(expected):
                     raise RuntimeError("Pixiv download was incomplete; partial files have been kept.")
                 partial.rename(path)
-        return []
+                variants[path.name] = "web_original"
+        return DownloadResult(expected_count=len(pages), variants=variants)
     except HTTPError as error:
         if error.code in {401, 403} and not cookie_path:
             raise BrowserRequired("Pixiv denied this request. Try a browser login if the artwork is accessible to your account.") from None

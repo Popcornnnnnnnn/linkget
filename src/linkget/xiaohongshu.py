@@ -11,8 +11,10 @@ import concurrent.futures
 
 if __package__:
     from .links import MOBILE_UA
+    from .media import DownloadResult
 else:
     from links import MOBILE_UA
+    from media import DownloadResult
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36"
 
@@ -175,9 +177,9 @@ def download(url, directory, cookie_path=None):
             if state.get("user", {}).get("loggedIn") is False:
                 raise BrowserRequired("This Xiaohongshu note was not available to the public request. Try your browser login or a fresh share link, keeping its access token.")
             raise RuntimeError("Xiaohongshu did not expose this note. Copy a fresh share link from the post and complete any website verification, then retry.")
-        media, originals, source_notes = [], [], []
+        media, originals, source_notes, item_indexes = [], [], [], []
         items = [note] if note.get("type") == "video" else [dict(note, imageList=[item]) for item in note.get("imageList", [])]
-        for item in items:
+        for item_index, item in enumerate(items):
             try:
                 added = note_media(item)
                 used_original = True
@@ -188,6 +190,7 @@ def download(url, directory, cookie_path=None):
             originals.extend([used_original] * len(added))
             # Track actual outputs, including live photos with no video stream.
             source_notes.extend([item] * len(added))
+            item_indexes.extend([item_index] * len(added))
         if not media:
             raise RuntimeError("Xiaohongshu returned no media.")
 
@@ -220,16 +223,32 @@ def download(url, directory, cookie_path=None):
                 if expected and count != int(expected):
                     raise RuntimeError("Xiaohongshu download was incomplete; partial files have been kept.")
                 partial.rename(path)
-            return not used_original
+            return index, path.name, not used_original
 
         retained = 0
+        outputs = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             futures = [executor.submit(_download_one, index, kind, target, originals[index - 1]) for index, (kind, target) in enumerate(media, 1)]
             for future in concurrent.futures.as_completed(futures):
-                if future.result():
+                index, name, fallback = future.result()
+                outputs[index] = name
+                if fallback:
                     retained += 1
-
-        return ([f"Xiaohongshu: original unavailable for {retained} item(s); kept best exposed display sources, which may contain watermarks."] if retained else [])
+        variants = {name: "fallback" if "_display." in name else
+                    ("exposed_stream" if media[index - 1][0] == "video" else "web_original")
+                    for index, name in outputs.items()}
+        pairs = []
+        for item_index, item in enumerate(items):
+            if note.get("type") == "video" or not item["imageList"][0].get("livePhoto"):
+                continue
+            group = {kind: outputs[index] for index, (kind, _) in enumerate(media, 1) if item_indexes[index - 1] == item_index}
+            if set(group) == {"image", "video"}:
+                pairs.append((group["image"], group["video"]))
+        missing = sum(bool(item.get("livePhoto")) for item in note.get("imageList", [])) - len(pairs) if note.get("type") != "video" else 0
+        notes = ([f"Xiaohongshu: original unavailable for {retained} item(s); kept best exposed display sources, which may contain watermarks."] if retained else [])
+        if missing:
+            notes.append(f"Xiaohongshu: {missing} Live Photo motion track(s) were not exposed; still pictures were retained.")
+        return DownloadResult(notes, len(media), variants, pairs, missing)
     except HTTPError as error:
         error.close()
         raise RuntimeError(f"Xiaohongshu request failed (HTTP {error.code}). Open a fresh share link in your browser and check access or verification.") from None

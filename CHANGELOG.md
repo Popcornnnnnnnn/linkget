@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1.dev2 — media evidence, gallery checks and Live Photo pairing (unreleased)
+
+- Verify supported exposed gallery counts and probe downloaded media before saving; preserve failures for review. Show actual dimensions, codec, video frame rate/bitrate/audio, fallback choices and unknown source counts.
+- Add opt-in `--report PATH` and `linkget compare FIRST.json SECOND.json`, recording token-free references and byte/property comparisons without claiming absolute maximum quality or watermark absence. Add a baseline regression gate to the opt-in real-media corpus.
+- Add opt-in `--live-photos` for explicit Xiaohongshu, Weibo and Bilibili source pairs on macOS. Preserve original downloads, create separate paired copies without picture/video/audio re-encoding, validate offline with PhotoKit, and retain stable copies for Photos. ExifTool and developer tools are required. Real Photos library pairing/playback still needs manual acceptance.
+- Drain audio/video tracks together after a real audio-bearing remux test reproduced a stall. Keep paired filenames aligned through folder collisions, normalize generated container dates for duplicate detection, and protect existing retained components from copy failures/races.
+
 ## 0.2.1.dev1 — batch downloads and clearer failures (unreleased)
 
 - Add `linkget batch`: ordered command-line links, one sharing text per pasted line, or piped input. Reuse the ordinary downloader and destination options; continue after item failures and report failed item numbers. Cancel stops remaining items and preserves partial downloads.

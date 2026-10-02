@@ -27,6 +27,8 @@ if __package__:
     from .kuaishou import download as download_kuaishou, BrowserRequired as KuaishouBrowserRequired
     from .pixiv import download as download_pixiv, BrowserRequired as PixivBrowserRequired
     from .weibo import prefer_clean_images
+    from .media import DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
+    from .live import prepare_pairs, retain_pairs, save_pairs
 else:  # Homebrew launches this file directly.
     import accounts
     from photos import originals_directory, retain_originals
@@ -38,6 +40,8 @@ else:  # Homebrew launches this file directly.
     from kuaishou import download as download_kuaishou, BrowserRequired as KuaishouBrowserRequired
     from pixiv import download as download_pixiv, BrowserRequired as PixivBrowserRequired
     from weibo import prefer_clean_images
+    from media import DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
+    from live import prepare_pairs, retain_pairs, save_pairs
 
 VIDEO = {".mp4", ".mov", ".m4v"}
 MEDIA = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".avif", ".tif", ".tiff"} | VIDEO
@@ -85,6 +89,7 @@ def report_failure(message):
     status(label, message, "31", stream=sys.stderr)
     if next_step:
         status("Next", next_step, stream=sys.stderr)
+    return label.lower().replace(" ", "_")
 
 
 def login_result(site, state, saved=False, public_summary=False):
@@ -570,7 +575,7 @@ def browser_spec(args, engine, domain):
 
 def command_for(args, url, engine, domain, media_dir, tools, cookie_path=None):
     if engine == "gallery-dl":
-        command = [tools[engine], "--config-ignore", "--directory", str(media_dir)]
+        command = [tools[engine], "--config-ignore", "--write-metadata", "--directory", str(media_dir)]
         if domain == "tiktok.com":
             command.extend(["-o", "extractor.tiktok.audio=false", "-o", "extractor.tiktok.covers=false",
                             "-o", "extractor.tiktok.subtitles=false", "-o", "extractor.tiktok.videos=true",
@@ -635,8 +640,12 @@ def save_folder(files, folder):
     return saved, skipped
 
 
-def import_photos(files, date_now):
+def import_photos(files, date_now, live_pairs=None):
     retained = retain_originals(files)
+    if live_pairs:
+        paired = retain_pairs(list(live_pairs.values()), originals_directory())
+        replacements = dict(zip((name for pair in live_pairs for name in pair), paired))
+        retained = [replacements.get(source.name, path) for source, path in zip(files, retained)]
     unique = list(dict.fromkeys(retained))
     source_indexes = [retained.index(path) for path in unique]
     importer = Path(__file__).with_name("import.applescript")
@@ -736,6 +745,7 @@ def main(argv=None):
   doctor               Check download tools and installation
   config               View or change the default save destination
   batch [LINK ...]     Download links in order; paste one per line if omitted
+  compare A.json B.json Compare reports for the same links
   auth                 Check logins and public access without sign-in prompts
   auth SITE            Connect one website explicitly (e.g. auth bilibili)
   logout SITE          Remove a saved login and disable automatic browser access
@@ -770,6 +780,8 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     parser.add_argument("--browser", choices=["auto", "none", "chrome", "firefox", "safari", "edge", "brave"], default="auto", help="auto: public first, then saved login and browser refresh if needed; none: public only; specify a browser to use its login")
     parser.add_argument("--profile", help="path to the selected browser profile")
     parser.add_argument("--date-now", action="store_true", help="set the date of newly imported Photos items to now")
+    parser.add_argument("--report", type=Path, help="write download evidence to a new JSON file for comparison")
+    parser.add_argument("--live-photos", action="store_true", help="package exposed Live Photo pairs on macOS; original downloads are preserved")
     tokens = list(sys.argv[1:] if argv is None else argv)
     # An HTTP URL immediately after bare --folder is the post, never a directory.
     for index in range(len(tokens) - 2, -1, -1):
@@ -779,6 +791,22 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     if args.link == ["help"]:
         parser.print_help()
         return 0
+    if args.link and args.link[0] == "compare":
+        if len(args.link) != 3:
+            parser.error("Use linkget compare FIRST.json SECOND.json.")
+        try:
+            rows = compare_reports(*(json.loads(Path(path).expanduser().read_text()) for path in args.link[1:]))
+            for index, row in enumerate(rows, 1):
+                status("Item", str(index))
+                status("Comparison", row["result"])
+                if "first" in row:
+                    status("First", f"{row['first_count']} files · {row['first']}")
+                    status("Second", f"{row['second_count']} files · {row['second']}")
+            status("Quality", "Uploader maximum and watermark absence remain unverified.")
+            return 0
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            report_failure(str(error))
+            return 1
     if args.link and args.link[0] == "config":
         try:
             return configure(args, parser)
@@ -811,6 +839,10 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     if args.profile and args.browser in {"auto", "none"}:
         parser.error("--profile requires an explicit --browser, such as chrome or firefox.")
     try:
+        if args.report and args.report.expanduser().exists():
+            raise ValueError("The report already exists. Choose a new path to preserve the comparison reference.")
+        if args.report and not args.report.expanduser().parent.is_dir():
+            raise ValueError("The report's parent folder does not exist. Choose an existing folder.")
         if args.photos:
             args.folder = None
         elif args.folder is True:
@@ -823,9 +855,12 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 args.folder = Path(setting["path"])
         if args.folder is not None and args.date_now:
             parser.error("--date-now applies to Photos imports. Use --photos --date-now to override a folder default.")
-        if is_batch:
-            return batch_download(args, parser, batch_links)
-        return download(args, first_run(args) or {})
+        records = []
+        code = batch_download(args, parser, batch_links, records) if is_batch else download(args, first_run(args) or {}, records)
+        if args.report:
+            write_report(args.report, VERSION, records, code)
+            status("Report", str(args.report.expanduser().resolve()))
+        return code
     except (OSError, ValueError, RuntimeError) as error:
         report_failure(str(error))
         return 1
@@ -834,7 +869,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         return 130
 
 
-def batch_download(args, parser, links):
+def batch_download(args, parser, links, records=None):
     if not links:
         if sys.stdin.isatty():
             print("\n  Paste one link or sharing text per line. Blank line starts downloads.\n")
@@ -850,7 +885,7 @@ def batch_download(args, parser, links):
         status("Item", f"{index}/{len(links)}")
         item_args = argparse.Namespace(**vars(args))
         item_args.link = link
-        result = download(item_args, setup_results)
+        result = download(item_args, setup_results, records)
         if result == 130:
             status("Batch", f"{completed} completed · {len(failed)} failed · {len(links) - index + 1} not completed", "33")
             return 130
@@ -864,16 +899,18 @@ def batch_download(args, parser, links):
     return 1 if failed else 0
 
 
-def download(args, setup_results):
+def download(args, setup_results, records=None):
     stage = None
     session_dir = None
     info_path = None
+    evidence = {"status": "failed", "reference": None, "files": []}
     try:
         url = args.link or (input("  Paste a link (no quotes needed): ") if sys.stdin.isatty() else sys.stdin.read())
         started = time.monotonic()
         with activity("Resolving") if any(host in url for host in ("v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/", "xhslink.com", "xhslink.cn", "t.cn/")) else nullcontext():
             url = normalize_link(url)
         site, engine, domain = route(url)
+        evidence.update(reference=reference(url), site=site)
         if not args.folder and sys.platform != "darwin":
             raise ValueError("Photos is available on macOS only. Use --folder to choose a destination.")
         required = ([] if engine in {"douyin", "xiaohongshu", "kuaishou", "pixiv"} else [engine]) + (["ffmpeg", "ffprobe"] if engine == "yt-dlp" else [])
@@ -925,6 +962,7 @@ def download(args, setup_results):
         while True:
             try:
                 source_notes = []
+                download_info = DownloadResult()
                 media_dir = stage / ("media" if attempt == 0 else f"signed-in-media-{attempt}")
                 media_dir.mkdir()
                 print()
@@ -951,7 +989,10 @@ def download(args, setup_results):
                                 else:
                                     downloader = download_kuaishou
                                 notes = downloader(url, media_dir, cookie_path)
-                                if isinstance(notes, list):
+                                if isinstance(notes, DownloadResult):
+                                    download_info = notes
+                                    source_notes.extend(notes.notes)
+                                elif isinstance(notes, list):
                                     source_notes.extend(notes)
                             except (BrowserRequired, KuaishouBrowserRequired, PixivBrowserRequired) as error:
                                 raise LoginRequired(str(error)) from None
@@ -976,9 +1017,16 @@ def download(args, setup_results):
                     if "blocked by copyright" in log_text.lower() or "region" in log_text.lower():
                         raise RuntimeError(f"This {site} post is blocked due to copyright or region restrictions.")
                     raise RuntimeError("Download failed.\n" + log_text)
-                if domain == "weibo.com" and engine == "gallery-dl":
-                    with activity("Checking sources"):
-                        source_notes = prefer_clean_images(media_dir, find_tool("ffmpeg"))
+                if engine == "gallery-dl":
+                    # Weibo's clean-image comparison needs its source sidecars.
+                    if domain == "weibo.com":
+                        download_info = gallery_evidence(media_dir, domain, remove=False)
+                        with activity("Checking sources"):
+                            source_notes = prefer_clean_images(media_dir, find_tool("ffmpeg"))
+                        download_info.live_pairs = [(image if (media_dir / image).exists() else str(Path(image).with_name(Path(image).stem + "_preferred" + Path(image).suffix)), video)
+                                                    for image, video in download_info.live_pairs]
+                    else:
+                        download_info = gallery_evidence(media_dir, domain)
                 for note in source_notes:
                     status("Media", note)
                 files = sorted(path for path in media_dir.iterdir() if path.is_file() and path.suffix.lower() in MEDIA)
@@ -992,6 +1040,8 @@ def download(args, setup_results):
                     if domain == "tiktok.com":
                         raise RuntimeError("TikTok returned no downloadable media. Open the post in your browser and check its availability or website verification, then retry.")
                     raise RuntimeError("No photos or videos were downloaded from this post.")
+                if download_info.expected_count is not None and len(files) != download_info.expected_count:
+                    raise RuntimeError(f"Incomplete media set: {len(files)} / {download_info.expected_count} files. Files have been kept.")
                 break
             except DouyinMediaUnavailable:
                 # A missing public response can still work with an already
@@ -1035,11 +1085,37 @@ def download(args, setup_results):
                     cookie_path = candidate
                     continue
                 raise LoginRequired(reason) from None
+        media_records = inspect_files(files, download_info.variants)
+        evidence.update(files=media_records, expected_count=download_info.expected_count,
+                        missing_motion=download_info.missing_motion, live_pairs=download_info.live_pairs,
+                        highest_quality="not_verified", watermark="not_verified")
+        if any(record.get('probe_ok') is False for record in media_records):
+            raise RuntimeError("The downloaded media did not pass format validation. Files have been kept; nothing was saved or imported.")
+        status("Quality", quality_summary(media_records))
+        count_text = f"{len(files)} / {download_info.expected_count} files" if download_info.expected_count is not None else f"{len(files)} files · source count unknown"
+        status("Media count", count_text)
+        if any(r['source'] == "fallback" for r in media_records):
+            status("Source", "Fallback media included", "33")
+        prepared = []
+        if download_info.live_pairs:
+            if args.live_photos:
+                with activity("Pairing Live Photos"):
+                    prepared = prepare_pairs(files, download_info.live_pairs, stage / "live-photos")
+                status("Live Photos", f"{len(prepared)} source pairs recognized by macOS")
+            else:
+                status("Live Photos", f"{len(download_info.live_pairs)} pairs saved separately · use --live-photos to pair")
         with activity("Saving" if folder else "Importing"):
             if folder:
                 saved, skipped = save_folder(files, folder)
+                if prepared:
+                    live_saved, live_skipped = save_pairs(prepared, folder / "Live Photos")
+                    evidence['paired_exports'] = len(live_saved) // 2
+                    status("Live exports", f"{len(live_saved) // 2} saved · {live_skipped // 2} duplicates")
             else:
-                saved, skipped = import_photos(files, args.date_now)
+                if prepared:
+                    saved, skipped = import_photos(files, args.date_now, dict(zip(download_info.live_pairs, prepared)))
+                else:
+                    saved, skipped = import_photos(files, args.date_now)
             if saved:
                 summary = f"{saved_description(saved)} · {format_size(sum(path.stat().st_size for path in saved))}"
             else:
@@ -1051,20 +1127,25 @@ def download(args, setup_results):
             status("Originals", str(originals_directory()))
         if skipped:
             status("Skipped", f"{skipped} duplicate{'s' if skipped != 1 else ''}")
+        evidence.update(status="completed", saved_count=len(saved), skipped_count=skipped)
         return 0
     except LoginRequired as error:
+        evidence['failure'] = "login_required"
         login_guidance(args, domain, url, str(error))
         return 1
     except subprocess.TimeoutExpired:
-        report_failure("The website request timed out.")
+        evidence['failure'] = report_failure("The website request timed out.")
         return 1
     except (OSError, ValueError, RuntimeError) as error:
-        report_failure(str(error))
+        evidence['failure'] = report_failure(str(error))
         return 1
     except (KeyboardInterrupt, EOFError):
+        evidence['status'] = "cancelled"
         status("Cancelled", "Download stopped", "33", stream=sys.stderr)
         return 130
     finally:
+        if records is not None:
+            records.append(evidence)
         if info_path is not None:
             info_path.unlink(missing_ok=True)
         if session_dir is not None:

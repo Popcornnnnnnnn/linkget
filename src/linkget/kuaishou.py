@@ -7,6 +7,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
+if __package__:
+    from .media import DownloadResult
+else:
+    from media import DownloadResult
+
 DESKTOP_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36"
 MOBILE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1"
 
@@ -133,7 +138,7 @@ def download(url, directory, cookie_path=None):
             if expected and count != int(expected):
                 raise RuntimeError("Kuaishou download was incomplete; partial files have been kept.")
             partial.rename(path)
-        return []
+        return DownloadResult(expected_count=1, variants={path.name: "exposed_stream"})
     except HTTPError as error:
         raise RuntimeError(f"Kuaishou request failed (HTTP {error.code}). Open the post in your browser and check access.") from None
     except (URLError, OSError):

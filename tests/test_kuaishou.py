@@ -52,7 +52,9 @@ class KuaishouTests(unittest.TestCase):
             build.return_value.open.side_effect = [
                 Response(page("__APOLLO_STATE__", {"defaultClient": {"ROOT_QUERY": {"visionConfig": {}}}})),
                 Response(page("INIT_STATE", state)), Response(MP4, {"Content-Length": str(len(MP4))})]
-            self.assertEqual(kuaishou.download(URL, Path(temporary)), [])
+            info = kuaishou.download(URL, Path(temporary))
+            self.assertEqual(info.notes, [])
+            self.assertEqual(info.expected_count, 1)
             calls = build.return_value.open.call_args_list
             self.assertEqual([call.args[0].full_url for call in calls], [URL, URL, "https://cdn.test/hevc.mp4"])
             self.assertEqual(calls[1].args[0].get_header("User-agent"), kuaishou.MOBILE_UA)

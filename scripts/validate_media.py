@@ -212,6 +212,34 @@ def report(rows, root):
     (root / 'review.html').write_text(page)
 
 
+def regressions(rows, baseline):
+    """Previously successful controls must remain valid; existing failures aren't new regressions."""
+    previous = {(row['id'], result['mode']): result for row in baseline for result in row.get('results', [])
+                if result.get('status') == 'downloaded' and result.get('files')
+                and result.get('count_check') is not False and all(f.get('probe_ok') for f in result['files'])}
+    current = {(row['id'], result['mode']): result for row in rows for result in row.get('results', [])}
+    selected = {row['id'] for row in rows}
+    failures = []
+    for (case, mode), old in previous.items():
+        if case not in selected:
+            continue  # --sites intentionally narrows the run.
+        new = current.get((case, mode))
+        reason = None
+        if not new or new.get('status') != 'downloaded' or not new.get('files'):
+            reason = 'Previously successful download no longer completed'
+        elif new.get('count_check') is False or not all(f.get('probe_ok') for f in new['files']):
+            reason = 'Invalid or incomplete media'
+        elif len(new['files']) != len(old['files']):
+            reason = 'Media count changed; review required'
+        else:
+            sizes = lambda result: sorted((f['kind'], f.get('width') or 0, f.get('height') or 0) for f in result['files'])
+            if any(k != pk or w < pw or h < ph for (k, w, h), (pk, pw, ph) in zip(sizes(new), sizes(old))):
+                reason = 'Exposed dimensions decreased; review required'
+        if reason:
+            failures.append({'case': case, 'mode': mode, 'reason': reason})
+    return failures
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--manifest', type=Path, default=Path('tests/fixtures/media_cases.json'))
@@ -222,17 +250,23 @@ def main():
     parser.add_argument('--timeout', type=int, default=60)
     parser.add_argument('--workers', type=int, default=3)
     parser.add_argument('--report-only', action='store_true', help='Regenerate reports from annotated results.json without downloading.')
+    parser.add_argument('--baseline', type=Path, help='Fail when a previously successful control regresses in count, validity or dimensions.')
     parser.add_argument('--child', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--case', help=argparse.SUPPRESS)
     parser.add_argument('--cookie', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    baseline = json.loads(args.baseline.read_text()) if args.baseline else None
     if args.child:
         return child(json.loads(args.case), args.output, args.cookie)
     if args.report_only:
         if args.output is None:
             parser.error('--report-only requires --output')
         report(json.loads((args.output / 'results.json').read_text()), args.output)
-        return 0
+        rows = json.loads((args.output / 'results.json').read_text())
+        failures = regressions(rows, baseline) if baseline is not None else []
+        if baseline is not None:
+            write_json(args.output / 'regressions.json', failures)
+        return 1 if failures else 0
     cases = json.loads(args.manifest.read_text())['cases']
     if args.extra:
         cases += json.loads(args.extra.read_text())['cases']
@@ -254,7 +288,11 @@ def main():
             rows += future.result()
             report(sorted(rows, key=lambda r: next(i for i,c in enumerate(cases) if c['id']==r['id'])), root)
     print('REPORT', root / 'report.md', flush=True)
-    return 0
+    failures = regressions(rows, baseline) if baseline is not None else []
+    if baseline is not None:
+        write_json(root / 'regressions.json', failures)
+        print('REGRESSIONS', len(failures), flush=True)
+    return 1 if failures else 0
 
 
 if __name__ == '__main__':

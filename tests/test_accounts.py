@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from media_stub import uninspected
 
 from linkget import accounts, cli, session
 
@@ -26,6 +27,9 @@ def write_cookies(path, domain="bilibili.com", expired=False, visitor=False):
 
 class AccountTests(unittest.TestCase):
     def setUp(self):
+        probe = patch.object(cli, "inspect_files", side_effect=uninspected)
+        probe.start()
+        self.addCleanup(probe.stop)
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
