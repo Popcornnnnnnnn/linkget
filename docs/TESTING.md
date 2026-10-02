@@ -15,6 +15,7 @@ Covered behaviors include:
 - new-site session classification, alternate YouTube login cookies and excluding Google account cookies;
 - persistent Photos originals, content-based filenames, repeated content, same-name different content, and import/copy failures;
 - folder collisions and duplicate handling, progress cleanup, bare `--folder`, and invalid command guidance;
+- batch ordering, middle-item failure continuation, partial-file preservation, invalid input, multiline sharing text, one-time setup, duplicate handling, cancellation, Photos option forwarding and failure guidance without browser reads;
 - saved destinations, dynamic current-directory defaults, fixed relative-path resolution, per-run overrides, and retaining account settings;
 - isolated source/wheel installation and Homebrew formula smoke tests.
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1.dev1 — batch downloads and clearer failures (unreleased)
+
+- Add `linkget batch`: ordered command-line links, one sharing text per pasted line, or piped input. Reuse the ordinary downloader and destination options; continue after item failures and report failed item numbers. Cancel stops remaining items and preserves partial downloads.
+- Distinguish known network failures, website checks, access refusal, rate limits, unsupported media and unavailable posts, with relevant next steps. Generic HTTP errors do not initiate login recovery.
+- Keep the accepted 0.2.0 release artifacts and installed stable CLI separate from this development version.
+
 ## 0.2.0 — public mobile Kuaishou extraction and release acceptance
 
 - Recover Kuaishou videos when desktop HTML contains only site configuration by reading the same post's public mobile page. Match the requested post ID before selecting media; reject invalid MP4 responses and incomplete downloads.

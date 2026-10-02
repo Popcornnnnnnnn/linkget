@@ -68,6 +68,25 @@ def login_guidance(args, domain, url, reason):
         status("Next", "Run linkget in an interactive terminal to connect a browser and continue.", stream=sys.stderr)
 
 
+def report_failure(message):
+    label, next_step = "Error", None
+    if re.search(r"HTTP(?: Error)?[ :]+429|too many requests|rate.?limit", message, re.I):
+        label, next_step = "Rate limit", "Wait before retrying this item."
+    elif re.search(r"captcha|challenge|verification page|verification required|confirm you.re not a bot", message, re.I):
+        label, next_step = "Website check", "Open the post in your browser, complete any website check, then retry this item."
+    elif re.search(r"timed? out|timeout|connection (?:reset|refused)|TLS|SSL|could not resolve|temporary failure in name resolution", message, re.I):
+        label, next_step = "Network", "Check your connection, then retry this item."
+    elif re.search(r"HTTP(?: Error)?[ :]+403|forbidden|blocked by network security", message, re.I):
+        label, next_step = "Access refused", "Open the post in your browser to check access or website verification, then retry this item."
+    elif re.search(r"HTTP(?: Error)?[ :]+(?:404|410)|unavailable, deleted, or private|video unavailable", message, re.I):
+        label, next_step = "Unavailable", "Check that the post still opens in your browser, or copy a fresh share link."
+    elif re.search(r"unsupported|not supported|not implemented", message, re.I):
+        label, next_step = "Unsupported", "Run linkget sites to check the supported links and media."
+    status(label, message, "31", stream=sys.stderr)
+    if next_step:
+        status("Next", next_step, stream=sys.stderr)
+
+
 def login_result(site, state, saved=False, public_summary=False):
     domain = accounts.SITES[site]
     if public_summary:
@@ -716,6 +735,7 @@ def main(argv=None):
   sites                List supported sites and media
   doctor               Check download tools and installation
   config               View or change the default save destination
+  batch [LINK ...]     Download links in order; paste one per line if omitted
   auth                 Check logins and public access without sign-in prompts
   auth SITE            Connect one website explicitly (e.g. auth bilibili)
   logout SITE          Remove a saved login and disable automatic browser access
@@ -729,6 +749,8 @@ Examples:
   linkget URL --photos                 Save to Photos this time
   linkget URL --folder                 Save to the current folder
   linkget URL --folder ~/Downloads     Save to a folder
+  linkget batch URL1 URL2 --folder     Download multiple posts
+  linkget batch --folder ~/Downloads   Paste links; blank line starts downloads
   linkget auth                         Check website logins and public access
   linkget auth bilibili                Connect Bilibili for higher quality
   linkget config                       View the default save destination
@@ -774,7 +796,9 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         except (KeyboardInterrupt, EOFError):
             status("Cancelled", "Stopped", "33", stream=sys.stderr)
             return 130
-    if args.link and not any("http://" in item or "https://" in item for item in args.link) and args.link not in (["doctor"], ["sites"]):
+    is_batch = bool(args.link and args.link[0] == "batch")
+    batch_links = args.link[1:] if is_batch else []
+    if args.link and not is_batch and not any("http://" in item or "https://" in item for item in args.link) and args.link not in (["doctor"], ["sites"]):
         parser.error("Unknown command. Use linkget sites, linkget auth, linkget config, or linkget help. To download, paste a post URL.")
     args.link = " ".join(args.link)
     if args.link == "doctor":
@@ -786,9 +810,6 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         return 0
     if args.profile and args.browser in {"auto", "none"}:
         parser.error("--profile requires an explicit --browser, such as chrome or firefox.")
-    stage = None
-    session_dir = None
-    info_path = None
     try:
         if args.photos:
             args.folder = None
@@ -802,7 +823,52 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 args.folder = Path(setting["path"])
         if args.folder is not None and args.date_now:
             parser.error("--date-now applies to Photos imports. Use --photos --date-now to override a folder default.")
-        setup_results = first_run(args) or {}
+        if is_batch:
+            return batch_download(args, parser, batch_links)
+        return download(args, first_run(args) or {})
+    except (OSError, ValueError, RuntimeError) as error:
+        report_failure(str(error))
+        return 1
+    except (KeyboardInterrupt, EOFError):
+        status("Cancelled", "Download stopped", "33", stream=sys.stderr)
+        return 130
+
+
+def batch_download(args, parser, links):
+    if not links:
+        if sys.stdin.isatty():
+            print("\n  Paste one link or sharing text per line. Blank line starts downloads.\n")
+            while line := input("  > ").strip():
+                links.append(line)
+        else:
+            links = [line.strip() for line in sys.stdin.read().splitlines() if line.strip()]
+    if not links:
+        parser.error("The batch is empty. Supply links or paste one per line.")
+    setup_results = first_run(args) or {}
+    completed, failed = 0, []
+    for index, link in enumerate(links, 1):
+        status("Item", f"{index}/{len(links)}")
+        item_args = argparse.Namespace(**vars(args))
+        item_args.link = link
+        result = download(item_args, setup_results)
+        if result == 130:
+            status("Batch", f"{completed} completed · {len(failed)} failed · {len(links) - index + 1} not completed", "33")
+            return 130
+        if result:
+            failed.append(index)
+        else:
+            completed += 1
+    status("Batch", f"{completed} completed · {len(failed)} failed", "33" if failed else "32")
+    if failed:
+        status("Failed items", ", ".join(map(str, failed)), "33")
+    return 1 if failed else 0
+
+
+def download(args, setup_results):
+    stage = None
+    session_dir = None
+    info_path = None
+    try:
         url = args.link or (input("  Paste a link (no quotes needed): ") if sys.stdin.isatty() else sys.stdin.read())
         started = time.monotonic()
         with activity("Resolving") if any(host in url for host in ("v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/", "xhslink.com", "xhslink.cn", "t.cn/")) else nullcontext():
@@ -990,10 +1056,10 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         login_guidance(args, domain, url, str(error))
         return 1
     except subprocess.TimeoutExpired:
-        status("Error", "The website did not respond in time. Check your connection and retry.", "31", stream=sys.stderr)
+        report_failure("The website request timed out.")
         return 1
     except (OSError, ValueError, RuntimeError) as error:
-        status("Error", str(error), "31", stream=sys.stderr)
+        report_failure(str(error))
         return 1
     except (KeyboardInterrupt, EOFError):
         status("Cancelled", "Download stopped", "33", stream=sys.stderr)
