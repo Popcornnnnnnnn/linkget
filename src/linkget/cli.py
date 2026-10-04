@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 if __package__:
     from . import accounts
-    from .photos import originals_directory, retain_originals
+    from .photos import originals_directory, retain_originals, verify_library_copies
     from .version import VERSION
     from .session import LOGIN_URLS, prepare_session
     from .links import normalize_link
@@ -31,7 +31,7 @@ if __package__:
     from .live import prepare_pairs, retain_pairs, save_pairs
 else:  # Homebrew launches this file directly.
     import accounts
-    from photos import originals_directory, retain_originals
+    from photos import originals_directory, retain_originals, verify_library_copies
     from version import VERSION
     from session import LOGIN_URLS, prepare_session
     from links import normalize_link
@@ -642,8 +642,10 @@ def save_folder(files, folder):
 
 def import_photos(files, date_now, live_pairs=None):
     retained = retain_originals(files)
+    staged = set(retained)
     if live_pairs:
         paired = retain_pairs(list(live_pairs.values()), originals_directory())
+        staged.update(paired)
         replacements = dict(zip((name for pair in live_pairs for name in pair), paired))
         retained = [replacements.get(source.name, path) for source, path in zip(files, retained)]
     unique = list(dict.fromkeys(retained))
@@ -655,7 +657,7 @@ def import_photos(files, date_now, live_pairs=None):
     if result.returncode:
         raise RuntimeError("Photos could not import the media. Allow terminal access in System Settings > Privacy & Security > Automation, or use --folder for unsupported formats.\n"
                            + "Originals are safe in: " + str(originals_directory()) + "\n" + result.stderr.strip())
-    response = result.stdout.strip()
+    response, _, identifier_text = result.stdout.strip().partition("\n")
     if not re.fullmatch(r"\d+:\d+(?::\d+)*", response):
         raise RuntimeError("Photos returned an invalid import result. Original files have been kept.")
     saved, skipped, *indexes = map(int, response.split(":"))
@@ -663,6 +665,12 @@ def import_photos(files, date_now, live_pairs=None):
             or len(set(indexes)) != len(indexes)
             or any(index < 1 or index > len(unique) for index in indexes)):
         raise RuntimeError("Photos returned an unexpected item count. Original files have been kept.")
+    try:
+        verify_library_copies(unique, identifier_text.split("\t") if identifier_text else [])
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError(str(error) + "\nOriginals are safe in: " + str(originals_directory())) from error
+    for path in staged:
+        path.unlink(missing_ok=True)
     return [files[source_indexes[index - 1]] for index in indexes], skipped + len(files) - len(unique)
 
 
@@ -1123,8 +1131,6 @@ def download(args, setup_results, records=None):
             shutil.rmtree(stage)
             stage = None
         status("Done", f"{summary} · {time.monotonic() - started:.1f}s", "32")
-        if not folder:
-            status("Originals", str(originals_directory()))
         if skipped:
             status("Skipped", f"{skipped} duplicate{'s' if skipped != 1 else ''}")
         evidence.update(status="completed", saved_count=len(saved), skipped_count=skipped)

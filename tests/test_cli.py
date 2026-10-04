@@ -85,7 +85,7 @@ class CommandTests(unittest.TestCase):
     def test_photos_reports_which_files_were_added(self):
         from subprocess import CompletedProcess
         files = [Path("existing.jpg"), Path("new.mp4")]
-        with patch.object(cli, "retain_originals", side_effect=lambda files: files), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, "1:1:2\n", "")):
+        with patch.object(cli, "retain_originals", side_effect=lambda files: files), patch.object(cli, "verify_library_copies"), patch.object(Path, "unlink"), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, "1:1:2\n", "")):
             self.assertEqual(cli.import_photos(files, False), ([files[1]], 1))
         for response in ("1:1:3", "2:0:1:1", "1:1", "invalid"):
             with patch.object(cli, "retain_originals", side_effect=lambda files: files), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, response, "")):

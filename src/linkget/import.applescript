@@ -73,6 +73,36 @@ on run argv
     repeat with fileIndex in newFileIndexes
         set resultText to resultText & ":" & ((contents of fileIndex) as text)
     end repeat
+    -- Identify new AND existing assets so duplicate imports also verify the
+    -- library's own originals before Python removes any staged source.
+    set resultText to resultText & linefeed
+    set firstIdentifier to true
+    repeat with sourcePath in sourcePaths
+        set sourceFile to POSIX file (contents of sourcePath)
+        set currentName to name of (info for sourceFile)
+        set stem to my liveStem(currentName)
+        if stem is not "" then
+            repeat with candidate in sourcePaths
+                set candidateFile to POSIX file (contents of candidate)
+                set candidateName to name of (info for candidateFile)
+                if my liveStem(candidateName) is stem and candidateName does not end with ".mov" then
+                    set currentName to candidateName
+                    exit repeat
+                end if
+            end repeat
+        end if
+        tell application "Photos"
+            set matchingItems to media items whose filename is currentName
+            if (count of matchingItems) is 0 then error "Photos could not identify the saved item: " & currentName
+            set savedIdentifier to id of item 1 of matchingItems
+        end tell
+        if firstIdentifier then
+            set firstIdentifier to false
+        else
+            set resultText to resultText & tab
+        end if
+        set resultText to resultText & savedIdentifier
+    end repeat
     return resultText
 end run
 

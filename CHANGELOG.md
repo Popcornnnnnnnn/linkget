@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1.dev3 — verified Photos copy cleanup (unreleased)
+
+- Remove staged download originals and Live Photo resources after comparing their bytes with the managed originals belonging to the saved Photos item IDs. Verify existing duplicates too; preserve failed, referenced or unverified imports and report their location. Successful Photos saves no longer report an extra Originals folder. Folder saving is unchanged.
+
 ## 0.2.1.dev2 — media evidence, gallery checks and Live Photo pairing (unreleased)
 
 - Verify supported exposed gallery counts and probe downloaded media before saving; preserve failures for review. Show actual dimensions, codec, video frame rate/bitrate/audio, fallback choices and unknown source counts.

@@ -39,11 +39,11 @@ On macOS, data lives in `~/Library/Application Support/linkget/`:
 | --- | --- | --- |
 | `sessions/` | Website login copies; restricted to your user | `linkget logout all` removes them |
 | `preferences.json` | Default save destination, browser choice and disconnected sites | Can be removed manually after uninstall |
-| `originals/` | Full-resolution originals used for Photos imports | Keep these files: Photos may reference them |
+| `originals/` | Staged Photos import sources; removed after verified library copies | Failed or unverified imports remain here; verify or consolidate before removal |
 
-**Do not delete `originals/` just to uninstall linkget.** If Photos uses referenced files, deleting originals breaks the items in your library. To reclaim the retained copies, first use Photos > File > Consolidate for those items and verify that the library has its own originals. linkget does not automate this operation.
+Successful verified imports leave no additional originals in linkget. **Do not delete leftover `originals/` files just to uninstall linkget.** If Photos uses referenced files, deleting originals breaks the items in your library. To reclaim the retained copies, first use Photos > File > Consolidate for those items and verify that the library has its own originals. linkget does not automate this operation.
 
-`LINKGET_HOME=/path/to/data` overrides the data directory for isolated testing or a portable setup. Do not point it to a temporary folder when importing into Photos, because that folder will hold the retained originals.
+`LINKGET_HOME=/path/to/data` overrides the data directory for isolated testing or a portable setup. Do not point it to a temporary folder when importing into Photos, because failed or unverified imports may still reference staged originals there.
 
 ## Wheel alternative
 

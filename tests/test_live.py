@@ -72,23 +72,31 @@ class LivePairTests(unittest.TestCase):
             live.retain_pairs([self.pair], folder)
         self.assertEqual(target.read_bytes(), b'previous data')
 
-    def test_photos_receives_persistent_pair_and_keeps_raw_sources(self):
+    def test_photos_verifies_pair_then_removes_raw_and_paired_staging_copies(self):
         raw_image = self.sources / 'original.jpg'
         raw_video = self.sources / 'original.mp4'
         raw_image.write_bytes(b'raw picture')
         raw_video.write_bytes(b'raw video')
         sources = [raw_image, raw_video]
+        identifier = '90FA4F22-C80E-43F2-A2AF-FE5BA03A989E/L0/001'
+        library = self.root / 'Photos.photoslibrary'
+        originals = library / 'originals/9'
+        originals.mkdir(parents=True)
+        (originals / '90FA4F22-C80E-43F2-A2AF-FE5BA03A989E.jpeg').write_bytes(self.image.read_bytes())
+        (originals / '90FA4F22-C80E-43F2-A2AF-FE5BA03A989E_2.mov').write_bytes(self.video.read_bytes())
         with patch.object(accounts, 'directory', return_value=self.root / 'settings/sessions'):
             def importer(command, **kwargs):
                 paths = list(map(Path, command[3:]))
                 self.assertEqual([p.name for p in paths], [self.image.name, self.video.name])
                 self.assertTrue(all(p.parent == photos.originals_directory() for p in paths))
                 self.assertEqual(len(list(photos.originals_directory().iterdir())), 4)
-                return CompletedProcess(command, 0, '2:0:1:2', '')
-            with patch.object(cli.subprocess, 'run', side_effect=importer):
+                return CompletedProcess(command, 0, '2:0:1:2\n' + identifier + '\t' + identifier, '')
+            with patch.object(cli.subprocess, 'run', side_effect=importer), patch.object(photos, 'library_directory', return_value=library):
                 self.assertEqual(cli.import_photos(sources, False, {(raw_image.name, raw_video.name): self.pair}), (sources, 0))
-            with patch.object(cli.subprocess, 'run', return_value=CompletedProcess([], 0, '0:2', '')):
+                self.assertEqual(list(photos.originals_directory().iterdir()), [])
+            with patch.object(cli.subprocess, 'run', return_value=CompletedProcess([], 0, '0:2\n' + identifier + '\t' + identifier, '')), patch.object(photos, 'library_directory', return_value=library):
                 self.assertEqual(cli.import_photos(sources, False, {(raw_image.name, raw_video.name): self.pair}), ([], 2))
+            self.assertEqual(list(photos.originals_directory().iterdir()), [])
 
 
 if __name__ == '__main__':
