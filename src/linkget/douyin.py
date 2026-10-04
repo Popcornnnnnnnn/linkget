@@ -21,6 +21,10 @@ class MediaUnavailable(RuntimeError):
     """Post metadata was absent; this does not establish login expiry."""
 
 
+class DownloadInterrupted(RuntimeError):
+    """A failed transport can be retried using the browser's current media source."""
+
+
 def share_item(html, post_id):
     match = re.search(r"window\._ROUTER_DATA\s*=\s*", html)
     if not match:
@@ -169,7 +173,7 @@ def media_extension(head, kind):
     raise RuntimeError("Douyin returned an unsupported media format or a verification page; nothing has been imported.")
 
 
-def download(url, directory, cookie_path=None):
+def download(url, directory, cookie_path=None, *, browser_item=None):
     post_id = urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1]
     jar = MozillaCookieJar(str(cookie_path) if cookie_path else None)
     if cookie_path:
@@ -182,8 +186,10 @@ def download(url, directory, cookie_path=None):
         return opener.open(Request(target, headers={"User-Agent": MOBILE_UA, "Referer": referer}), timeout=20)
 
     try:
-        item = fallback_item = None
-        if cookie_path:
+        item, fallback_item = browser_item, None
+        if item is not None and str(item.get("aweme_id")) != post_id:
+            raise RuntimeError("Browser media belongs to a different Douyin post; nothing has been imported.")
+        if cookie_path and item is None:
             # Browser cookies remain scoped to douyin.com; never copy them to iesdouyin.com or a CDN.
             try:
                 with request(f"https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id={post_id}", "https://www.douyin.com/") as response:
@@ -277,5 +283,7 @@ def download(url, directory, cookie_path=None):
         return DownloadResult(["Douyin: clean source unavailable; kept the exposed media, which may contain watermarks."] if fallback_used else [], len(media), variants)
     except HTTPError as error:
         raise RuntimeError(f"Douyin request failed (HTTP {error.code}). Open the post in your browser and check access or verification, then retry.") from None
-    except (URLError, OSError, HTTPException):
-        raise RuntimeError("Douyin download interrupted. Check your connection and retry; partial files have been kept.") from None
+    except (URLError, OSError, HTTPException) as error:
+        reason = error.reason if isinstance(error, URLError) else error
+        detail = str(reason) or type(reason).__name__
+        raise DownloadInterrupted(f"Douyin download failed: {detail}\nPartial files, if any, have been kept.") from None

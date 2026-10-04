@@ -24,6 +24,8 @@ if __package__:
     from .session import LOGIN_URLS, prepare_session
     from .links import normalize_link
     from .douyin import download as download_douyin, MediaUnavailable as DouyinMediaUnavailable
+    from .douyin_browser import read_item as read_douyin_browser
+    from .douyin import DownloadInterrupted as DouyinDownloadInterrupted
     from .xiaohongshu import download as download_xiaohongshu, BrowserRequired
     from .kuaishou import download as download_kuaishou, BrowserRequired as KuaishouBrowserRequired
     from .pixiv import download as download_pixiv, BrowserRequired as PixivBrowserRequired
@@ -37,6 +39,8 @@ else:  # Homebrew launches this file directly.
     from session import LOGIN_URLS, prepare_session
     from links import normalize_link
     from douyin import download as download_douyin, MediaUnavailable as DouyinMediaUnavailable
+    from douyin_browser import read_item as read_douyin_browser
+    from douyin import DownloadInterrupted as DouyinDownloadInterrupted
     from xiaohongshu import download as download_xiaohongshu, BrowserRequired
     from kuaishou import download as download_kuaishou, BrowserRequired as KuaishouBrowserRequired
     from pixiv import download as download_pixiv, BrowserRequired as PixivBrowserRequired
@@ -132,6 +136,9 @@ def login_result(site, state, saved=False, public_summary=False):
             return
         if domain == "reddit.com":
             status(site, "Public access unverified", "1;33")
+            return
+        if domain == "douyin.com":
+            status(site, "Public access · Chrome assist when needed", "1")
             return
         if domain in accounts.PUBLIC_ACCESS and domain != "bilibili.com":
             status(site, "Public access", "1")
@@ -1026,7 +1033,7 @@ def download(args, setup_results, records=None):
             required.extend(["yt-dlp", "ffmpeg"])
         if domain == "youtube.com":
             required.append("deno")
-        cookie_spec = browser_spec(args, "gallery-dl", domain) if args.browser not in {"auto", "none"} else None
+        cookie_spec = browser_spec(args, "gallery-dl", domain) if engine != "douyin" and args.browser not in {"auto", "none"} else None
         if cookie_spec and "gallery-dl" not in required:
             required.append("gallery-dl")
         tools = {name: find_tool(name) for name in required}
@@ -1068,6 +1075,8 @@ def download(args, setup_results, records=None):
         stage = Path(tempfile.mkdtemp(prefix="linkget-"))
         tried_saved = cookie_path is not None
         tried_browser = used_browser or domain in setup_results
+        browser_item = None
+        tried_douyin_page = False
         attempt = 0
         while True:
             check_batch_cancelled()
@@ -1079,6 +1088,7 @@ def download(args, setup_results, records=None):
                 if not getattr(_batch, "state", None):
                     print()
                 with (stage / "download.log").open("w") as log:
+                    log.write(f"Source: {url}\n")
                     command = None
                     if engine not in {"douyin", "xiaohongshu", "kuaishou", "pixiv"}:
                         command = command_for(args, url, engine, domain, media_dir, tools, cookie_path)
@@ -1100,7 +1110,9 @@ def download(args, setup_results, records=None):
                                     downloader = download_pixiv
                                 else:
                                     downloader = download_kuaishou
-                                notes = downloader(url, media_dir, cookie_path)
+                                notes = (downloader(url, media_dir, browser_item=browser_item)
+                                         if engine == "douyin" and browser_item is not None
+                                         else downloader(url, media_dir, cookie_path))
                                 if isinstance(notes, DownloadResult):
                                     download_info = notes
                                     source_notes.extend(notes.notes)
@@ -1155,7 +1167,15 @@ def download(args, setup_results, records=None):
                 if download_info.expected_count is not None and len(files) != download_info.expected_count:
                     raise RuntimeError(f"Incomplete media set: {len(files)} / {download_info.expected_count} files. Files have been kept.")
                 break
-            except DouyinMediaUnavailable:
+            except (DouyinMediaUnavailable, DouyinDownloadInterrupted):
+                if (not tried_douyin_page and args.browser != "none"
+                        and domain not in accounts.preferences().get("blocked", [])
+                        and (args.browser == "chrome" or args.browser == "auto" and accounts.default_browser() == "chrome")):
+                    tried_douyin_page = True
+                    status("Browser", "Reading the post in daily Chrome")
+                    browser_item = batch_interaction(lambda: read_douyin_browser(url))
+                    attempt += 1
+                    continue
                 # A missing public response can still work with an already
                 # authorized session. Do not infer expiry or prompt for login.
                 if (args.browser == "auto" and not tried_saved

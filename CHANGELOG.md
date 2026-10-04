@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1.dev7 — Douyin browser-assisted recovery (unreleased)
+
+- When public metadata is missing or a transfer is interrupted, use daily Chrome's normal post page once, without exporting browser credentials. Reuse an existing matching page or temporarily select a new page so Chrome initializes its player; restore the previous tab and close only newly created tabs. Browser reads remain coordinated during concurrent batches.
+- Select the highest exposed player quality, validate the complete gallery count, and reuse normal downloads, duplicate handling and verified Photos cleanup. Explain missing Chrome scripting permission and record the canonical source link in failure logs. Clarify Douyin's Public access status; backport to local `0.2.0+douyin-browser.1`.
+
+## 0.2.1.dev6 — preserve Douyin failure reasons (unreleased)
+
+- Replace the generic `download interrupted` message with the underlying timeout, connection, transfer or local file error. Do not tell users to check their connection for every local I/O failure. Backport to the installed `0.2.0+douyin-errors.1` build.
+
 ## 0.2.1.dev5 — Douyin cold share-page initialization (unreleased)
 
 - Handle a requested post's empty SSR shell before its anonymous visitor cookie is issued. Allow up to three share-page requests during this observed initialization sequence; stop immediately for unrecognized pages or another post, and retain the existing failure after the bounded initialization attempt.

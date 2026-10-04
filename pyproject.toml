@@ -19,7 +19,7 @@ linkget = "linkget.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-linkget = ["*.applescript", "*.swift"]
+linkget = ["*.applescript", "*.swift", "*.js"]
 
 [tool.setuptools.dynamic]
 version = {attr = "linkget.version.VERSION"}
