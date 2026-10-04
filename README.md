@@ -52,7 +52,7 @@ Use straight ASCII quotes (`'` or `"`) around command-line URLs. Shells interpre
 
 ## Batch downloads
 
-Use `linkget batch` to paste several links, one per line. Each line can contain sharing text around one URL. A blank line starts the downloads. This is available in development version `0.2.1.dev4` and the local installed build `0.2.0+parallel-batch.1`. You can also pass individually quoted links or pipe a text file:
+Use `linkget batch` to paste several links, one per line. Each line can contain sharing text around one URL. A blank line starts the downloads. This is available since development version `0.2.1.dev4` and local build `0.2.0+parallel-batch.1`; the current local build is `0.2.0+douyin-bootstrap.1`. You can also pass individually quoted links or pipe a text file:
 
 ```sh
 linkget batch 'URL1' 'URL2' --folder ~/Downloads

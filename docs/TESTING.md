@@ -13,6 +13,7 @@ Covered behaviors include:
 - Weibo source comparison, refusal of any width/height reduction even when watermark comparison passes, retained clean/uncertain originals, encoding noise, distributed image changes, marked previews of clean originals, missing/timed-out decoders, invalid/truncated alternatives and metadata cleanup; Douyin clean-source rejection with native-media fallback;
 - Weibo mixed media, YouTube video/Shorts routing, runtime guidance, quality display and playlist/live rejection;
 - new-site session classification, alternate YouTube login cookies and excluding Google account cookies;
+- Douyin share-page initialization when the requested post's SSR shell precedes its anonymous visitor cookie; bounded failure for persistent shells, website checks and another post;
 - staged Photos originals, content-based filenames, repeated content, same-name different content, verified-copy cleanup, referenced/mismatched/symlink copy rejection, and import/copy failures;
 - folder collisions and duplicate handling, progress cleanup, bare `--folder`, and invalid command guidance;
 - batch input numbering, simultaneous download start for every link, independent failure continuation, partial-file preservation, invalid input, multiline sharing text, one-time setup, duplicate handling, cancellation, serialized Photos saves and login prompts on the calling thread without browser reads;

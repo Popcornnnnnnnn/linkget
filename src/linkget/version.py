@@ -1,2 +1,2 @@
 """Release version shared by the CLI, wheel and Homebrew formula."""
-VERSION = "0.2.1.dev4"
+VERSION = "0.2.1.dev5"

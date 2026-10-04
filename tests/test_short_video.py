@@ -279,6 +279,52 @@ class ShortVideoTests(unittest.TestCase):
             self.assertEqual([p.read_bytes() for p in files], [jpg, jpg])
         self.assertEqual(len(calls), 4)
 
+    def test_douyin_handles_ssr_shell_before_the_visitor_cookie_is_issued(self):
+        shell = ('<script>window._ROUTER_DATA = ' + json.dumps({"loaderData": {
+            "video_(id)/page": {"itemId": "123", "renderInSSR": 1}
+        }}) + ';</script>').encode()
+        item = {"aweme_id": "123", "video": {"play_addr": {"url_list": [
+            "https://aweme.snssdk.com/aweme/v1/play/?video_id=example"
+        ]}}}
+        mp4 = b"\x00\x00\x00\x18ftypmp42" + b"video" * 30
+        calls = []
+
+        def build(processor):
+            class Opener:
+                def open(self, req, **kwargs):
+                    calls.append(req.full_url)
+                    if len(calls) == 1:
+                        return Response(shell)
+                    if len(calls) == 2:
+                        processor.cookiejar.set_cookie(Cookie(0, "ttwid", "visitor", None, False,
+                                                             ".iesdouyin.com", True, True, "/", True,
+                                                             True, None, True, None, None, {}))
+                        return Response(shell)
+                    if len(calls) == 3:
+                        return Response(page(item))
+                    return Response(mp4, headers={"Content-Length": str(len(mp4))})
+            return Opener()
+
+        with tempfile.TemporaryDirectory() as temp, patch.object(douyin, "build_opener", side_effect=build):
+            douyin.download("https://www.douyin.com/video/123", Path(temp))
+            self.assertEqual(next(Path(temp).iterdir()).read_bytes(), mp4)
+        self.assertEqual(calls[:3], ["https://www.iesdouyin.com/share/video/123/"] * 3)
+        self.assertEqual(len(calls), 4)
+
+    def test_douyin_bootstrap_stops_for_checks_other_posts_and_persistent_shells(self):
+        for content, requests in [(b'<html>Verification required</html>', 1),
+                                  (page({"aweme_id": "456"}), 1),
+                                  (b'<script>window._ROUTER_DATA = {"loaderData":{"page":'
+                                   b'{"itemId":"456","renderInSSR":1}}};</script>', 1),
+                                  (b'<script>window._ROUTER_DATA = {"loaderData":{"page":'
+                                   b'{"itemId":"123","renderInSSR":1}}};</script>', 3)]:
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as temp, patch.object(douyin, "build_opener") as network:
+                network.return_value.open.side_effect = lambda *a, **kw: Response(content)
+                with self.assertRaises(douyin.MediaUnavailable):
+                    douyin.download("https://www.douyin.com/video/123", Path(temp))
+                self.assertEqual(network.return_value.open.call_count, requests)
+                self.assertEqual(list(Path(temp).iterdir()), [])
+
     def test_douyin_requires_clean_source_for_every_image_before_downloading(self):
         clean = "https://p3.douyinpic.com/image~tplv-dy-lqen-new:4510:1626:q80.webp"
         marked = clean.replace("lqen-new:", "lqen-new-water:")

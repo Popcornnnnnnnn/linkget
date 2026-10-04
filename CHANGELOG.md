@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1.dev5 — Douyin cold share-page initialization (unreleased)
+
+- Handle a requested post's empty SSR shell before its anonymous visitor cookie is issued. Allow up to three share-page requests during this observed initialization sequence; stop immediately for unrecognized pages or another post, and retain the existing failure after the bounded initialization attempt.
+- Reproduce the old failure and verify the corrected path without browser login data. Backport the fix to the installed `0.2.0+douyin-bootstrap.1` build, retaining concurrent batch downloads and verified Photos cleanup.
+
 ## 0.2.1.dev4 — concurrent batch downloads (unreleased)
 
 - Start one download worker per supplied link. Keep input numbers on output and report failures independently; accept one sharing text per line, with a blank line starting interactive downloads.

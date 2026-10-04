@@ -39,6 +39,20 @@ def share_item(html, post_id):
     return None
 
 
+def share_bootstrap_pending(html, post_id):
+    """Recognize the requested post's SSR shell before its media is populated."""
+    match = re.search(r"window\._ROUTER_DATA\s*=\s*", html)
+    if not match:
+        return False
+    try:
+        data = json.JSONDecoder().raw_decode(html[match.end():])[0]
+        return any(isinstance(page, dict) and str(page.get("itemId")) == post_id
+                   and page.get("renderInSSR") == 1 and not page.get("videoInfoRes")
+                   for page in data.get("loaderData", {}).values())
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 # The public playback endpoint clamps a request to the best gear the post
 # actually has, so asking for 1080p never upscales and recovers detail that
 # the share page's 720p default drops. Unsupported ratios fall back to it.
@@ -184,13 +198,16 @@ def download(url, directory, cookie_path=None):
         share_url = f"https://www.iesdouyin.com/share/video/{post_id}/"
         if item is None:
             try:
-                had_visitor = any(c.name == "ttwid" and "iesdouyin.com" in c.domain for c in jar)
-                with request(share_url, "https://www.iesdouyin.com/") as response:
-                    item = share_item(response.read(8_000_000).decode("utf-8", "replace"), post_id)
-                # Repeat only when the first response newly issues a visitor cookie but omits media.
-                if item is None and not had_visitor and any(c.name == "ttwid" and "iesdouyin.com" in c.domain for c in jar):
+                # A cold request can first return the post's SSR shell, then issue
+                # a visitor cookie on the next response, before exposing media.
+                for _ in range(3):
+                    had_visitor = any(c.name == "ttwid" and "iesdouyin.com" in c.domain for c in jar)
                     with request(share_url, "https://www.iesdouyin.com/") as response:
-                        item = share_item(response.read(8_000_000).decode("utf-8", "replace"), post_id)
+                        html = response.read(8_000_000).decode("utf-8", "replace")
+                    item = share_item(html, post_id)
+                    new_visitor = not had_visitor and any(c.name == "ttwid" and "iesdouyin.com" in c.domain for c in jar)
+                    if item is not None or not (new_visitor or share_bootstrap_pending(html, post_id)):
+                        break
             except (URLError, OSError, HTTPException) as error:
                 if isinstance(error, HTTPError):
                     error.close()
