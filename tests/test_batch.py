@@ -4,6 +4,7 @@ import io
 from pathlib import Path
 from subprocess import CompletedProcess
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 from media_stub import uninspected
@@ -47,7 +48,7 @@ class BatchTests(unittest.TestCase):
 
         result, out, err = self.run_batch([URL + str(n) for n in (1, 2, 3)], download)
         self.assertEqual(result, 1)
-        self.assertEqual(calls, [URL + str(n) for n in (1, 2, 3)])
+        self.assertCountEqual(calls, [URL + str(n) for n in (1, 2, 3)])
         self.assertEqual(sorted(p.name for p in (self.root / "output").iterdir()), ["1.jpg", "3.jpg"])
         self.assertEqual(len(list(self.root.glob("linkget-*/media/second.jpg.part"))), 1)
         self.assertIn("2 completed · 1 failed", out)
@@ -74,7 +75,7 @@ class BatchTests(unittest.TestCase):
         with patch.object(cli.sys, "stdin", io.StringIO("分享 " + URL + "1\n\n看看 " + URL + "2\n")):
             result, out, _ = self.run_batch([], download)
         self.assertEqual(result, 0)
-        self.assertEqual(calls, [URL + "1", URL + "2"])
+        self.assertCountEqual(calls, [URL + "1", URL + "2"])
         self.assertIn("2 completed · 0 failed", out)
 
     def test_interactive_collection_runs_browser_setup_only_once(self):
@@ -106,9 +107,71 @@ class BatchTests(unittest.TestCase):
 
         result, out, err = self.run_batch([URL + "1", URL + "2"], download)
         self.assertEqual(result, 130)
-        self.assertEqual(calls, [URL + "1"])
+        self.assertTrue(calls)
+        self.assertTrue(set(calls) <= {URL + "1", URL + "2"})
+        self.assertEqual(list((self.root / "output").glob("*")), [])
         self.assertIn("2 not completed", out)
         self.assertIn("Files kept", err)
+
+    def test_every_link_downloads_concurrently_and_photos_imports_are_serial(self):
+        downloads = threading.Barrier(4)
+        importing = threading.Lock()
+        imported = []
+
+        def download(url, folder, cookies):
+            downloads.wait(timeout=3)
+            (folder / "image.jpg").write_bytes(url.encode())
+
+        def save(files, date):
+            self.assertTrue(importing.acquire(blocking=False), "Photos imports overlapped")
+            try:
+                imported.append(files[0].read_bytes())
+                threading.Event().wait(0.03)
+                return files, 0
+            finally:
+                importing.release()
+
+        with patch.object(cli.sys, "platform", "darwin"), patch.object(cli, "download_pixiv", side_effect=download), patch.object(cli, "import_photos", side_effect=save), contextlib.redirect_stdout(io.StringIO()):
+            result = cli.main(["batch", *[URL + str(n) for n in range(4)], "--photos", "--browser", "none"])
+        self.assertEqual(result, 0)
+        self.assertCountEqual(imported, [(URL + str(n)).encode() for n in range(4)])
+
+    def test_login_requests_run_serially_on_the_calling_thread(self):
+        downloads = threading.Barrier(3)
+        caller = threading.get_ident()
+        requested = []
+
+        def download(args, setup, records):
+            downloads.wait(timeout=3)
+            self.assertTrue(cli.recover_login(args, "pixiv.net", "Login needed"))
+            return 0
+
+        def login(args, domain, reason, proactive):
+            self.assertEqual(threading.get_ident(), caller)
+            requested.append(args.link)
+            return True
+
+        with patch.object(cli, "download", side_effect=download), patch.object(cli, "recover_login_interactive", side_effect=login):
+            result, out, _ = self.run_batch([URL + str(n) for n in range(3)], None)
+        self.assertEqual(result, 0)
+        self.assertEqual(len(requested), 3)
+        self.assertIn("3 downloads running in parallel", out)
+
+    def test_cancelling_login_releases_waiting_downloads(self):
+        downloads = threading.Barrier(2)
+
+        def download(args, setup, records):
+            downloads.wait(timeout=3)
+            try:
+                cli.recover_login(args, "pixiv.net", "Login needed")
+            except KeyboardInterrupt:
+                return 130
+            return 0
+
+        with patch.object(cli, "download", side_effect=download), patch.object(cli, "recover_login_interactive", side_effect=KeyboardInterrupt):
+            result, out, _ = self.run_batch([URL + "1", URL + "2"], None)
+        self.assertEqual(result, 130)
+        self.assertIn("2 not completed", out)
 
     def test_empty_input_and_invalid_global_options_do_not_start_setup(self):
         with patch.object(cli, "first_run") as setup, patch.object(cli, "download_pixiv") as download, contextlib.redirect_stderr(io.StringIO()):

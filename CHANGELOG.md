@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1.dev4 — concurrent batch downloads (unreleased)
+
+- Start one download worker per supplied link. Keep input numbers on output and report failures independently; accept one sharing text per line, with a blank line starting interactive downloads.
+- Coordinate browser/login requests on the calling thread and serialize final Photos/folder saves. Keep duplicate handling and verified Photos cleanup; cancellation preserves unfinished files and waits for active requests to finish.
+- Backport batch downloads to the local installed stable build `0.2.0+parallel-batch.1`; retain its existing download behavior and Photos cleanup without adding unrelated development features.
+
 ## 0.2.1.dev3 — verified Photos copy cleanup (unreleased)
 
 - Remove staged download originals and Live Photo resources after comparing their bytes with the managed originals belonging to the saved Photos item IDs. Verify existing duplicates too; preserve failed, referenced or unverified imports and report their location. Successful Photos saves no longer report an extra Originals folder. Locate the running Photos app's open library instead of using caller-specific Photos preferences or accessing the protected container. Ignore its internal Syndication library; preserve files if the active library cannot be identified. Folder saving is unchanged.

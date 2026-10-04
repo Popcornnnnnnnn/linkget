@@ -41,7 +41,7 @@ Use straight ASCII quotes (`'` or `"`) around command-line URLs. Shells interpre
 | `linkget sites` | Supported websites and post types |
 | `linkget doctor` | Check download tools, without account requests |
 | `linkget config` | View or change the default save destination |
-| `linkget batch URL1 URL2` | Download multiple posts in input order |
+| `linkget batch URL1 URL2` | Download all supplied posts concurrently |
 | `linkget batch` | Paste one link or sharing text per line; a blank line starts downloads |
 | `linkget auth` | Check logins and public access without sign-in prompts |
 | `linkget auth SITE` | Explicitly connect one optional login, e.g. `auth bilibili` |
@@ -52,14 +52,14 @@ Use straight ASCII quotes (`'` or `"`) around command-line URLs. Shells interpre
 
 ## Batch downloads
 
-In the next development version (`0.2.1.dev2`), use `linkget batch` to paste several links, one per line. Each line can contain sharing text around one URL. A blank line starts the downloads. You can also pass individually quoted links or pipe a text file:
+Use `linkget batch` to paste several links, one per line. Each line can contain sharing text around one URL. A blank line starts the downloads. This is available in development version `0.2.1.dev4` and the local installed build `0.2.0+parallel-batch.1`. You can also pass individually quoted links or pipe a text file:
 
 ```sh
 linkget batch 'URL1' 'URL2' --folder ~/Downloads
 linkget batch --folder ~/Downloads < links.txt
 ```
 
-Items run in input order through the normal downloader. A failed item keeps its diagnostics and does not stop the remaining links. The summary identifies failed item numbers; retry just those links. Existing duplicate handling and save options still apply. Ctrl-C stops the batch and keeps the interrupted item's files. Exit status is 0 when all items complete, 1 when any item fails, 130 when cancelled; invalid command options or an empty batch exit with 2.
+Every supplied link starts its own download concurrently through the normal downloader. Output includes each item's input number. Browser/login requests and final Photos or folder saves run one at a time. A failed item keeps its diagnostics and does not stop other links; the summary identifies failed item numbers. Existing duplicate handling and save options still apply. Many links share your bandwidth and may encounter website rate limits. Ctrl-C cancels the batch at the next safe boundary, waits for active requests to finish, and preserves unfinished files. Exit status is 0 when all items complete, 1 when any item fails, 130 when cancelled; invalid command options or an empty batch exit with 2.
 
 Download errors distinguish known network failures, website checks, HTTP access refusal, rate limits and unavailable posts, with a next step. A generic HTTP 403 does not trigger login recovery. Explicit login requirements keep the existing browser flow.
 

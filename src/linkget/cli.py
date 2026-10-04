@@ -1,12 +1,13 @@
 """Portable CLI; download engines are installed separately (normally by Homebrew)."""
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from contextlib import contextmanager, nullcontext
 import filecmp
 import json
 import os
 from pathlib import Path
+import queue
 import re
 import shutil
 import subprocess
@@ -46,6 +47,34 @@ else:  # Homebrew launches this file directly.
 VIDEO = {".mp4", ".mov", ".m4v"}
 MEDIA = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".avif", ".tif", ".tiff"} | VIDEO
 SITES = "Instagram, X/Twitter, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, Weibo, Reddit, Lofter, Pixiv and Pinterest posts; YouTube videos and Shorts"
+
+
+_batch = threading.local()
+
+
+def batch_lock(name):
+    state = getattr(_batch, "state", None)
+    return state[name] if state else nullcontext()
+
+
+def check_batch_cancelled():
+    state = getattr(_batch, "state", None)
+    if state and state["cancelled"].is_set():
+        raise KeyboardInterrupt
+
+
+def batch_interaction(callback):
+    """Run browser/login work on the batch coordinator, one request at a time."""
+    state = getattr(_batch, "state", None)
+    if not state:
+        return callback()
+    request = {"callback": callback, "item": _batch.item, "done": threading.Event()}
+    state["interactions"].put(request)
+    while not request["done"].wait(0.1):
+        check_batch_cancelled()
+    if "error" in request:
+        raise request["error"]
+    return request["result"]
 
 
 class LoginRequired(RuntimeError):
@@ -252,6 +281,10 @@ def first_run(args):
 
 
 def recover_login(args, domain, reason, proactive=False):
+    return batch_interaction(lambda: recover_login_interactive(args, domain, reason, proactive))
+
+
+def recover_login_interactive(args, domain, reason, proactive=False):
     """Connect a site from account management or resume a download in place."""
     if not sys.stdin.isatty() or args.browser == "none":
         return False
@@ -419,13 +452,16 @@ def sign_in_link(domain, stream=None):
 def status(label, value, color="0", stream=None):
     """Aligned terminal output; redirected output remains plain text."""
     stream = stream if stream is not None else sys.stdout
+    item = getattr(_batch, "item", None)
+    prefix = f"[{item[0]}/{item[1]}] " if item else ""
     field = f"{label:<12}"
     if terminal_styles(stream):
         field = f"\033[{color}m{field}\033[0m"
     lines = str(value).splitlines() or [""]
-    print(f"  {field} {lines[0]}", file=stream, flush=True)
-    for line in lines[1:]:
-        print(" " * 15 + line, file=stream, flush=True)
+    with batch_lock("output"):
+        print(f"  {prefix}{field} {lines[0]}", file=stream, flush=True)
+        for line in lines[1:]:
+            print(" " * (15 + len(prefix)) + line, file=stream, flush=True)
 
 
 def format_size(size):
@@ -464,6 +500,13 @@ def saved_description(files):
 def activity(label, media_dir=None):
     """Animate one temporary line while work runs, then clear it on every exit."""
     stream = sys.stdout
+    if getattr(_batch, "state", None):
+        check_batch_cancelled()
+        status(label, "Working...")
+        yield
+        if label not in {"Saving", "Importing"}:
+            check_batch_cancelled()
+        return
     if not stream.isatty() or os.environ.get("TERM") == "dumb":
         status(label, "Working...")
         yield
@@ -752,7 +795,7 @@ def main(argv=None):
   sites                List supported sites and media
   doctor               Check download tools and installation
   config               View or change the default save destination
-  batch [LINK ...]     Download links in order; paste one per line if omitted
+  batch [LINK ...]     Download all links concurrently; paste one per line if omitted
   compare A.json B.json Compare reports for the same links
   auth                 Check logins and public access without sign-in prompts
   auth SITE            Connect one website explicitly (e.g. auth bilibili)
@@ -888,19 +931,75 @@ def batch_download(args, parser, links, records=None):
     if not links:
         parser.error("The batch is empty. Supply links or paste one per line.")
     setup_results = first_run(args) or {}
-    completed, failed = 0, []
-    for index, link in enumerate(links, 1):
-        status("Item", f"{index}/{len(links)}")
-        item_args = argparse.Namespace(**vars(args))
-        item_args.link = link
-        result = download(item_args, setup_results, records)
-        if result == 130:
-            status("Batch", f"{completed} completed · {len(failed)} failed · {len(links) - index + 1} not completed", "33")
-            return 130
-        if result:
-            failed.append(index)
-        else:
-            completed += 1
+    state = {"cancelled": threading.Event(), "interactions": queue.Queue(),
+             "output": threading.RLock(), "saving": threading.Lock()}
+    item_records = [[] for _ in links]
+    results = {}
+
+    def run_item(index, link):
+        _batch.state = state
+        _batch.item = (index, len(links))
+        try:
+            item_args = argparse.Namespace(**vars(args))
+            item_args.link = link
+            result = download(item_args, setup_results, item_records[index - 1])
+            if result == 130:
+                state["cancelled"].set()
+            return result
+        finally:
+            del _batch.state
+            del _batch.item
+
+    status("Batch", f"{len(links)} downloads running in parallel")
+    executor = ThreadPoolExecutor(max_workers=len(links), thread_name_prefix="linkget-download")
+    futures = {}
+    try:
+        futures = {executor.submit(run_item, index, link): index for index, link in enumerate(links, 1)}
+        pending = set(futures)
+        while pending:
+            try:
+                request = state["interactions"].get(timeout=0.05)
+            except queue.Empty:
+                request = None
+            if request:
+                _batch.state = state
+                _batch.item = request["item"]
+                try:
+                    with state["output"]:
+                        check_batch_cancelled()
+                        request["result"] = request["callback"]()
+                except BaseException as error:
+                    request["error"] = error
+                    if isinstance(error, (KeyboardInterrupt, EOFError)):
+                        state["cancelled"].set()
+                finally:
+                    request["done"].set()
+                    del _batch.state
+                    del _batch.item
+            done, pending = wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
+            for future in done:
+                if not future.cancelled():
+                    results[futures[future]] = future.result()
+            if state["cancelled"].is_set():
+                for future in pending:
+                    future.cancel()
+    except KeyboardInterrupt:
+        state["cancelled"].set()
+        for pending in futures:
+            pending.cancel()
+        status("Stopping", "Waiting for active requests to finish; downloaded files will be kept.", "33")
+    finally:
+        executor.shutdown(wait=True, cancel_futures=state["cancelled"].is_set())
+        for future, index in futures.items():
+            if future.done() and not future.cancelled() and index not in results:
+                results[index] = future.result()
+        if records is not None:
+            records.extend(record for item in item_records for record in item)
+    completed = sum(result == 0 for result in results.values())
+    failed = sorted(index for index, result in results.items() if result not in {0, 130})
+    if state["cancelled"].is_set():
+        status("Batch", f"{completed} completed · {len(failed)} failed · {len(links) - completed - len(failed)} not completed", "33")
+        return 130
     status("Batch", f"{completed} completed · {len(failed)} failed", "33" if failed else "32")
     if failed:
         status("Failed items", ", ".join(map(str, failed)), "33")
@@ -913,6 +1012,7 @@ def download(args, setup_results, records=None):
     info_path = None
     evidence = {"status": "failed", "reference": None, "files": []}
     try:
+        check_batch_cancelled()
         url = args.link or (input("  Paste a link (no quotes needed): ") if sys.stdin.isatty() else sys.stdin.read())
         started = time.monotonic()
         with activity("Resolving") if any(host in url for host in ("v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/", "xhslink.com", "xhslink.cn", "t.cn/")) else nullcontext():
@@ -946,7 +1046,7 @@ def download(args, setup_results, records=None):
             session = setup_results.get(domain)
             if session is None:
                 with activity("Preparing"):
-                    session = prepare_session(tools["gallery-dl"], cookie_spec, cookie_path, domain)
+                    session = batch_interaction(lambda: prepare_session(tools["gallery-dl"], cookie_spec, cookie_path, domain))
             elif session.state == "valid":
                 accounts.copy_saved(domain, cookie_path)
             if session.state != "valid":
@@ -955,8 +1055,10 @@ def download(args, setup_results, records=None):
                 else:
                     raise LoginRequired(f"{site}: {session.detail}")
             else:
-                accounts.save(cookie_path, domain)
-                accounts.remember_source(domain, cookie_spec)
+                def save_session():
+                    accounts.save(cookie_path, domain)
+                    accounts.remember_source(domain, cookie_spec)
+                batch_interaction(save_session)
         used_browser = cookie_path is not None
         if domain == "bilibili.com" and args.browser == "auto" and domain not in accounts.preferences().get("blocked", []):
             session_dir = tempfile.TemporaryDirectory(prefix="linkget-session-")
@@ -968,12 +1070,14 @@ def download(args, setup_results, records=None):
         tried_browser = used_browser or domain in setup_results
         attempt = 0
         while True:
+            check_batch_cancelled()
             try:
                 source_notes = []
                 download_info = DownloadResult()
                 media_dir = stage / ("media" if attempt == 0 else f"signed-in-media-{attempt}")
                 media_dir.mkdir()
-                print()
+                if not getattr(_batch, "state", None):
+                    print()
                 with (stage / "download.log").open("w") as log:
                     command = None
                     if engine not in {"douyin", "xiaohongshu", "kuaishou", "pixiv"}:
@@ -1083,7 +1187,7 @@ def download(args, setup_results, records=None):
                     exporter = find_tool("gallery-dl")
                     if exporter:
                         with activity("Checking"):
-                            state, _ = accounts.import_auto(exporter, domain)
+                            state, _ = batch_interaction(lambda: accounts.import_auto(exporter, domain))
                         if state.state == "valid" and accounts.copy_saved(domain, candidate):
                             cookie_path = candidate
                             continue
@@ -1112,7 +1216,7 @@ def download(args, setup_results, records=None):
                 status("Live Photos", f"{len(prepared)} source pairs recognized by macOS")
             else:
                 status("Live Photos", f"{len(download_info.live_pairs)} pairs saved separately · use --live-photos to pair")
-        with activity("Saving" if folder else "Importing"):
+        with batch_lock("saving"), activity("Saving" if folder else "Importing"):
             if folder:
                 saved, skipped = save_folder(files, folder)
                 if prepared:
