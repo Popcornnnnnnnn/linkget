@@ -1,6 +1,7 @@
 """Preserve original bytes without invoking Photos or touching the user's library."""
 from pathlib import Path
 from subprocess import CompletedProcess
+import plistlib
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -100,6 +101,21 @@ class PhotosSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Originals are safe"):
                 cli.import_photos([source], False)
         self.assertEqual(next(photos.originals_directory().iterdir()).read_bytes(), source.read_bytes())
+
+    def test_library_location_uses_preferences_api_without_opening_photos_container(self):
+        library = self.root / "Photos.photoslibrary"
+        library.mkdir()
+        preferences = plistlib.dumps({"IPXDefaultLibraryURLBookmark": b"bookmark"}).decode()
+        responses = [CompletedProcess([], 0, preferences, ""), CompletedProcess([], 0, str(library), "")]
+        with patch.object(photos.subprocess, "run", side_effect=responses) as run:
+            self.assertEqual(photos.library_directory(), library)
+        self.assertEqual(run.call_args_list[0].args[0], ["/usr/bin/defaults", "export", "com.apple.Photos", "-"])
+        self.assertNotIn("dictionaryWithContentsOfFile", run.call_args_list[1].args[0][4])
+
+    def test_unavailable_preferences_report_the_actual_reason(self):
+        with patch.object(photos.subprocess, "run", return_value=CompletedProcess([], 1, "", "permission denied")):
+            with self.assertRaisesRegex(RuntimeError, "permission denied"):
+                photos.library_directory()
 
     def test_failed_import_keeps_original_and_never_claims_success(self):
         source = self.file("a", b"video-or-image")

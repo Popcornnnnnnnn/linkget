@@ -1,8 +1,10 @@
 """Stage Photos imports and verify managed copies before removing source files."""
 
 import hashlib
+import base64
 import os
 from pathlib import Path
+import plistlib
 import re
 import shutil
 import subprocess
@@ -55,21 +57,36 @@ def retain_originals(files):
 
 def library_directory():
     # Resolve Photos' last-used library without launching an app, showing a
-    # chooser, assuming ~/Pictures, or reading the library database.
+    # chooser, assuming ~/Pictures, or reading the library database. Query
+    # preferences through defaults: directly opening Photos' container plist
+    # can be denied when linkget runs from Terminal.
+    preferences = subprocess.run(["/usr/bin/defaults", "export", "com.apple.Photos", "-"],
+                                 text=True, capture_output=True, timeout=10)
+    if preferences.returncode:
+        raise RuntimeError("Could not read the Photos library preference: " + preferences.stderr.strip())
+    try:
+        bookmark = plistlib.loads(preferences.stdout.encode()).get("IPXDefaultLibraryURLBookmark")
+    except (ValueError, plistlib.InvalidFileException) as error:
+        raise RuntimeError("Photos returned an unreadable library preference.") from error
+    if not isinstance(bookmark, bytes):
+        raise RuntimeError("Photos has not recorded its library location.")
     script = '''ObjC.import("Foundation");
-var path = ObjC.unwrap($.NSHomeDirectory()) + "/Library/Containers/com.apple.Photos/Data/Library/Preferences/com.apple.Photos.plist";
-var prefs = $.NSDictionary.dictionaryWithContentsOfFile(path);
-var data = prefs.objectForKey("IPXDefaultLibraryURLBookmark");
+function run(argv) {
+var data = $.NSData.alloc.initWithBase64EncodedStringOptions(argv[0], 0);
 var stale = Ref(); var error = Ref();
 var url = $.NSURL.URLByResolvingBookmarkDataOptionsRelativeToURLBookmarkDataIsStaleError(
     data, $.NSURLBookmarkResolutionWithoutUI, $(), stale, error);
 if (!url.path.js) throw Error("Cannot resolve Photos library");
-url.path.js;'''
-    result = subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", script],
+return url.path.js;
+}'''
+    result = subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", script,
+                             base64.b64encode(bookmark).decode("ascii")],
                             text=True, capture_output=True, timeout=10)
     path = result.stdout.strip()
-    if result.returncode or not path or not Path(path).is_dir():
-        raise RuntimeError("Could not locate the Photos library to verify its saved copies.")
+    if result.returncode or not path:
+        raise RuntimeError("Could not resolve the Photos library location: " + result.stderr.strip())
+    if not Path(path).is_dir():
+        raise RuntimeError("The Photos library is unavailable or cannot be accessed: " + path)
     return Path(path)
 
 
