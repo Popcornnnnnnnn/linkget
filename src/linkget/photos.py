@@ -1,10 +1,8 @@
 """Stage Photos imports and verify managed copies before removing source files."""
 
 import hashlib
-import base64
 import os
 from pathlib import Path
-import plistlib
 import re
 import shutil
 import subprocess
@@ -56,38 +54,34 @@ def retain_originals(files):
 
 
 def library_directory():
-    # Resolve Photos' last-used library without launching an app, showing a
-    # chooser, assuming ~/Pictures, or reading the library database. Query
-    # preferences through defaults: directly opening Photos' container plist
-    # can be denied when linkget runs from Terminal.
-    preferences = subprocess.run(["/usr/bin/defaults", "export", "com.apple.Photos", "-"],
-                                 text=True, capture_output=True, timeout=10)
-    if preferences.returncode:
-        raise RuntimeError("Could not read the Photos library preference: " + preferences.stderr.strip())
-    try:
-        bookmark = plistlib.loads(preferences.stdout.encode()).get("IPXDefaultLibraryURLBookmark")
-    except (ValueError, plistlib.InvalidFileException) as error:
-        raise RuntimeError("Photos returned an unreadable library preference.") from error
-    if not isinstance(bookmark, bytes):
-        raise RuntimeError("Photos has not recorded its library location.")
-    script = '''ObjC.import("Foundation");
-function run(argv) {
-var data = $.NSData.alloc.initWithBase64EncodedStringOptions(argv[0], 0);
-var stale = Ref(); var error = Ref();
-var url = $.NSURL.URLByResolvingBookmarkDataOptionsRelativeToURLBookmarkDataIsStaleError(
-    data, $.NSURLBookmarkResolutionWithoutUI, $(), stale, error);
-if (!url.path.js) throw Error("Cannot resolve Photos library");
-return url.path.js;
-}'''
-    result = subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", script,
-                             base64.b64encode(bookmark).decode("ascii")],
+    # Inspect the running Photos process, rather than preferences that can
+    # differ between Terminal and other callers. Read only open-file paths:
+    # never open the library database or launch/activate Photos here.
+    processes = subprocess.run(["/usr/bin/pgrep", "-u", str(os.getuid()), "-x", "Photos"],
+                               text=True, capture_output=True, timeout=10)
+    pids = processes.stdout.split()
+    if processes.returncode or not pids or any(not pid.isdecimal() for pid in pids):
+        raise RuntimeError("Could not identify the running Photos app to verify its library.")
+    result = subprocess.run(["/usr/sbin/lsof", "-a", "-p", ",".join(pids), "-Fn"],
                             text=True, capture_output=True, timeout=10)
-    path = result.stdout.strip()
-    if result.returncode or not path:
-        raise RuntimeError("Could not resolve the Photos library location: " + result.stderr.strip())
-    if not Path(path).is_dir():
-        raise RuntimeError("The Photos library is unavailable or cannot be accessed: " + path)
-    return Path(path)
+    if result.returncode:
+        raise RuntimeError("Could not locate Photos' open library: " + result.stderr.strip())
+    internal = Path.home() / "Library/Photos/Libraries/Syndication.photoslibrary"
+    libraries = set()
+    for line in result.stdout.splitlines():
+        if not line.startswith("n"):
+            continue
+        path = Path(line[1:])
+        if path.name == "Photos.sqlite" and path.parent.name == "database":
+            library = path.parent.parent
+            if library.suffix == ".photoslibrary" and library != internal:
+                libraries.add(library)
+    if len(libraries) != 1:
+        raise RuntimeError("Could not identify a single open Photos library; original files have been kept.")
+    library = libraries.pop()
+    if not library.is_dir():
+        raise RuntimeError("The open Photos library is unavailable or cannot be accessed: " + str(library))
+    return library
 
 
 def verify_library_copies(files, identifiers):

@@ -2,7 +2,7 @@
 
 ## 0.2.1.dev3 — verified Photos copy cleanup (unreleased)
 
-- Remove staged download originals and Live Photo resources after comparing their bytes with the managed originals belonging to the saved Photos item IDs. Verify existing duplicates too; preserve failed, referenced or unverified imports and report their location. Successful Photos saves no longer report an extra Originals folder. Resolve the library bookmark through the preferences service instead of directly opening the protected Photos container, so Terminal runs do not depend on container-plist access. Folder saving is unchanged.
+- Remove staged download originals and Live Photo resources after comparing their bytes with the managed originals belonging to the saved Photos item IDs. Verify existing duplicates too; preserve failed, referenced or unverified imports and report their location. Successful Photos saves no longer report an extra Originals folder. Locate the running Photos app's open library instead of using caller-specific Photos preferences or accessing the protected container. Ignore its internal Syndication library; preserve files if the active library cannot be identified. Folder saving is unchanged.
 
 ## 0.2.1.dev2 — media evidence, gallery checks and Live Photo pairing (unreleased)
 
