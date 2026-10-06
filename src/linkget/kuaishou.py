@@ -8,8 +8,10 @@ from urllib.parse import parse_qs, urlsplit
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 if __package__:
+    from .runtime import cancellation_check
     from .media import DownloadResult
 else:
+    from runtime import cancellation_check
     from media import DownloadResult
 
 DESKTOP_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36"
@@ -88,6 +90,8 @@ def video_url(photo):
 
 
 def download(url, directory, cookie_path=None):
+    check_cancelled = cancellation_check()
+    check_cancelled()
     parsed = urlsplit(url)
     match = re.fullmatch(r"/short-video/([A-Za-z0-9]+)/?", parsed.path)
     if (parsed.hostname not in {"kuaishou.com", "www.kuaishou.com"} or not match
@@ -132,6 +136,7 @@ def download(url, directory, cookie_path=None):
             with partial.open("xb") as output:
                 output.write(head)
                 while chunk := response.read(1024 * 1024):
+                    check_cancelled()
                     count += len(chunk)
                     output.write(chunk)
             expected = response.headers.get("Content-Length")

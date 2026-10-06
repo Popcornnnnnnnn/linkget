@@ -9,8 +9,10 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 if __package__:
+    from .runtime import cancellation_check
     from .media import DownloadResult
 else:
+    from runtime import cancellation_check
     from media import DownloadResult
 
 
@@ -19,6 +21,8 @@ class BrowserRequired(RuntimeError):
 
 
 def download(url, directory, cookie_path=None):
+    check_cancelled = cancellation_check()
+    check_cancelled()
     match = re.fullmatch(r"/(?:en/)?artworks/(\d+)/?", urlsplit(url).path)
     if not match:
         raise ValueError("Use a single Pixiv artwork link, not a profile or collection.")
@@ -82,6 +86,7 @@ def download(url, directory, cookie_path=None):
                 with partial.open("xb") as output:
                     output.write(head)
                     while chunk := response.read(1024 * 1024):
+                        check_cancelled()
                         count += len(chunk)
                         output.write(chunk)
                 expected = response.headers.get("Content-Length")

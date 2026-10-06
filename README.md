@@ -43,6 +43,10 @@ Use straight ASCII quotes (`'` or `"`) around command-line URLs. Shells interpre
 | `linkget config` | View or change the default save destination |
 | `linkget batch URL1 URL2` | Download all supplied posts concurrently |
 | `linkget batch` | Paste one link or sharing text per line; a blank line starts downloads |
+| `linkget retry [TASK]` | Retry only unfinished items from the latest or specified task |
+| `linkget recover` | List retained files and tasks needing recovery |
+| `linkget recover TASK` | Save a complete retained download without downloading again |
+| `linkget recover TASK --verify` | Verify recorded Photos originals before cleaning staged copies |
 | `linkget auth` | Check logins and public access without sign-in prompts |
 | `linkget auth SITE` | Explicitly connect one optional login, e.g. `auth bilibili` |
 | `linkget logout bilibili` | Remove Bilibili login and disable its automatic browser access |
@@ -52,14 +56,34 @@ Use straight ASCII quotes (`'` or `"`) around command-line URLs. Shells interpre
 
 ## Batch downloads
 
-Use `linkget batch` to paste several links, one per line. Each line can contain sharing text around one URL. A blank line starts the downloads. This is available since development version `0.2.1.dev4` and local build `0.2.0+parallel-batch.1`; the current local build is `0.2.0+douyin-browser.1`. You can also pass individually quoted links or pipe a text file:
+Use `linkget batch` to paste several links, one per line. Each line can contain sharing text around one URL. A blank line starts the downloads. This is available since development version `0.2.1.dev4` and local build `0.2.0+parallel-batch.1`; the current local development build is `0.2.1.dev8`, adding task recovery and optional concurrency limits. You can also pass individually quoted links or pipe a text file:
 
 ```sh
 linkget batch 'URL1' 'URL2' --folder ~/Downloads
 linkget batch --folder ~/Downloads < links.txt
 ```
 
-Every supplied link starts its own download concurrently through the normal downloader. Output includes each item's input number. Browser/login requests and final Photos or folder saves run one at a time. A failed item keeps its diagnostics and does not stop other links; the summary identifies failed item numbers. Existing duplicate handling and save options still apply. Many links share your bandwidth and may encounter website rate limits. Ctrl-C cancels the batch at the next safe boundary, waits for active requests to finish, and preserves unfinished files. Exit status is 0 when all items complete, 1 when any item fails, 130 when cancelled; invalid command options or an empty batch exit with 2.
+Every supplied link starts its own download concurrently through the normal downloader. Add `--jobs 3` to run at most three downloads at once; the remaining links wait in a queue. Output includes each item's original input number and periodically shows the active phase, elapsed time and downloaded size. Browser/login requests and final Photos or folder saves run one at a time. A failed item keeps its diagnostics and does not stop other links; the summary identifies failed item numbers. Existing duplicate handling and save options still apply. Many links share your bandwidth and may encounter website rate limits. Ctrl-C stops queued work, terminates external download engines and their child processes, and preserves unfinished files. Native adapters stop at their next transfer boundary; an active network read may still wait for its existing timeout. Saving or importing finishes at a safe boundary. Exit status is 0 when all items complete, 1 when any item fails, 130 when cancelled; invalid command options or an empty batch exit with 2.
+
+### Retry and recover
+
+Each single download or batch prints a task ID. Its local receipt remembers the resolved destination, download options and unfinished items. Completed items are skipped on retry, and original item numbers are retained. If a download was complete but saving failed, retry saves the checked local files first. A partial download is downloaded again; this is not a promise of byte-level resume across all engines.
+
+```sh
+linkget retry                         # latest unfinished task
+linkget retry TASK --jobs 3           # one selected task
+linkget recover                      # retained locations and recovery status
+linkget recover TASK --folder ~/Downloads
+linkget recover TASK --photos --item 2
+linkget recover TASK --verify         # no import; verify existing Photos copies
+linkget retry TASK --redownload       # fetch again, preserving older files
+```
+
+Replace `TASK` with the printed ID. Recovery refuses incomplete, missing or changed media; it does not silently import a partial set. A folder or Photos override applies to that recovery command. Older partial files remain available at the locations shown by `recover`. Files retained by older builds without a task receipt are listed but kept; download their original link again to obtain verified Photos cleanup. Saving a previously failed Photos task to a folder does not delete resources that Photos may still reference; its import receipt remains available to `recover TASK --verify`.
+
+Receipts are kept in `~/Library/Application Support/linkget/jobs/` on macOS, with user-only directory/file permissions. Unfinished tasks retain their original share text or link, including access tokens needed to retry, plus a selected browser profile path if supplied. They contain no browser cookies. Successful items drop their share text; do not share unfinished task receipts. Optional `--report` files continue to exclude share tokens and local recovery paths. Retrying with `--report` reports only the retried subset.
+
+Before network/browser work, linkget checks whether the selected destination or its existing parent is writable and, with `--live-photos`, whether ExifTool and the selected Swift compiler are available. `linkget doctor --folder PATH` or `linkget doctor --photos --live-photos` includes these checks. Photos Automation permission and managed-library copies still need to be checked during import; the preflight does not grant permissions or prove library acceptance.
 
 Download errors distinguish known network failures, website checks, HTTP access refusal, rate limits and unavailable posts, with a next step. A generic HTTP 403 does not trigger login recovery. Explicit login requirements keep the existing browser flow.
 

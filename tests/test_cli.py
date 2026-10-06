@@ -10,11 +10,16 @@ import unittest
 from unittest.mock import patch
 from media_stub import uninspected
 
-from linkget import cli
+from linkget import accounts, cli
 
 
 class CommandTests(unittest.TestCase):
     def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        directory = patch.object(accounts, "directory", return_value=Path(temporary.name) / "sessions")
+        directory.start()
+        self.addCleanup(directory.stop)
         probe = patch.object(cli, "inspect_files", side_effect=uninspected)
         probe.start()
         self.addCleanup(probe.stop)

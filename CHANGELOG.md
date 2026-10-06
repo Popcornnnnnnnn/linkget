@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1.dev8 — task recovery and bounded batch execution (unreleased)
+
+- Add private task receipts and `retry [TASK]`, preserving original item numbers and skipping completed downloads. Reuse a complete retained set after save failure; `--redownload` fetches again while keeping earlier files.
+- Add `recover [TASK]`, per-item recovery, destination overrides and `--verify` cleanup using recorded Photos asset identifiers and byte checks. Refuse incomplete, changed or out-of-stage files; retain referenced and untracked originals.
+- Check writable destinations, ExifTool and the selected Swift compiler before download/browser work; extend destination-aware `doctor` checks without opening Photos or reading a browser.
+- Add optional `--jobs N` without changing default concurrency. Show active phases, elapsed time and transfer size. Cancel external engine process groups and check cancellation between native adapter chunks; preserve active-save safety.
+- Extract batch coordination, engine routing/format selection, output, destination saves, cancellation and recovery from the main CLI. Preserve direct Homebrew script execution and packaged entry points.
+- Add an opt-in generated-media Live Photo acceptance script, checking source preservation, encoded stream hashes, repeat packaging, and named-library import/deduplication/verified cleanup. Actual playback still requires UI acceptance; offline recognition alone is insufficient.
+
 ## 0.2.1.dev7 — Douyin browser-assisted recovery (unreleased)
 
 - When public metadata is missing or a transfer is interrupted, use daily Chrome's normal post page once, without exporting browser credentials. Reuse an existing matching page or temporarily select a new page so Chrome initializes its player; restore the previous tab and close only newly created tabs. Browser reads remain coordinated during concurrent batches.

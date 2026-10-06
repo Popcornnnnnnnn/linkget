@@ -26,6 +26,32 @@ The current [13-channel media corpus and acceptance protocol](MEDIA_VALIDATION.m
 
 ## Manual acceptance needed
 
+### Task recovery and Live Photo follow-up (2026-10-07)
+
+The recovery regression suite uses isolated settings/files and covers failed-only retries, original item numbers, saved destinations, public-only browser overrides, optional concurrency limits, stage/size progress, complete-set save recovery, changed/out-of-stage refusal, private token retention and token-free reports, task locking, and managed-byte verification before cleanup. Cancellation tests launch only local Python processes; they check bounded cancellation, timeout classification and large output-pipe draining. Ordinary tests do not access a personal Photos library or browser.
+
+Run the generated-media offline acceptance separately:
+
+```sh
+PYTHONPATH=src python3 scripts/accept_live_photos.py --output .local/media-validation/live-offline-NEW
+```
+
+The script generates its own two-second moving pattern and tone. It checks macOS pair recognition, unchanged raw inputs, identical encoded motion/audio stream hashes and byte-identical repeated packaging. It never opens Photos and never downloads a social-network sample.
+
+For actual import acceptance, manually open an isolated Photos test library in the existing test VM, then run the following from its local Terminal. Supply its exact path; the script refuses a different active library:
+
+```sh
+PYTHONPATH=src python3 scripts/accept_live_photos.py \
+  --output .local/media-validation/live-library-NEW --photos \
+  --library '/Users/jack/Pictures/Linkget Acceptance.photoslibrary'
+```
+
+This opts into a real import. The importer requires one asset for the two pair resources, verifies both managed originals before removing staged raw/paired copies, and verifies that importing again adds no asset. The generated sample remains in the named test library for inspecting the LIVE badge, motion and audio. `acceptance.json` keeps playback explicitly pending until that UI check is recorded. Repeat with a fresh real multi-item source gallery for platform acceptance; the generated pair establishes only the packaging/import path.
+
+On 2026-10-07, all 196 tests passed on source/Python 3.10 and 3.14, and on an isolated installed wheel/Python 3.13. The direct Homebrew script entry point passed a generated-JPEG batch/retry smoke check using a local fixture engine and real ffprobe: the successful first item was skipped and the second retained its original input number. That smoke check made no website requests. The offline follow-up passed pair recognition, unchanged raw sources, identical encoded audio/video streams and byte-identical repeat packaging. The backed-up local command was updated to `0.2.1.dev8`; destination-aware `doctor` passed. The already-running older batch was kept running.
+
+The host Mac and existing test VM were locked during UI work, so actual named-library import and playback have not been verified in this round. Local evidence, the installed-source backup and installation fingerprints are under `.local/media-validation/optimizations/`.
+
 For the development `--live-photos` feature, macOS recognizes the generated resources in an offline PhotoKit check. This does not prove actual library import or playback. In a test library, import one pair from a local Terminal: it should become one item with a LIVE badge and playable motion; repeat the same import and confirm there is no additional item. Also test a fresh multi-item Live Photo share before claiming live gallery acceptance. Check that both raw and paired staging files are removed only after the library originals have been verified; keep them while Photos could reference them. Do not launch Photos for unattended tests or change the user's focus. The macOS VM was suspended during this round; real library acceptance remains pending.
 
 Real OS permission prompts, a brand-new Mac installation, browser profile combinations, and actual Photos imports vary by machine. The automated suite does not prove these UI flows. Photos mode removes staged originals only after matching the bytes of the managed originals belonging to the returned Photos item IDs. Referenced, failed or unverified imports keep their source media. The check uses the running Photos process's open library paths, ignoring the internal Syndication library, and reads managed originals without reading or editing the library database. It does not depend on caller-specific Photos preferences. Missing or ambiguous open libraries and changed on-disk layouts fail safely. Check the imported item, audio, dimensions and duplicate handling before relying on the trial for an archive.

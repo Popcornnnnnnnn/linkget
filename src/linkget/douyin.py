@@ -11,9 +11,11 @@ import concurrent.futures
 
 if __package__:
     from .links import MOBILE_UA
+    from .runtime import cancellation_check
     from .media import DownloadResult
 else:
     from links import MOBILE_UA
+    from runtime import cancellation_check
     from media import DownloadResult
 
 
@@ -174,6 +176,8 @@ def media_extension(head, kind):
 
 
 def download(url, directory, cookie_path=None, *, browser_item=None):
+    check_cancelled = cancellation_check()
+    check_cancelled()
     post_id = urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1]
     jar = MozillaCookieJar(str(cookie_path) if cookie_path else None)
     if cookie_path:
@@ -233,6 +237,7 @@ def download(url, directory, cookie_path=None, *, browser_item=None):
 
         initial_fallback = fallback_used
         def _download_one(index, kind, media_url):
+            check_cancelled()
             local_fallback = False
             try:
                 response = request(media_url, share_url)
@@ -263,6 +268,7 @@ def download(url, directory, cookie_path=None, *, browser_item=None):
                 with partial.open("xb") as output:
                     output.write(head)
                     while chunk := response.read(1024 * 1024):
+                        check_cancelled()
                         count += len(chunk)
                         output.write(chunk)
                 expected = response.headers.get("Content-Length")

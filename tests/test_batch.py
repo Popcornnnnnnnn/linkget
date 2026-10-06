@@ -208,7 +208,7 @@ class BatchTests(unittest.TestCase):
                     return CompletedProcess(command, 1)
 
                 out, err = io.StringIO(), io.StringIO()
-                with patch.object(cli, "find_tool", return_value="gallery-dl"), patch.object(cli.subprocess, "run", side_effect=download), patch.object(accounts, "import_auto") as browser, patch.object(cli, "recover_login") as login, contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                with patch.object(cli, "find_tool", return_value="gallery-dl"), patch.object(cli, "run_process", side_effect=download), patch.object(accounts, "import_auto") as browser, patch.object(cli, "recover_login") as login, contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                     self.assertEqual(cli.main(["batch", "https://x.com/user/status/1", "--folder", str(self.root / "output"), "--browser", "none"]), 1)
                 self.assertIn(label, err.getvalue())
                 self.assertIn("Next", err.getvalue())

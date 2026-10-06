@@ -11,9 +11,11 @@ import concurrent.futures
 
 if __package__:
     from .links import MOBILE_UA
+    from .runtime import cancellation_check
     from .media import DownloadResult
 else:
     from links import MOBILE_UA
+    from runtime import cancellation_check
     from media import DownloadResult
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36"
@@ -150,6 +152,8 @@ def extension(head, kind):
 
 
 def download(url, directory, cookie_path=None):
+    check_cancelled = cancellation_check()
+    check_cancelled()
     note_id = urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1]
     jar = MozillaCookieJar(str(cookie_path) if cookie_path else None)
     if cookie_path:
@@ -195,6 +199,7 @@ def download(url, directory, cookie_path=None):
             raise RuntimeError("Xiaohongshu returned no media.")
 
         def _download_one(index, kind, target, used_original):
+            check_cancelled()
             try:
                 response = request(target)
             except HTTPError as error:
@@ -217,6 +222,7 @@ def download(url, directory, cookie_path=None):
                 with partial.open("xb") as output:
                     output.write(head)
                     while chunk := response.read(1024 * 1024):
+                        check_cancelled()
                         count += len(chunk)
                         output.write(chunk)
                 expected = response.headers.get("Content-Length")

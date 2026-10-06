@@ -1,24 +1,24 @@
 """Portable CLI; download engines are installed separately (normally by Homebrew)."""
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
-from contextlib import contextmanager, nullcontext
-import filecmp
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
-import queue
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import time
-from urllib.parse import urlsplit
 
 if __package__:
-    from . import accounts
+    from . import accounts, jobs, destinations, preflight, recovery
+    from .runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
+    from .output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description
+    from .batch import run_batch
+    from .engines import route, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login
     from .photos import originals_directory, retain_originals, verify_library_copies
     from .version import VERSION
     from .session import LOGIN_URLS, prepare_session
@@ -31,9 +31,13 @@ if __package__:
     from .pixiv import download as download_pixiv, BrowserRequired as PixivBrowserRequired
     from .weibo import prefer_clean_images
     from .media import DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
-    from .live import prepare_pairs, retain_pairs, save_pairs
+    from .live import prepare_pairs, save_pairs
 else:  # Homebrew launches this file directly.
-    import accounts
+    import accounts, jobs, destinations, preflight, recovery
+    from runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
+    from output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description
+    from batch import run_batch
+    from engines import route, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login
     from photos import originals_directory, retain_originals, verify_library_copies
     from version import VERSION
     from session import LOGIN_URLS, prepare_session
@@ -46,54 +50,11 @@ else:  # Homebrew launches this file directly.
     from pixiv import download as download_pixiv, BrowserRequired as PixivBrowserRequired
     from weibo import prefer_clean_images
     from media import DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
-    from live import prepare_pairs, retain_pairs, save_pairs
+    from live import prepare_pairs, save_pairs
 
 VIDEO = {".mp4", ".mov", ".m4v"}
 MEDIA = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".avif", ".tif", ".tiff"} | VIDEO
 SITES = "Instagram, X/Twitter, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, Weibo, Reddit, Lofter, Pixiv and Pinterest posts; YouTube videos and Shorts"
-
-
-_batch = threading.local()
-
-
-def batch_lock(name):
-    state = getattr(_batch, "state", None)
-    return state[name] if state else nullcontext()
-
-
-def check_batch_cancelled():
-    state = getattr(_batch, "state", None)
-    if state and state["cancelled"].is_set():
-        raise KeyboardInterrupt
-
-
-def batch_interaction(callback):
-    """Run browser/login work on the batch coordinator, one request at a time."""
-    state = getattr(_batch, "state", None)
-    if not state:
-        return callback()
-    request = {"callback": callback, "item": _batch.item, "done": threading.Event()}
-    state["interactions"].put(request)
-    while not request["done"].wait(0.1):
-        check_batch_cancelled()
-    if "error" in request:
-        raise request["error"]
-    return request["result"]
-
-
-class LoginRequired(RuntimeError):
-    pass
-
-
-def needs_login(message):
-    """Match explicit authentication failures, not generic 403/429/network errors."""
-    return bool(re.search(
-        r"login[_ -]required|log[ -]?in (?:is )?required|(?:please|must|need to) (?:log[ -]?in|sign in)|"
-        r"(?:account|login) credentials (?:required|needed)|invalid login credentials|"
-        r"(?:cookies|authentication|authorization)['\"]? (?:are |is )?(?:required|needed)|"
-        r"fresh cookies.*needed|(?:cookies|session)(?: are| is| have| has)? (?:expired|no longer valid)|"
-        r"sign in (?:to|if)|redirect to login page|登录后|请(?:先)?登录|需要登录",
-        message, re.I))
 
 
 def login_guidance(args, domain, url, reason):
@@ -346,107 +307,6 @@ def recover_login_interactive(args, domain, reason, proactive=False):
         status(site, "Could not connect · " + reason, "1;33")
 
 
-def restricted_bilibili_quality(info, messages):
-    """Only warn when the extractor advertises a missing standard HD format."""
-    resolutions = {16: 360, 32: 480, 64: 720, 74: 720, 80: 1080, 112: 1080, 116: 1080, 120: 2160, 127: 4320}
-    available = max((resolutions.get(f.get("quality"), min(f.get("width") or f.get("height") or 0,
-                                                         f.get("height") or 0))
-                     for f in info.get("formats", [])), default=0)
-    required = []
-    for names in re.findall(r"Format\(s\) (.*?) are missing", messages):
-        for name in names.split(","):
-            match = re.fullmatch(r"\s*(720|1080)P(?:\s*(?:高清|准高清))?\s*", name, re.I)
-            if match and int(match[1]) > available:
-                required.append(int(match[1]))
-    if required:
-        return f"This video offers {max(required)}p, but only {available}p is available to this request. Sign in to request higher quality; account permissions may also apply."
-    return None
-
-
-def prepare_bilibili(command, info_path, log):
-    """Check quality before downloading; reuse the same metadata for the download."""
-    probe = command[:-1] + ["--skip-download", "--dump-single-json", "--no-quiet", command[-1]]
-    result = subprocess.run(probe, capture_output=True, text=True, timeout=60)
-    lines = result.stdout.rstrip().splitlines()
-    messages = "\n".join(lines[:-1]) + "\n" + result.stderr
-    log.write(messages)
-    log.flush()
-    if result.returncode or ("--cookies" in command and needs_login(messages)):
-        if needs_login(messages):
-            raise LoginRequired("Bilibili requires a signed-in account for this video.")
-        raise RuntimeError("Could not read this Bilibili video's formats.\n" + "\n".join(messages.splitlines()[-8:]))
-    try:
-        info = json.loads(lines[-1])
-        if not isinstance(info, dict):
-            raise ValueError()
-    except (IndexError, ValueError):
-        raise RuntimeError("Bilibili returned unreadable video information; nothing has been downloaded.") from None
-    reason = restricted_bilibili_quality(info, messages)
-    if reason:
-        raise LoginRequired(reason)
-    info_path.write_text(json.dumps(info))
-    info_path.chmod(0o600)
-    return command[:-1] + ["--load-info-json", str(info_path)]
-
-
-def selected_quality(info_path):
-    info = json.loads(info_path.read_text())
-    selected = info.get("requested_formats") or [info]
-    video = next((item for item in selected if item.get("vcodec") not in {None, "none"}), None)
-    if not video or not video.get("width") or not video.get("height"):
-        return None
-    codec = video["vcodec"].split(".")[0]
-    codec = {"avc1": "H.264", "hvc1": "HEVC", "hev1": "HEVC", "av01": "AV1"}.get(codec, codec)
-    text = f"{video['width']}×{video['height']} · {codec}"
-    if video.get("fps"):
-        text += f" · {video['fps']:g} fps"
-    return text
-
-
-def prepare_video(command, info_path, log, domain):
-    if domain == "bilibili.com":
-        return prepare_bilibili(command, info_path, log)
-    site = "YouTube" if domain == "youtube.com" else "Weibo" if domain == "weibo.com" else "Reddit" if domain == "reddit.com" else "Site"
-    probe = command[:-1] + ["--skip-download", "--dump-single-json", "--no-quiet", command[-1]]
-    result = subprocess.run(probe, capture_output=True, text=True, timeout=90)
-    lines = result.stdout.rstrip().splitlines()
-    messages = "\n".join(lines[:-1]) + "\n" + result.stderr
-    log.write(messages)
-    log.flush()
-    if result.returncode or ("--cookies" in command and needs_login(messages)):
-        if needs_login(messages):
-            raise LoginRequired(f"{site} asks you to sign in or complete verification for this video.")
-        if domain == "youtube.com" and ("PO Token" in messages or "JavaScript" in messages or "challenge" in messages.lower()):
-            raise RuntimeError("YouTube's verification could not be completed. Run brew upgrade yt-dlp deno, then retry.\n" + "\n".join(messages.splitlines()[-6:]))
-        if domain == "reddit.com" and "HTTP Error 404" in messages:
-            if "--cookies" not in command:
-                raise LoginRequired(f"{site} returned 404. This post may be deleted, age-restricted, or quarantined. Run linkget auth reddit to connect a Reddit login and retry.")
-            raise RuntimeError(f"This {site} post is unavailable, deleted, or private.")
-        raise RuntimeError(f"Could not read this {site} video.\n" + "\n".join(messages.splitlines()[-8:]))
-    try:
-        info = json.loads(lines[-1])
-        if not isinstance(info, dict):
-            raise ValueError()
-    except (IndexError, ValueError):
-        raise RuntimeError(f"{site} returned unreadable video information; nothing has been downloaded.") from None
-    if info.get("_type") in {"playlist", "multi_video"} or "entries" in info:
-        raise ValueError(f"Use a single {site} video link, not a playlist or channel.")
-    if info.get("is_live") or info.get("live_status") in {"is_live", "is_upcoming", "post_live"}:
-        raise ValueError(f"Live or upcoming {site} streams are not supported. Try the processed replay after it ends.")
-    info_path.write_text(json.dumps(info))
-    info_path.chmod(0o600)
-    return command[:-1] + ["--load-info-json", str(info_path)]
-
-
-def terminal_styles(stream):
-    return stream.isatty() and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
-
-
-def emphasis(value, stream=None):
-    stream = stream if stream is not None else sys.stdout
-    return f"\033[1m{value}\033[0m" if terminal_styles(stream) else str(value)
-
-
 def sign_in_link(domain, stream=None):
     stream = stream if stream is not None else sys.stdout
     site = next(site for site, site_domain in accounts.SITES.items() if site_domain == domain)
@@ -454,100 +314,6 @@ def sign_in_link(domain, stream=None):
     # Keep the full URL readable/copyable even when OSC 8 links are unsupported.
     link = f"\033]8;;{url}\033\\{url}\033]8;;\033\\" if terminal_styles(stream) else url
     status("Sign in", f"{emphasis(site, stream)} · {link}", stream=stream)
-
-
-def status(label, value, color="0", stream=None):
-    """Aligned terminal output; redirected output remains plain text."""
-    stream = stream if stream is not None else sys.stdout
-    item = getattr(_batch, "item", None)
-    prefix = f"[{item[0]}/{item[1]}] " if item else ""
-    field = f"{label:<12}"
-    if terminal_styles(stream):
-        field = f"\033[{color}m{field}\033[0m"
-    lines = str(value).splitlines() or [""]
-    with batch_lock("output"):
-        print(f"  {prefix}{field} {lines[0]}", file=stream, flush=True)
-        for line in lines[1:]:
-            print(" " * (15 + len(prefix)) + line, file=stream, flush=True)
-
-
-def format_size(size):
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if size < 1000 or unit == "TB":
-            return f"{size:.0f} B" if unit == "B" else f"{size:.1f} {unit}"
-        size /= 1000
-
-
-def downloaded_bytes(directory):
-    """Estimate bytes written, excluding sidecars and duplicate merge outputs."""
-    sizes = {}
-    with os.scandir(directory) as entries:
-        for entry in entries:
-            name = entry.name.removesuffix(".part")
-            if ".temp." in name or Path(name).suffix.lower() not in MEDIA | {".m4a", ".aac", ".opus", ".webm"}:
-                continue
-            try:
-                if entry.is_file():
-                    sizes[name] = max(sizes.get(name, 0), entry.stat().st_size)
-            except FileNotFoundError:
-                # Downloaders rename completed parts and delete merged tracks.
-                continue
-    track_stems = {match[1] for name in sizes if (match := re.fullmatch(r"(.+)\.f[^.]+\.[^.]+", name))}
-    return sum(size for name, size in sizes.items() if Path(name).stem not in track_stems)
-
-
-def saved_description(files):
-    videos = sum(path.suffix.lower() in VIDEO for path in files)
-    photos = len(files) - videos
-    parts = [f"{count} {kind}{'s' if count != 1 else ''}" for count, kind in ((photos, "photo"), (videos, "video")) if count]
-    return ", ".join(parts) + " saved"
-
-
-@contextmanager
-def activity(label, media_dir=None):
-    """Animate one temporary line while work runs, then clear it on every exit."""
-    stream = sys.stdout
-    if getattr(_batch, "state", None):
-        check_batch_cancelled()
-        status(label, "Working...")
-        yield
-        if label not in {"Saving", "Importing"}:
-            check_batch_cancelled()
-        return
-    if not stream.isatty() or os.environ.get("TERM") == "dumb":
-        status(label, "Working...")
-        yield
-        return
-
-    stopped = threading.Event()
-    started = time.monotonic()
-    field = f"{label:<12}"
-    if "NO_COLOR" not in os.environ:
-        field = f"\033[36m{field}\033[0m"
-
-    def animate():
-        frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-        index = 0
-        size = ""
-        while not stopped.is_set():
-            elapsed = int(time.monotonic() - started)
-            if media_dir is not None and index % 3 == 0:
-                size = f"~{format_size(downloaded_bytes(media_dir))} · "
-            stream.write(f"\r\033[2K  {field} {frames[index % len(frames)]} {size}{elapsed}s")
-            stream.flush()
-            index += 1
-            stopped.wait(0.1)
-
-    worker = threading.Thread(target=animate, name="linkget-progress", daemon=True)
-    try:
-        worker.start()
-        yield
-    finally:
-        stopped.set()
-        if worker.ident is not None:
-            worker.join()
-        stream.write("\r\033[2K")
-        stream.flush()
 
 
 def find_tool(name):
@@ -564,164 +330,6 @@ def find_tool(name):
 def installation_hint(missing):
     formulae = list(dict.fromkeys("ffmpeg" if name == "ffprobe" else name for name in missing))
     return "Missing tools: " + ", ".join(missing) + "\nInstall: brew install " + " ".join(formulae) + "\nNeed Homebrew? Visit https://brew.sh/, then run linkget doctor."
-
-
-def route(url):
-    parsed = urlsplit(url)
-    if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
-        raise ValueError("Enter a complete http/https post URL.")
-    host, path = parsed.hostname, parsed.path
-    if host in {"instagram.com", "www.instagram.com"} and re.fullmatch(r"/(p|reel|tv)/[\w-]+/?", path):
-        return "Instagram", "gallery-dl", "instagram.com"
-    if host in {"x.com", "www.x.com", "mobile.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"} and re.fullmatch(r"/(?:[\w]+|i/web)/status/\d+(?:/(?:photo|video)/\d+)?/?", path):
-        return "X", "gallery-dl", "x.com"
-    if host in {"bilibili.com", "www.bilibili.com"}:
-        if re.fullmatch(r"/video/(?:BV[\w]+|av\d+)/?", path):
-            return "Bilibili video", "yt-dlp", "bilibili.com"
-        if re.fullmatch(r"/opus/\d+/?", path):
-            return "Bilibili post", "gallery-dl", "bilibili.com"
-    if host == "t.bilibili.com" and re.fullmatch(r"/\d+/?", path):
-        return "Bilibili post", "gallery-dl", "bilibili.com"
-    if host in {"tiktok.com", "www.tiktok.com"} and re.fullmatch(r"/(@[\w.-]+|share)/(photo|video)/\d+/?", path):
-        return "TikTok", "gallery-dl", "tiktok.com"
-    if host in {"douyin.com", "www.douyin.com"} and re.fullmatch(r"/(video|note)/\d+/?", path):
-        return "Douyin", "douyin", "douyin.com"
-    if host == "www.xiaohongshu.com" and re.fullmatch(r"/explore/[\da-f]{24}", path):
-        return "Xiaohongshu", "xiaohongshu", "xiaohongshu.com"
-    if host == "weibo.com" and re.fullmatch(r"/detail/[A-Za-z0-9]+", path):
-        return "Weibo", "gallery-dl", "weibo.com"
-    if host == "weibo.com" and re.fullmatch(r"/tv/show/\d+:[A-Za-z0-9]+", path):
-        return "Weibo video", "yt-dlp", "weibo.com"
-    if host == "www.youtube.com" and re.fullmatch(r"/watch", path) and re.fullmatch(r"v=[\w-]{11}", parsed.query):
-        return "YouTube", "yt-dlp", "youtube.com"
-    if host in {"reddit.com", "www.reddit.com", "old.reddit.com"} and "/comments/" in path:
-        return "Reddit", "gallery-dl", "reddit.com"
-    if host == "redd.it":
-        return "Reddit", "gallery-dl", "reddit.com"
-    if host in {"kuaishou.com", "www.kuaishou.com", "v.kuaishou.com"} or host.endswith(".kuaishou.com"):
-        return "Kuaishou", "kuaishou", "kuaishou.com"
-    if host in {"lofter.com", "www.lofter.com"} or host.endswith(".lofter.com"):
-        return "Lofter", "gallery-dl", "lofter.com"
-    if host in {"pixiv.net", "www.pixiv.net"} and re.fullmatch(r"/(?:en/)?artworks/\d+/?", path):
-        return "Pixiv", "pixiv", "pixiv.net"
-    if host in {"pinterest.com", "www.pinterest.com", "pin.it"} or host.endswith(".pinterest.com") or host.endswith(".pinterest.co.uk"):
-        return "Pinterest", "gallery-dl", "pinterest.com"
-    raise ValueError("Unsupported URL. Supported: " + SITES)
-
-
-def browser_spec(args, engine, domain):
-    browser = args.browser
-    profile = args.profile
-    if browser == "auto":
-        default = Path.home() / "Library/Application Support/Google/Chrome/Default"
-        if not default.is_dir():
-            return None
-        browser, profile = "chrome", str(default)
-    if browser == "none":
-        return None
-    value = browser + ("/" + domain if engine == "gallery-dl" else "")
-    return value + (":" + str(Path(profile).expanduser()) if profile else "")
-
-
-def command_for(args, url, engine, domain, media_dir, tools, cookie_path=None):
-    if engine == "gallery-dl":
-        command = [tools[engine], "--config-ignore", "--write-metadata", "--directory", str(media_dir)]
-        if domain == "tiktok.com":
-            command.extend(["-o", "extractor.tiktok.audio=false", "-o", "extractor.tiktok.covers=false",
-                            "-o", "extractor.tiktok.subtitles=false", "-o", "extractor.tiktok.videos=true",
-                            "-o", "extractor.tiktok.photos=true", "-o", "extractor.tiktok.filename=tiktok_{id}_{num:03d}.{extension}"])
-        elif domain == "weibo.com":
-            command.extend(["--write-metadata", "-o", "extractor.weibo.videos=true", "-o", "extractor.weibo.retweets=true",
-                            "-o", "extractor.weibo.text=false", "-o", "extractor.weibo.livephoto=true",
-                            "-o", "extractor.weibo.filename=weibo_{status[id]}_{num:03d}.{extension}"])
-        elif domain == "reddit.com":
-            # Homebrew/pipx isolate gallery-dl from yt-dlp's Python package.
-            module = next((Path(tools["yt-dlp"]).resolve().parent.parent / "lib").glob(
-                "python*/site-packages/yt_dlp"), None)
-            if module is not None:
-                command.extend(["-o", "downloader.ytdl.module=" + str(module)])
-            command.extend(["-o", "downloader.ytdl.format=bestvideo+bestaudio/best",
-                            "-o", "downloader.ytdl.raw-options=" + json.dumps({
-                                "merge_output_format": "mp4",
-                                "ffmpeg_location": str(Path(tools["ffmpeg"]).parent),
-                            })])
-    else:
-        command = [tools[engine], "--ignore-config", "--no-playlist", "--no-progress",
-                   "--ffmpeg-location", str(Path(tools["ffmpeg"]).parent)]
-        if domain == "reddit.com":
-            command.extend(["-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4"])
-        else:
-            command.extend(["-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]", "-S", "res,fps,hdr,vbr", "--merge-output-format", "mp4"])
-        command.extend(["-o", str(media_dir / (domain.split(".")[0] + "_%(id)s.%(ext)s"))])
-        if domain == "youtube.com":
-            command.extend(["--js-runtimes", "deno:" + tools["deno"]])
-    if cookie_path is not None:
-        command.extend(["--cookies", str(cookie_path)])
-    command.append(url)
-    return command
-
-
-def save_folder(files, folder):
-    folder.mkdir(parents=True, exist_ok=True)
-    saved = []
-    skipped = 0
-    for source in files:
-        target = folder / source.name
-        suffix = 1
-        while True:
-            if target.is_file() and filecmp.cmp(source, target, shallow=False):
-                skipped += 1
-                break
-            created = False
-            try:
-                with target.open("xb") as output:
-                    created = True
-                    with source.open("rb") as input_file:
-                        shutil.copyfileobj(input_file, output)
-                saved.append(source)
-                break
-            except FileExistsError:
-                target = folder / f"{source.stem}-{suffix}{source.suffix}"
-                suffix += 1
-            except BaseException:
-                if created:
-                    target.unlink(missing_ok=True)
-                raise
-    return saved, skipped
-
-
-def import_photos(files, date_now, live_pairs=None):
-    retained = retain_originals(files)
-    staged = set(retained)
-    if live_pairs:
-        paired = retain_pairs(list(live_pairs.values()), originals_directory())
-        staged.update(paired)
-        replacements = dict(zip((name for pair in live_pairs for name in pair), paired))
-        retained = [replacements.get(source.name, path) for source, path in zip(files, retained)]
-    unique = list(dict.fromkeys(retained))
-    source_indexes = [retained.index(path) for path in unique]
-    importer = Path(__file__).with_name("import.applescript")
-    result = subprocess.run(["/usr/bin/osascript", str(importer),
-                             "--date-now" if date_now else "--keep-date",
-                             *map(str, unique)], text=True, capture_output=True)
-    if result.returncode:
-        raise RuntimeError("Photos could not import the media. Allow terminal access in System Settings > Privacy & Security > Automation, or use --folder for unsupported formats.\n"
-                           + "Originals are safe in: " + str(originals_directory()) + "\n" + result.stderr.strip())
-    response, _, identifier_text = result.stdout.strip().partition("\n")
-    if not re.fullmatch(r"\d+:\d+(?::\d+)*", response):
-        raise RuntimeError("Photos returned an invalid import result. Original files have been kept.")
-    saved, skipped, *indexes = map(int, response.split(":"))
-    if (saved + skipped != len(unique) or saved != len(indexes)
-            or len(set(indexes)) != len(indexes)
-            or any(index < 1 or index > len(unique) for index in indexes)):
-        raise RuntimeError("Photos returned an unexpected item count. Original files have been kept.")
-    try:
-        verify_library_copies(unique, identifier_text.split("\t") if identifier_text else [])
-    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
-        raise RuntimeError(str(error) + "\nOriginals are safe in: " + str(originals_directory())) from error
-    for path in staged:
-        path.unlink(missing_ok=True)
-    return [files[source_indexes[index - 1]] for index in indexes], skipped + len(files) - len(unique)
 
 
 def doctor():
@@ -803,6 +411,8 @@ def main(argv=None):
   doctor               Check download tools and installation
   config               View or change the default save destination
   batch [LINK ...]     Download all links concurrently; paste one per line if omitted
+  retry [TASK]         Retry unfinished items from the latest or specified task
+  recover [TASK]       List kept files, or save a complete retained task
   compare A.json B.json Compare reports for the same links
   auth                 Check logins and public access without sign-in prompts
   auth SITE            Connect one website explicitly (e.g. auth bilibili)
@@ -840,12 +450,52 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     parser.add_argument("--date-now", action="store_true", help="set the date of newly imported Photos items to now")
     parser.add_argument("--report", type=Path, help="write download evidence to a new JSON file for comparison")
     parser.add_argument("--live-photos", action="store_true", help="package exposed Live Photo pairs on macOS; original downloads are preserved")
+    parser.add_argument("--jobs", type=int, metavar="N", help="limit simultaneous batch downloads; default: all links")
+    parser.add_argument("--verify", action="store_true", help="recover: verify existing Photos originals before cleaning staged copies")
+    parser.add_argument("--item", type=int, metavar="N", help="recover: save or verify only one unfinished item")
+    parser.add_argument("--redownload", action="store_true", help="retry: download again instead of reusing a complete retained set")
     tokens = list(sys.argv[1:] if argv is None else argv)
     # An HTTP URL immediately after bare --folder is the post, never a directory.
     for index in range(len(tokens) - 2, -1, -1):
         if tokens[index] == "--folder" and tokens[index + 1].startswith(("http://", "https://")):
             tokens.insert(index + 1, ".")
     args = parser.parse_intermixed_args(tokens)
+    if args.jobs is not None and args.jobs < 1:
+        parser.error("--jobs must be a positive integer.")
+    if args.item is not None and args.item < 1:
+        parser.error("--item must be a positive integer.")
+    if args.redownload and (not args.link or args.link[0] != "retry"):
+        parser.error("--redownload applies to linkget retry only.")
+    if (args.verify or args.item is not None) and (not args.link or args.link[0] != "recover"):
+        parser.error("--verify and --item apply to linkget recover TASK only.")
+    if args.link and args.link[0] in {"retry", "recover"}:
+        command, *identifiers = args.link
+        if len(identifiers) > 1:
+            parser.error("Use linkget " + command + " [TASK].")
+        try:
+            if command == "recover" and not identifiers:
+                if args.verify or args.item:
+                    parser.error("Select a task: linkget recover TASK.")
+                return recovery.listing(status)
+            journal = jobs.select(identifiers[0] if identifiers else None)
+            restore_options(args, journal, tokens)
+            preflight.destination(args, find_tool)
+            if command == "recover":
+                return recovery.restore(journal, args, status, save_folder, import_photos)
+            args._journal = journal
+            args._indices = journal.incomplete()
+            links = [journal.data["items"][i - 1]["input"] for i in args._indices]
+            records = []
+            code = batch_download(args, parser, links, records) if links else 0
+            if args.report:
+                write_report(args.report, VERSION, records, code)
+            return code
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
+            report_failure(str(error))
+            return 1
+        except (KeyboardInterrupt, EOFError):
+            status("Cancelled", "Recovery stopped; retained files are safe", "33")
+            return 130
     if args.link == ["help"]:
         parser.print_help()
         return 0
@@ -888,7 +538,19 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         parser.error("Unknown command. Use linkget sites, linkget auth, linkget config, or linkget help. To download, paste a post URL.")
     args.link = " ".join(args.link)
     if args.link == "doctor":
-        return doctor()
+        code = doctor()
+        if args.folder is not None or args.photos or args.live_photos:
+            if args.folder is True:
+                args.folder = Path.cwd()
+            try:
+                preflight.destination(args, find_tool)
+                status("Destination", "Writable · " + str(args.folder or originals_directory()))
+                if args.photos:
+                    status("Photos", "Automation and managed-copy checks run at import time")
+            except (OSError, ValueError, RuntimeError) as error:
+                report_failure(str(error))
+                return 1
+        return code
     if args.link == "sites":
         for site, content in [("Instagram", "Photos, videos and reels"), ("X / Twitter", "Post photos and videos"), ("Bilibili", "BV/av videos and Opus media"), ("TikTok", "Post photos and videos; share links"), ("Douyin", "Post photos and videos; share links"), ("Kuaishou", "Post videos; image galleries not supported"), ("Xiaohongshu", "Note photos and videos; xhslink shares"), ("Weibo", "Post photos and videos; t.cn shares"), ("YouTube", "Videos and Shorts; youtu.be links"), ("Reddit", "Post photos and videos"), ("Lofter", "Post photos and videos (trial)"), ("Pixiv", "Artwork images (trial); Ugoira not supported"), ("Pinterest", "Pins and boards")]:
             status(site, content)
@@ -913,8 +575,18 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 args.folder = Path(setting["path"])
         if args.folder is not None and args.date_now:
             parser.error("--date-now applies to Photos imports. Use --photos --date-now to override a folder default.")
+        preflight.destination(args, find_tool)
         records = []
-        code = batch_download(args, parser, batch_links, records) if is_batch else download(args, first_run(args) or {}, records)
+        if is_batch:
+            code = batch_download(args, parser, batch_links, records)
+        else:
+            journal = jobs.Journal.create([args.link], args)
+            status("Task", journal.identifier)
+            with journal.claim(), jobs.item(journal, 1):
+                code = download(args, first_run(args) or {}, records)
+                jobs.record(status="completed" if code == 0 else "cancelled" if code == 130 else "failed")
+            if code:
+                status("Retry", "linkget retry " + journal.identifier, "33")
         if args.report:
             write_report(args.report, VERSION, records, code)
             status("Report", str(args.report.expanduser().resolve()))
@@ -927,90 +599,41 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         return 130
 
 
+def restore_options(args, journal, tokens):
+    saved = journal.data["options"]
+    for name in jobs.OPTIONS:
+        flags = {"--" + name.replace("_", "-")}
+        if name == "folder":
+            flags.add("--photos")
+        if not any(token.split("=", 1)[0] in flags for token in tokens) and name in saved:
+            setattr(args, name, saved[name])
+    if args.photos:
+        args.folder = None
+    elif args.folder is True:
+        args.folder = Path.cwd()
+    elif args.folder is not None:
+        args.folder = Path(args.folder).expanduser().resolve()
+    if args.folder is not None and args.date_now:
+        raise ValueError("--date-now applies to Photos imports only.")
+    if args.profile and args.browser in {"auto", "none"}:
+        if not any(token.split("=", 1)[0] == "--profile" for token in tokens):
+            args.profile = None
+    if args.profile and args.browser in {"auto", "none"}:
+        raise ValueError("--profile requires an explicit browser.")
+    if args.report and (args.report.expanduser().exists() or not args.report.expanduser().parent.is_dir()):
+        raise ValueError("Choose a new report path in an existing folder.")
+
+
+def save_folder(files, folder):
+    return destinations.save_folder(files, folder)
+
+
+def import_photos(files, date_now, live_pairs=None):
+    return destinations.import_photos(files, date_now, live_pairs, retain_originals, verify_library_copies)
+
+
 def batch_download(args, parser, links, records=None):
-    if not links:
-        if sys.stdin.isatty():
-            print("\n  Paste one link or sharing text per line. Blank line starts downloads.\n")
-            while line := input("  > ").strip():
-                links.append(line)
-        else:
-            links = [line.strip() for line in sys.stdin.read().splitlines() if line.strip()]
-    if not links:
-        parser.error("The batch is empty. Supply links or paste one per line.")
-    setup_results = first_run(args) or {}
-    state = {"cancelled": threading.Event(), "interactions": queue.Queue(),
-             "output": threading.RLock(), "saving": threading.Lock()}
-    item_records = [[] for _ in links]
-    results = {}
-
-    def run_item(index, link):
-        _batch.state = state
-        _batch.item = (index, len(links))
-        try:
-            item_args = argparse.Namespace(**vars(args))
-            item_args.link = link
-            result = download(item_args, setup_results, item_records[index - 1])
-            if result == 130:
-                state["cancelled"].set()
-            return result
-        finally:
-            del _batch.state
-            del _batch.item
-
-    status("Batch", f"{len(links)} downloads running in parallel")
-    executor = ThreadPoolExecutor(max_workers=len(links), thread_name_prefix="linkget-download")
-    futures = {}
-    try:
-        futures = {executor.submit(run_item, index, link): index for index, link in enumerate(links, 1)}
-        pending = set(futures)
-        while pending:
-            try:
-                request = state["interactions"].get(timeout=0.05)
-            except queue.Empty:
-                request = None
-            if request:
-                _batch.state = state
-                _batch.item = request["item"]
-                try:
-                    with state["output"]:
-                        check_batch_cancelled()
-                        request["result"] = request["callback"]()
-                except BaseException as error:
-                    request["error"] = error
-                    if isinstance(error, (KeyboardInterrupt, EOFError)):
-                        state["cancelled"].set()
-                finally:
-                    request["done"].set()
-                    del _batch.state
-                    del _batch.item
-            done, pending = wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
-            for future in done:
-                if not future.cancelled():
-                    results[futures[future]] = future.result()
-            if state["cancelled"].is_set():
-                for future in pending:
-                    future.cancel()
-    except KeyboardInterrupt:
-        state["cancelled"].set()
-        for pending in futures:
-            pending.cancel()
-        status("Stopping", "Waiting for active requests to finish; downloaded files will be kept.", "33")
-    finally:
-        executor.shutdown(wait=True, cancel_futures=state["cancelled"].is_set())
-        for future, index in futures.items():
-            if future.done() and not future.cancelled() and index not in results:
-                results[index] = future.result()
-        if records is not None:
-            records.extend(record for item in item_records for record in item)
-    completed = sum(result == 0 for result in results.values())
-    failed = sorted(index for index, result in results.items() if result not in {0, 130})
-    if state["cancelled"].is_set():
-        status("Batch", f"{completed} completed · {len(failed)} failed · {len(links) - completed - len(failed)} not completed", "33")
-        return 130
-    status("Batch", f"{completed} completed · {len(failed)} failed", "33" if failed else "32")
-    if failed:
-        status("Failed items", ", ".join(map(str, failed)), "33")
-    return 1 if failed else 0
+    return run_batch(args, parser, links, records, download, first_run, status, jobs.Journal.create)
 
 
 def download(args, setup_results, records=None):
@@ -1018,9 +641,25 @@ def download(args, setup_results, records=None):
     session_dir = None
     info_path = None
     evidence = {"status": "failed", "reference": None, "files": []}
+    domain = None
     try:
         check_batch_cancelled()
+        current = jobs.current()
+        if current:
+            journal, index = current
+            ready = journal.data["items"][index - 1].get("ready")
+            if ready and not args.redownload:
+                # A failed save already has a checked complete set. Retry the save.
+                result = recovery.restore(journal, args, status, save_folder, import_photos, claimed=True, indices=[index])
+                evidence.update(ready.get("evidence", {}), status="completed" if result == 0 else "failed")
+                return result
         url = args.link or (input("  Paste a link (no quotes needed): ") if sys.stdin.isatty() else sys.stdin.read())
+        if current:
+            previous = journal.data["items"][index - 1]
+            if previous.get("stage"):
+                stages = previous.get("previous_stages", []) + [previous["stage"]]
+                jobs.record(previous_stages=list(dict.fromkeys(stages)))
+        jobs.record(input=url, status="running", ready=None, receipt=None, stage=None)
         started = time.monotonic()
         with activity("Resolving") if any(host in url for host in ("v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/", "xhslink.com", "xhslink.cn", "t.cn/")) else nullcontext():
             url = normalize_link(url)
@@ -1073,6 +712,7 @@ def download(args, setup_results, records=None):
             if accounts.copy_saved(domain, candidate):
                 cookie_path = candidate
         stage = Path(tempfile.mkdtemp(prefix="linkget-"))
+        jobs.record(stage=str(stage.resolve()))
         tried_saved = cookie_path is not None
         tried_browser = used_browser or domain in setup_results
         browser_item = None
@@ -1125,7 +765,7 @@ def download(args, setup_results, records=None):
                                 raise
                             result = None
                         else:
-                            result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
+                            result = run_process(command, stdout=log, stderr=subprocess.STDOUT)
                 if result is not None and result.returncode:
                     if domain == "weibo.com" and engine == "gallery-dl":
                         for metadata in media_dir.glob("*.json"):
@@ -1228,11 +868,17 @@ def download(args, setup_results, records=None):
         status("Media count", count_text)
         if any(r['source'] == "fallback" for r in media_records):
             status("Source", "Fallback media included", "33")
+        ready = {"files": [{"path": str(path.resolve()), "sha256": record.get("sha256") or jobs.digest(path)}
+                           for path, record in zip(files, media_records)],
+                 "live_pairs": download_info.live_pairs, "prepared": [], "evidence": dict(evidence)}
+        jobs.record(ready=ready)
         prepared = []
         if download_info.live_pairs:
             if args.live_photos:
                 with activity("Pairing Live Photos"):
                     prepared = prepare_pairs(files, download_info.live_pairs, stage / "live-photos")
+                ready["prepared"] = [jobs.snapshot(pair) for pair in prepared]
+                jobs.record(ready=ready)
                 status("Live Photos", f"{len(prepared)} source pairs recognized by macOS")
             else:
                 status("Live Photos", f"{len(download_info.live_pairs)} pairs saved separately · use --live-photos to pair")

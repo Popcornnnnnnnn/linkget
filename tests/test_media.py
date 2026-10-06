@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from linkget import cli, media, accounts
+from linkget import accounts, cli, media, accounts
 
 
 class MediaEvidenceTests(unittest.TestCase):
@@ -16,6 +16,9 @@ class MediaEvidenceTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        directory = patch.object(accounts, "directory", return_value=self.root / "sessions")
+        directory.start()
+        self.addCleanup(directory.stop)
 
     def metadata(self, name, item):
         (self.root / name).write_bytes(b"media")
