@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1.dev9 — faster repeated lookups (unreleased)
+
+- Query Photos once per ordinary asset or Live Photo pair, reuse existing identifiers, and match new import results by filename rather than return order. Group source filenames once and preserve per-resource IDs for verification.
+- Enumerate each relevant managed-originals directory once per verification, indexing only requested assets. Continue checking both Live Photo components, rejecting symlinks and mismatched bytes.
+- Reuse unchanged SHA-256 results within one download/recovery item. Invalidate on file identity, size, modification or change time; detect changes during reads. Final Photos verification and recovery content checks still force actual reads.
+- Share exact short-link resolutions across concurrent and queued items in one batch. Keep query tokens separate, retry failures, respect cancellation and platform redirect boundaries, and discard the cache after each run.
+
 ## 0.2.1.dev8 — task recovery and bounded batch execution (unreleased)
 
 - Add private task receipts and `retry [TASK]`, preserving original item numbers and skipping completed downloads. Reuse a complete retained set after save failure; `--redownload` fetches again while keeping earlier files.

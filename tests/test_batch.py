@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 from media_stub import uninspected
 
-from linkget import accounts, cli
+from linkget import accounts, cli, links
 
 URL = "https://www.pixiv.net/artworks/"
 
@@ -96,6 +96,20 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(len(list((self.root / "output").iterdir())), 1)
         self.assertIn("No new files", out)
         self.assertIn("1 duplicate", out)
+
+    def test_repeated_short_links_share_resolution_but_download_each_item(self):
+        calls = []
+        def download(url, folder, cookies=None, **kwargs):
+            calls.append(url)
+            (folder / "same.jpg").write_bytes(b"same media")
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(links, "_resolve_short_link", return_value="https://www.douyin.com/video/123") as resolve, patch.object(cli, "download_douyin", side_effect=download), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            result = cli.main(["batch", "分享 https://v.douyin.com/abc/", "看看 https://v.douyin.com/abc/", "--folder", str(self.root / "output"), "--browser", "none", "--jobs", "2"])
+        self.assertEqual(result, 0, err.getvalue())
+        resolve.assert_called_once()
+        self.assertEqual(calls, ["https://www.douyin.com/video/123"] * 2)
+        self.assertEqual(len(list((self.root / "output").iterdir())), 1)
+        self.assertIn("2 completed · 0 failed", out.getvalue())
 
     def test_cancel_stops_remaining_items_and_preserves_current_download(self):
         calls = []

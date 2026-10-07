@@ -78,6 +78,10 @@ For 0.2.0b10, live checks again verified all eight channels from Chrome. An isol
 
 ## Reproduce
 
+The `0.2.1.dev9` lookup regressions use isolated files and a fake Photos adapter. On macOS they execute the actual AppleScript grouping/import-result logic without opening Photos, including shuffled results, existing duplicates, motion-first Live pairs, unexpected IDs and incomplete pairs. Short-link tests cover shared concurrent resolution, task lifetime, token separation, failure retry, cancellation and redirect boundaries. Digest tests cover file replacement, same-size edits with restored modification times, changes during hashing and mandatory fresh reads before Photos cleanup.
+
+An isolated 64-asset fixture with 512 entries in one originals directory reduced directory enumeration from 64 calls to 1. A one-file inspection/retention/two-receipt/final-verification fixture reduced SHA-256 reads from 7 to 5. These are operation counts, not a general download speed multiplier. Actual Photos import, playback and library acceptance for this build remain unverified.
+
 ```sh
 PYTHONPATH=src python3 -m unittest discover -s tests -q
 uv build

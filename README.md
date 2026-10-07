@@ -56,7 +56,7 @@ Use straight ASCII quotes (`'` or `"`) around command-line URLs. Shells interpre
 
 ## Batch downloads
 
-Use `linkget batch` to paste several links, one per line. Each line can contain sharing text around one URL. A blank line starts the downloads. This is available since development version `0.2.1.dev4` and local build `0.2.0+parallel-batch.1`; the current local development build is `0.2.1.dev8`, adding task recovery and optional concurrency limits. You can also pass individually quoted links or pipe a text file:
+Use `linkget batch` to paste several links, one per line. Each line can contain sharing text around one URL. A blank line starts the downloads. This is available since development version `0.2.1.dev4` and local build `0.2.0+parallel-batch.1`; the current local development build is `0.2.1.dev9`, with task recovery, optional concurrency limits and faster repeated lookups. You can also pass individually quoted links or pipe a text file:
 
 ```sh
 linkget batch 'URL1' 'URL2' --folder ~/Downloads
@@ -64,6 +64,8 @@ linkget batch --folder ~/Downloads < links.txt
 ```
 
 Every supplied link starts its own download concurrently through the normal downloader. Add `--jobs 3` to run at most three downloads at once; the remaining links wait in a queue. Output includes each item's original input number and periodically shows the active phase, elapsed time and downloaded size. Browser/login requests and final Photos or folder saves run one at a time. A failed item keeps its diagnostics and does not stop other links; the summary identifies failed item numbers. Existing duplicate handling and save options still apply. Many links share your bandwidth and may encounter website rate limits. Ctrl-C stops queued work, terminates external download engines and their child processes, and preserves unfinished files. Native adapters stop at their next transfer boundary; an active network read may still wait for its existing timeout. Saving or importing finishes at a safe boundary. Exit status is 0 when all items complete, 1 when any item fails, 130 when cancelled; invalid command options or an empty batch exit with 2.
+
+Identical short URLs in one batch share their resolution, including concurrent requests. Each item still runs its own download and normal duplicate handling. Different access tokens stay separate; failed resolutions can retry, and nothing is cached across runs. Photos reuses filename lookup results and scans each relevant originals directory once per verification. File digests are reused only within an item while its file metadata is unchanged; final Photos cleanup still reads and checks both the staged source and the managed library copy.
 
 ### Retry and recover
 

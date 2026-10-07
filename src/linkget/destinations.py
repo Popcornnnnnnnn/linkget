@@ -6,10 +6,12 @@ import shutil
 import subprocess
 if __package__:
     from .photos import originals_directory
+    from .hashing import digest_session
     from .live import retain_pairs
     from . import jobs
 else:
     from photos import originals_directory
+    from hashing import digest_session
     from live import retain_pairs
     import jobs
 
@@ -45,6 +47,11 @@ def save_folder(files, folder):
 
 
 def import_photos(files, date_now, live_pairs, retain_originals, verify_library_copies):
+    with digest_session():
+        return _import_photos(files, date_now, live_pairs, retain_originals, verify_library_copies)
+
+
+def _import_photos(files, date_now, live_pairs, retain_originals, verify_library_copies):
     retained = retain_originals(files)
     staged = set(retained)
     if live_pairs:
@@ -53,7 +60,10 @@ def import_photos(files, date_now, live_pairs, retain_originals, verify_library_
         replacements = dict(zip((name for pair in live_pairs for name in pair), paired))
         retained = [replacements.get(source.name, path) for source, path in zip(files, retained)]
     unique = list(dict.fromkeys(retained))
-    source_indexes = [retained.index(path) for path in unique]
+    first_indexes = {}
+    for index, path in enumerate(retained):
+        first_indexes.setdefault(path, index)
+    source_indexes = [first_indexes[path] for path in unique]
     receipt = ({"files": jobs.snapshot(unique), "staged": jobs.snapshot(sorted(staged)), "identifiers": []}
                if jobs.active() else {"identifiers": []})
     jobs.record(receipt=receipt)

@@ -1,6 +1,5 @@
 """Stage Photos imports and verify managed copies before removing source files."""
 
-import hashlib
 import os
 from pathlib import Path
 import re
@@ -10,20 +9,14 @@ import tempfile
 
 if __package__:
     from . import accounts
+    from .hashing import digest
 else:
     import accounts
+    from hashing import digest
 
 
 def originals_directory():
     return accounts.directory().parent / "originals"
-
-
-def digest(path):
-    checksum = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            checksum.update(chunk)
-    return checksum.hexdigest()
 
 
 def retain_originals(files):
@@ -93,16 +86,31 @@ def verify_library_copies(files, identifiers):
     if len(files) != len(identifiers):
         raise RuntimeError("Photos did not identify every saved item.")
     root = library_directory().resolve() / "originals"
-    for source, identifier in zip(files, identifiers):
+    assets = []
+    for identifier in identifiers:
         asset = identifier.split("/")[0]
         if not re.fullmatch(r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}", asset):
             raise RuntimeError("Photos returned an invalid saved item identifier.")
-        asset = asset.upper()
-        checksum = digest(source)
-        candidates = (root / asset[0]).glob(asset + "*")
+        assets.append(asset.upper())
+    # A Photos bucket can contain thousands of files. Enumerate each needed
+    # bucket once, indexing only the requested assets (including Live pairs).
+    candidates = {asset: [] for asset in assets}
+    for bucket in {asset[0] for asset in assets}:
+        try:
+            for target in (root / bucket).iterdir():
+                asset = target.name[:36]
+                if asset in candidates:
+                    candidates[asset].append(target)
+        except FileNotFoundError:
+            pass
+    for source, asset in zip(files, assets):
+        # Final cleanup still requires actual reads of both the staged source
+        # and the library copy, even if either was inspected earlier.
+        checksum = digest(source, fresh=True)
+        size = source.stat().st_size
         if not any(not target.is_symlink() and target.is_file()
-                   and target.stat().st_size == source.stat().st_size
-                   and digest(target) == checksum for target in candidates):
+                   and target.stat().st_size == size
+                   and digest(target, fresh=True) == checksum for target in candidates[asset]):
             raise RuntimeError("Photos has not saved a verified copy of " + source.name
                                + ". Enable Photos > Settings > General > Copy items to the Photos library;"
                                + " use File > Consolidate for referenced items, then retry.")

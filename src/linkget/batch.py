@@ -10,10 +10,12 @@ if __package__:
     from .runtime import _batch, check_batch_cancelled
     from . import jobs
     from .output import downloaded_bytes, format_size
+    from .links import ResolutionCache
 else:
     from runtime import _batch, check_batch_cancelled
     import jobs
     from output import downloaded_bytes, format_size
+    from links import ResolutionCache
 
 
 def run_batch(args, parser, links, records, download, first_run, status, journal_factory):
@@ -42,7 +44,8 @@ def _run(args, pairs, records, download, first_run, status, journal):
     links = [link for _, link in pairs]
     setup_results = (first_run(args) or {}) if any(not journal.data["items"][i - 1].get("ready") for i, _ in pairs) else {}
     state = {"cancelled": threading.Event(), "interactions": queue.Queue(),
-             "output": threading.RLock(), "saving": threading.Lock(), "progress": {}}
+             "output": threading.RLock(), "saving": threading.Lock(), "progress": {},
+             "resolution_cache": ResolutionCache()}
     item_records = {index: [] for index, _ in pairs}
     results = {}
 

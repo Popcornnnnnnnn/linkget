@@ -14,9 +14,11 @@ import uuid
 if __package__:
     from . import accounts
     from .photos import digest
+    from .hashing import digest_session
 else:
     import accounts
     from photos import digest
+    from hashing import digest_session
 
 _context = threading.local()
 OPTIONS = ("folder", "date_now", "live_photos", "browser", "profile", "jobs")
@@ -140,7 +142,8 @@ def item(journal, index):
     previous = getattr(_context, "item", None)
     _context.item = (journal, index)
     try:
-        yield
+        with digest_session():
+            yield
     finally:
         _context.item = previous
 
@@ -174,7 +177,7 @@ def verified_files(records, root=None):
         path = Path(row["path"])
         if root is not None and not path.resolve().is_relative_to(Path(root).resolve()):
             raise ValueError("A retained file is outside its recorded staging folder; nothing was removed.")
-        if path.is_symlink() or not path.is_file() or digest(path) != row["sha256"]:
+        if path.is_symlink() or not path.is_file() or digest(path, fresh=True) != row["sha256"]:
             raise RuntimeError("A retained file is missing or changed; nothing was removed: " + str(path))
         files.append(path)
     return files

@@ -1,12 +1,16 @@
 """Download evidence: exposed counts, actual file properties, and comparisons."""
 from collections import Counter
 from dataclasses import dataclass, field
-import hashlib
 import json
 from pathlib import Path
 import shutil
 import subprocess
 from urllib.parse import parse_qs, urlsplit
+
+if __package__:
+    from .hashing import digest
+else:
+    from hashing import digest
 
 
 @dataclass
@@ -30,11 +34,7 @@ def inspect_files(files, variants=None):
     tool = shutil.which("ffprobe")
     records = []
     for path in files:
-        checksum = hashlib.sha256()
-        with path.open("rb") as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                checksum.update(chunk)
-        record = {"file": path.name, "bytes": path.stat().st_size, "sha256": checksum.hexdigest(),
+        record = {"file": path.name, "bytes": path.stat().st_size, "sha256": digest(path),
                   "kind": "video" if path.suffix.lower() in {".mp4", ".mov", ".m4v"} else "image",
                   "source": (variants or {}).get(path.name, "engine_selected"),
                   "width": None, "height": None, "codec": None, "audio": None,

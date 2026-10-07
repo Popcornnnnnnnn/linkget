@@ -1,9 +1,16 @@
 """Normalize one shared post, resolving only supported short-link hosts."""
 
 import re
+from concurrent.futures import Future, TimeoutError
+import threading
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+if __package__:
+    from .runtime import _batch, check_batch_cancelled
+else:
+    from runtime import _batch, check_batch_cancelled
 
 MOBILE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1"
 DOUYIN_HOSTS = {"douyin.com", "www.douyin.com", "v.douyin.com", "iesdouyin.com", "www.iesdouyin.com"}
@@ -17,6 +24,44 @@ BILIBILI_HOSTS = {"bilibili.com", "www.bilibili.com", "m.bilibili.com", "b23.tv"
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+class ResolutionCache:
+    """Share exact short URLs in a batch, including concurrent requests.
+
+    No cookies are used here. Query tokens stay in the key, and failures are
+    removed so a later attempt can retry. The batch owns this memory only.
+    """
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.pending = {}
+
+    def resolve(self, url, callback):
+        check_batch_cancelled()
+        with self.lock:
+            future = self.pending.get(url)
+            owner = future is None
+            if owner:
+                future = self.pending[url] = Future()
+        if owner:
+            try:
+                value = callback()
+                check_batch_cancelled()
+            except BaseException as error:
+                with self.lock:
+                    self.pending.pop(url, None)
+                    future.set_exception(error)
+                raise
+            future.set_result(value)
+        while True:
+            check_batch_cancelled()
+            try:
+                return future.result(timeout=0.1)
+            except TimeoutError:
+                if future.done():
+                    # Completion can race the timeout. Retrieve the result;
+                    # this also propagates a resolver's own TimeoutError.
+                    return future.result()
 
 
 def canonical_post(url):
@@ -89,8 +134,17 @@ def normalize_link(text):
         allowed = BILIBILI_HOSTS
     else:
         allowed = TIKTOK_HOSTS
+    state = getattr(_batch, "state", None)
+    cache = state.get("resolution_cache") if state else None
+    if cache is not None:
+        return cache.resolve(url, lambda: _resolve_short_link(url, allowed))
+    return _resolve_short_link(url, allowed)
+
+
+def _resolve_short_link(url, allowed):
     opener = build_opener(NoRedirect())
     for _ in range(5):
+        check_batch_cancelled()
         parsed = urlsplit(url)
         if parsed.hostname not in allowed:
             raise ValueError("The short link redirected outside its platform. Use the full post URL.")
