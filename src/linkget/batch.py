@@ -69,7 +69,6 @@ def _run(args, pairs, records, download, first_run, status, journal):
             del _batch.item
 
     workers = min(args.jobs or len(links), len(links))
-    status("Task", journal.identifier)
     status("Batch", f"{workers} downloads running in parallel" + (f" · {len(links) - workers} queued" if workers < len(links) else ""))
     executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="linkget-download")
     futures = {}

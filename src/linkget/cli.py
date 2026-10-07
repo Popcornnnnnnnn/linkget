@@ -581,7 +581,6 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             code = batch_download(args, parser, batch_links, records)
         else:
             journal = jobs.Journal.create([args.link], args)
-            status("Task", journal.identifier)
             with journal.claim(), jobs.item(journal, 1):
                 code = download(args, first_run(args) or {}, records)
                 jobs.record(status="completed" if code == 0 else "cancelled" if code == 130 else "failed")

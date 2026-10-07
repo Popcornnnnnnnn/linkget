@@ -56,7 +56,7 @@ Use straight ASCII quotes (`'` or `"`) around command-line URLs. Shells interpre
 
 ## Batch downloads
 
-Use `linkget batch` to paste several links, one per line. Each line can contain sharing text around one URL. A blank line starts the downloads. This is available since development version `0.2.1.dev4` and local build `0.2.0+parallel-batch.1`; the current local development build is `0.2.1.dev9`, with task recovery, optional concurrency limits and faster repeated lookups. You can also pass individually quoted links or pipe a text file:
+Use `linkget batch` to paste several links, one per line. Each line can contain sharing text around one URL. A blank line starts the downloads. This is available since development version `0.2.1.dev4` and local build `0.2.0+parallel-batch.1`; the current local development build is `0.2.1.dev10`, with task recovery, optional concurrency limits and faster repeated lookups. You can also pass individually quoted links or pipe a text file:
 
 ```sh
 linkget batch 'URL1' 'URL2' --folder ~/Downloads
@@ -69,7 +69,7 @@ Identical short URLs in one batch share their resolution, including concurrent r
 
 ### Retry and recover
 
-Each single download or batch prints a task ID. Its local receipt remembers the resolved destination, download options and unfinished items. Completed items are skipped on retry, and original item numbers are retained. If a download was complete but saving failed, retry saves the checked local files first. A partial download is downloaded again; this is not a promise of byte-level resume across all engines.
+Downloads keep their task ID in a local receipt without displaying it during normal use. A failed or cancelled download shows a retry command with that ID; `linkget recover` also lists tasks needing attention. The receipt remembers the resolved destination, download options and unfinished items. Completed items are skipped on retry, and original item numbers are retained. If a download was complete but saving failed, retry saves the checked local files first. A partial download is downloaded again; this is not a promise of byte-level resume across all engines.
 
 ```sh
 linkget retry                         # latest unfinished task

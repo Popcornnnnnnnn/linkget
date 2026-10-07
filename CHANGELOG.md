@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1.dev10 — hide routine task identifiers (unreleased)
+
+- Stop displaying task IDs before single and batch downloads. Keep private recovery receipts, retry commands on failure/cancellation, and the explicit `recover` task listing.
+
 ## 0.2.1.dev9 — faster repeated lookups (unreleased)
 
 - Query Photos once per ordinary asset or Live Photo pair, reuse existing identifiers, and match new import results by filename rather than return order. Group source filenames once and preserve per-resource IDs for verification.
