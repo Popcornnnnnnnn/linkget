@@ -32,6 +32,18 @@ def cleanup_media(folder):
         if path.exists():
             path.unlink()
             removed.append(path.name)
+    # Chunk checkpoints are redundant once the consolidated, durable content
+    # record exists. Preserve unfinished work and unknown files for inspection.
+    content = folder / 'content.json'
+    chunks = folder / 'chunks'
+    if chunks.exists() and content.is_file() and not content.is_symlink() and json.loads(content.read_text()).get('content_complete') is True:
+        if chunks.is_symlink() or not chunks.is_dir():raise ValueError('Refusing substituted chunk checkpoints.')
+        checkpoints = list(chunks.iterdir())
+        if any(p.is_symlink() or not p.is_file() or not re.fullmatch(r'[0-9a-f]{64}\.json',p.name) for p in checkpoints):
+            raise ValueError('Refusing unknown checkpoint files.')
+        for path in checkpoints:
+            path.unlink();removed.append('chunks/'+path.name)
+        chunks.rmdir()
     return removed
 
 

@@ -147,6 +147,18 @@ class ToutiaoTests(unittest.TestCase):
             with self.assertRaises(ValueError):toutiao.cleanup_media(root)
             self.assertEqual((root / 'model.bin').read_text(), 'evidence')
 
+    def test_completed_content_removes_duplicate_checkpoints_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);chunks=root/'chunks';chunks.mkdir()
+            checkpoint=chunks/('a'*64+'.json');checkpoint.write_text('{}')
+            toutiao.cleanup_media(root);self.assertTrue(checkpoint.exists())
+            (root/'content.json').write_text('{"content_complete":true,"text":"durable"}')
+            self.assertEqual(toutiao.cleanup_media(root),['chunks/'+checkpoint.name])
+            self.assertFalse(chunks.exists());self.assertTrue((root/'content.json').exists())
+            chunks.mkdir();(chunks/'unrelated.txt').write_text('keep')
+            with self.assertRaises(ValueError):toutiao.cleanup_media(root)
+            self.assertTrue((chunks/'unrelated.txt').exists())
+
     def test_failed_download_cleans_partial_media_without_ready_content(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(toutiao.shutil, 'which', return_value='tool'):
             root = Path(tmp); model = root / 'model.bin'; model.touch()
