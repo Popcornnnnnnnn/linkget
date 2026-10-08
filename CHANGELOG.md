@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1.dev15
+
+- Accept real translation through the existing loopback CPA service using `gemini-3.1-flash-lite`; add explicit client-auth reuse without copying keys or changing proxy configuration.
+- Preserve older/user-edited exports by citing matching source snapshots, and restore source timeline order if the model reorders translated units.
+- Strengthen uncertainty handling for garbled recognition; validate English/Chinese/Japanese, exact source-unit coverage, numbers, negation and multi-batch output.
+
 ## 0.2.1.dev14
 
 - Add subtitle-first reading, saved defaults, doctor, Markdown/TXT/SRT/VTT exports, local media and macOS Vision OCR.

@@ -128,7 +128,7 @@ def timestamp(value, srt=False):
     return f'{hour:02d}:{minute:02d}:{second:02d}{"," if srt else "."}{ms:03d}'
 
 
-def export(folder, result, formats):
+def markdown(result):
     title = result.get('title') or result.get('site') or 'Content'
     reference = result.get('reference') or result.get('url') or ''
     header = f'# {title}\n\nSource: {reference}\n\n'
@@ -144,11 +144,16 @@ def export(folder, result, formats):
             body += f'<a id="image-{index}"></a>\n## Image {index}\n\n' + image.get('text', '') + '\n\n'
     else:
         body = result.get('text', '') + '\n'
+    return header + body
+
+
+def export(folder, result, formats, basename='content'):
+    videos = result.get('videos') or ([result] if result.get('segments') else [])
     for format_ in formats:
         if format_ == 'md':
-            write_text(folder / 'content.md', header + body)
+            write_text(folder / (basename + '.md'), markdown(result))
         elif format_ == 'txt':
-            write_text(folder / 'content.txt', result.get('text', '') + '\n')
+            write_text(folder / (basename + '.txt'), result.get('text', '') + '\n')
         elif format_ in {'srt', 'vtt'}:
             for index, video in enumerate(videos, 1):
                 name = 'content' if len(videos) == 1 else f'video-{index:03d}'

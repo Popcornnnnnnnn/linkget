@@ -66,6 +66,18 @@ linkget read summarize '/path/to/read-folder' --language zh
 linkget read translate '/path/to/read-folder' --language en
 ```
 
+For the existing Homebrew CLIProxyAPI service on this Mac, translation is configured and accepted with:
+
+```sh
+linkget read config --ai-provider compatible --ai-model gemini-3.1-flash-lite \
+  --ai-endpoint http://127.0.0.1:8317/v1 --ai-auth cpa
+linkget read translate '/path/to/read-folder' --language zh
+```
+
+`--ai-auth cpa` explicitly reuses the existing proxy's configured client key at request time. It only authenticates the loopback HTTP service on port 8317 with base path `/v1`; it neither copies the key into linkget settings nor reads upstream OAuth credentials. It supports a quoted top-level legacy `api-keys` list in `/opt/homebrew/etc/cliproxyapi.conf`. `--ai-auth-file PATH` selects another existing configuration. For other proxy ports/schemas or cloud services, select `--ai-auth env` and your named environment variable. The loopback proxy forwards text to the configured cloud model; it is not local model inference.
+
+`gemini-3.1-flash-lite` is the accepted default for routine translation, with [translation explicitly listed in Google's model documentation](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite). `--ai-model` chooses the text translation model; `--model` chooses the local Whisper file for recognition. Translation preserves source-unit order, numbers and uncertainty; garbled recognition is marked rather than supplied with guessed alternative words. If existing source exports have an older format or edits, translation creates a matching `source-HASH.md/.txt` snapshot and cites it without replacing your files.
+
 Keep keys in the named environment variable; do not put them in URLs or configuration files. OpenAI uses Responses with `store: false`; compatible services use Chat Completions; Ollama uses its local `/api/chat`. HTTPS is required except loopback HTTP. Redirects are refused and unknown request outcomes are not automatically retried. The command submits all speech units, exposed publisher descriptions and OCR text in bounded batches. Summary points require valid source IDs; translation requires every source unit exactly once. Outputs link to source timestamps or original text and preserve `content.json`. This validates reference structure, not whether the model's claims are accurate.
 
 A service and model must be explicitly configured. Source acquisition never invokes a cloud model automatically. Real summary/translation acceptance requires a working service configuration; local HTTP fixtures only validate request/response integration.
@@ -76,8 +88,8 @@ A service and model must be explicitly configured. Source acquisition never invo
 
 ## Validation, 2026-10-08
 
-245 automated tests passed, including existing download/recovery tests, selected-part reads, subtitle priority/coverage, multi-video exports, >30-minute recognition checkpoints, failure recovery after deleting the original local file, modified-media rejection, batch continuation, cache invalidation, image/description references and all three AI HTTP protocol paths. These fixtures do not establish website or model availability.
+248 automated tests passed, including existing download/recovery tests, selected-part reads, subtitle priority/coverage, multi-video exports, >30-minute recognition checkpoints, failure recovery after deleting the original local file, modified-media rejection, batch continuation, cache invalidation, image/description references and all three AI HTTP protocol paths. These fixtures do not establish website or model availability.
 
 Fresh real samples succeeded on Bilibili `BV1bK411W797?p=1`, YouTube `jNQXAC9IVRw`, Weibo `RkpghmW5K`, Douyin `7675556744459143529` and Xiaohongshu `6abb97e1000000000200fd74`, through existing configured login/public paths. All produced Markdown/TXT/SRT/VTT from full local ASR. Xiaohongshu's sample contains song lyrics. These results verify acquisition/export, not manual transcription accuracy. Other routes have fixture coverage, not fresh live acceptance here.
 
-The installed command passed local Chinese/English image OCR and a generated 65-second local audio fixture divided into three chunks. A generated 768-second desktop task was cancelled and then successfully recovered through the installed CLI. Long audio beyond 30 minutes is validated with fixtures; no >30-minute real recording was manually reviewed. YouTube `dQw4w9WgXcQ` also passed publisher-caption-only acquisition in English, without downloading media or running ASR. An actual AI service remains unverified. Raw sample logs and signed URLs stay in ignored local evidence, outside Git.
+The installed command passed local Chinese/English image OCR and a generated 65-second local audio fixture divided into three chunks. A generated 768-second desktop task was cancelled and then successfully recovered through the installed CLI. Long audio beyond 30 minutes is validated with fixtures; no >30-minute real recording was manually reviewed. YouTube `dQw4w9WgXcQ` also passed publisher-caption-only acquisition in English, without downloading media or running ASR. Real cloud text translation through the existing CPA service passed English-to-Chinese, Japanese-to-Chinese and Chinese-to-English cases, plus numbers/negation/URL/uncertainty and 100-unit multi-batch fixtures. Original JSON and source references were preserved. See [translation acceptance](TRANSLATION_VALIDATION.md). Real model summarization remains unverified. Raw sample logs and signed URLs stay in ignored local evidence, outside Git.

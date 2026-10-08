@@ -229,6 +229,49 @@ class ReadingFeatures(unittest.TestCase):
         with self.assertRaises(ValueError):
             read_ai.request({'ai_provider': 'compatible', 'ai_model': 'fixture', 'ai_endpoint': 'http://external.invalid'}, '', [])
 
+    def test_ai_preserves_older_or_edited_exports_and_cites_matching_snapshot(self):
+        folder = self.root / 'older'; folder.mkdir()
+        source = {'content_complete': True, 'text': 'Original speech',
+                  'videos': [{'segments': [{'start': 3, 'end': 5, 'text': 'Original speech'}]}]}
+        read_store.write_json(folder / 'content.json', source)
+        (folder / 'content.md').write_text('Older user-edited Markdown')
+        (folder / 'content.txt').write_text('User edited text')
+        with patch.object(read_ai, 'request', return_value={'units': [{'id': 'v1-s1', 'text': '原始讲话'}]}):
+            output = read_ai.generate(folder, 'translate', 'zh', {'ai_model': 'fixture'})
+        self.assertEqual((folder / 'content.md').read_text(), 'Older user-edited Markdown')
+        self.assertEqual((folder / 'content.txt').read_text(), 'User edited text')
+        import re
+        target = re.search(r'\]\((source-[a-f0-9]+\.md)#v1-s1\)', output.read_text())[1]
+        self.assertIn('Original speech', (folder / target).read_text())
+        self.assertIn('id="v1-s1"', (folder / target).read_text())
+        self.assertEqual(read_store.read_json(folder / 'content.json'), source)
+
+    def test_cpa_authentication_is_explicit_bound_to_loopback_and_not_logged(self):
+        from urllib.parse import urlsplit
+        config_file = self.root / 'cpa.conf'
+        config_file.write_text('api-keys:\n  - "local-client-key" # configured client\nother-key: "not-a-client-key"\n')
+        config = {'ai_auth': 'cpa', 'ai_auth_file': str(config_file)}
+        self.assertEqual(read_ai.authentication(config, urlsplit('http://127.0.0.1:8317/v1')), 'local-client-key')
+        for endpoint in ['https://remote.example/v1', 'http://127.0.0.1:9999/v1', 'http://127.0.0.1:8317/other', 'http://127.0.0.1:8317/v1?key=1']:
+            with self.assertRaises(ValueError):
+                read_ai.authentication(config, urlsplit(endpoint))
+        config_file.write_text('api-keys:\n  - "secret\\nheader-injection"\n')
+        with self.assertRaises(ValueError) as result:
+            read_ai.authentication(config, urlsplit('http://localhost:8317/v1'))
+        self.assertNotIn('secret', str(result.exception))
+        with patch.dict(read_ai.os.environ, {'TEST_LINKGET_AUTH': 'environment-key'}):
+            self.assertEqual(read_ai.authentication({'ai_key_env': 'TEST_LINKGET_AUTH'}, urlsplit('https://api.example/v1')), 'environment-key')
+
+    def test_translation_keeps_source_timeline_when_service_reorders_units(self):
+        folder = self.root / 'reordered'; folder.mkdir()
+        read_store.write_json(folder / 'content.json', {'content_complete': True, 'text': 'First. Second.',
+            'videos': [{'segments': [{'start': 0, 'end': 1, 'text': 'First.'}, {'start': 5, 'end': 6, 'text': 'Second.'}]}]})
+        response = {'units': [{'id': 'v1-s2', 'text': '第二句'}, {'id': 'v1-s1', 'text': '第一句'}]}
+        with patch.object(read_ai, 'request', return_value=response):
+            output = read_ai.generate(folder, 'translate', 'zh', {'ai_model': 'fixture'})
+        self.assertLess(output.read_text().index('第一句'), output.read_text().index('第二句'))
+        self.assertEqual([item['id'] for item in read_store.read_json(folder / 'translation-zh.json')['items']], ['v1-s1', 'v1-s2'])
+
 
 if __name__ == '__main__':
     unittest.main()
