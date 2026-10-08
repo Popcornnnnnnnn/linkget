@@ -72,10 +72,12 @@ def validate_page(url, page):
         result.update(text=body.strip(), content_complete=True, content_basis='rendered_article')
     else:
         duration = page.get('duration')
-        if type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0:
+        pending = duration is None and page.get('duration_pending') is True and page.get('media_binding') == 'player_current_src' and not page.get('captions')
+        if not pending and (type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0):
             raise ValueError('A finite positive video duration is required.')
         result.update(media_url=media_url(page.get('media_url', '')), duration=duration,
                       description=title.strip(), captions=[], content_complete=False, content_basis='description_only')
+        if pending:result['duration_basis']='pending_download_probe'
         for cue in page.get('captions', []):
             if (not isinstance(cue, dict) or not isinstance(cue.get('text'), str) or
                     len(cue['text']) > 4000 or type(cue.get('start')) not in (int, float) or
@@ -113,6 +115,10 @@ def download_video(url, path):
     limit, count, start = 200 * 1024 * 1024, 0, time.monotonic()
     with urlopen(request, timeout=8) as response:
         media_url(response.geturl())
+        if response.status != 200 or response.headers.get('Content-Range'):
+            raise RuntimeError('A complete HTTP media response is required; byte ranges are not full content.')
+        expected = response.headers.get('Content-Length')
+        expected = int(expected) if expected is not None else None
         with path.open('xb') as output:
             path.chmod(0o600)
             while chunk := response.read(256 * 1024):
@@ -120,6 +126,8 @@ def download_video(url, path):
                 if count > limit or time.monotonic() - start > 60:
                     raise RuntimeError('Toutiao sample exceeds the transfer size or time bound.')
                 output.write(chunk)
+    if expected is not None and count != expected:
+        raise RuntimeError('The media response ended before its complete declared size.')
     if count == 0:
         raise RuntimeError('The player returned an empty video.')
 
@@ -151,6 +159,12 @@ def read(url, folder, page=None, model=None, keep_media=False, language='zh'):
     try:
         if item['kind'] == 'video':
             download_video(item.pop('media_url'), folder / 'source.mp4')
+            if item['duration'] is None:
+                if __package__:from .read_asr import probe
+                else:from read_asr import probe
+                duration, audio_present = probe(folder / 'source.mp4')
+                if not audio_present:raise RuntimeError('Downloaded video has no audio track.')
+                item.update(duration=duration,duration_basis='complete_download_ffprobe')
             options = {} if language == 'zh' else {'language': language}
             item.update(transcribe(folder / 'source.mp4', folder, model, item['duration'], **options))
         # Complete the durable content record before removing its source media.

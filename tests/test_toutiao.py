@@ -67,6 +67,34 @@ class ToutiaoTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             toutiao.validate_page(URL, dict(page(), captions=[{'text': 'wrong', 'start': 9, 'end': 1}]))
 
+    def test_missing_player_duration_requires_direct_bound_source_and_download_probe(self):
+        pending={**page(),'duration':None,'duration_pending':True,'media_binding':'player_current_src'}
+        self.assertFalse(toutiao.validate_page(URL,pending)['content_complete'])
+        for bad in ({**pending,'duration_pending':False},{**pending,'media_binding':'single_page_vod_resource'},
+                    {**pending,'captions':[{'text':'unbound','start':0,'end':2}]}):
+            with self.assertRaises(ValueError):toutiao.validate_page(URL,bad)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(toutiao.shutil,'which',return_value='tool'):
+            root=Path(tmp);model=root/'model.bin';model.touch()
+            with patch.object(toutiao,'download_video',side_effect=lambda u,p:p.write_bytes(b'complete')), \
+                    patch('linkget.read_asr.probe',return_value=(123.4,True)), \
+                    patch.object(toutiao,'transcribe',return_value={'text':'full speech','content_complete':True}) as asr:
+                output=toutiao.read(URL,root/'out',pending,model)
+                self.assertEqual(asr.call_args.args[3],123.4)
+                self.assertEqual(json.loads(output.read_text())['duration_basis'],'complete_download_ffprobe')
+                self.assertFalse((root/'out/source.mp4').exists())
+
+    def test_partial_http_media_response_is_never_full_content(self):
+        class Response(io.BytesIO):
+            def geturl(self):return MEDIA
+        for status,headers,data in [(206,{'Content-Range':'bytes 0-2/10'},b'abc'),
+                                    (200,{'Content-Length':'10'},b'abc'),(200,{'Content-Length':'3'},b'abc')]:
+            with tempfile.TemporaryDirectory() as tmp:
+                response=Response(data);response.status=status;response.headers=headers
+                with patch.object(toutiao,'urlopen',return_value=response):
+                    if status==200 and headers['Content-Length']=='3':toutiao.download_video(MEDIA,Path(tmp)/'video.mp4')
+                    else:
+                        with self.assertRaises(RuntimeError):toutiao.download_video(MEDIA,Path(tmp)/'video.mp4')
+
     def test_repeated_run_preserves_evidence_without_browser_or_download(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(toutiao, 'read_browser') as browser:
             with self.assertRaises(ValueError):toutiao.read(URL, Path(tmp))
