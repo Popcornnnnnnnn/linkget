@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1.dev14
+
+- Add subtitle-first reading, saved defaults, doctor, Markdown/TXT/SRT/VTT exports, local media and macOS Vision OCR.
+- Add full-audio chunk checkpoints, sequential read batches, failure retry and a 24-hour text cache; request audio-only where available.
+- Add explicit configurable summaries/translations with validated source references and original text preservation.
+- Add native macOS Read/Download host, Share extension and Services.
+- Validate real Bilibili, YouTube, Weibo, Douyin and Xiaohongshu samples; preserve channel and recognition limitations in read documentation.
+
+
 ## 0.2.1.dev13 — video content reading across channels (unreleased)
 
 - Extend `linkget read` to existing video post channels: Bilibili (including a selected part), YouTube, Instagram, X, TikTok, Douyin, Kuaishou, Xiaohongshu, Weibo, Reddit, LOFTER and individual Pinterest pins. Reuse the existing download, format validation and configured login flow; Pixiv remains static-image only.

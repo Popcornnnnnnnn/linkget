@@ -254,7 +254,8 @@ def download(url, directory, cookie_path=None):
         notes = ([f"Xiaohongshu: original unavailable for {retained} item(s); kept best exposed display sources, which may contain watermarks."] if retained else [])
         if missing:
             notes.append(f"Xiaohongshu: {missing} Live Photo motion track(s) were not exposed; still pictures were retained.")
-        return DownloadResult(notes, len(media), variants, pairs, missing)
+        return DownloadResult(notes, len(media), variants, pairs, missing,
+                              {'title': note.get('title', ''), 'description': note.get('desc', '')})
     except HTTPError as error:
         error.close()
         raise RuntimeError(f"Xiaohongshu request failed (HTTP {error.code}). Open a fresh share link in your browser and check access or verification.") from None

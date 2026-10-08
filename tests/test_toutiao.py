@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from linkget import cli, toutiao
+from linkget import cli, toutiao, read_store
 
 URL = 'https://www.toutiao.com/video/7693844463388655644/'
 MEDIA = 'https://v9-web.toutiaovod.com/fixture/video.mp4?signature=synthetic'
@@ -20,6 +20,13 @@ def page():
 
 
 class ToutiaoTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = patch.object(read_store, 'root', return_value=Path(temporary.name))
+        root.start()
+        self.addCleanup(root.stop)
+
     def test_mobile_tracking_and_desktop_have_same_post_identity(self):
         self.assertEqual(toutiao.canonical('https://m.toutiao.com/video/7693844463388655644/?utm_source=wechat'), URL)
         for url in ('https://toutiao.com.evil.test/video/1/', 'https://user@www.toutiao.com/video/1/',
@@ -54,8 +61,9 @@ class ToutiaoTests(unittest.TestCase):
             with self.assertRaises(ValueError):toutiao.validate_page(URL, dict(page(), media_url=url))
 
     def test_invalid_duration_and_caption_ranges_are_rejected(self):
-        for duration in (0, -1, float('nan'), float('inf'), 1801, True):
-            with self.assertRaises(ValueError):toutiao.validate_page(URL, dict(page(), duration=duration))
+        for duration in (0, -1, float('nan'), float('inf'), True):
+                with self.assertRaises(ValueError):toutiao.validate_page(URL, dict(page(), duration=duration))
+        self.assertEqual(toutiao.validate_page(URL, dict(page(), duration=1801))['duration'], 1801)
         with self.assertRaises(ValueError):
             toutiao.validate_page(URL, dict(page(), captions=[{'text': 'wrong', 'start': 9, 'end': 1}]))
 
@@ -81,11 +89,12 @@ class ToutiaoTests(unittest.TestCase):
                 self.assertEqual(url, MEDIA);path.write_bytes(b'video')
             def recognized(video, folder, model, duration):
                 self.assertEqual(duration, 38.4)
-                return {'text': 'Complete recognized speech', 'content_complete': True,
+                return {'text': 'Complete recognized speech', 'segments': [{'start': 0, 'end': 38.4, 'text': 'Complete recognized speech'}], 'content_complete': True,
                         'content_basis': 'full_video_local_asr', 'recognition_verified': False}
             with patch.object(toutiao.shutil, 'which', return_value='tool'), \
                     patch.object(toutiao, 'download_video', side_effect=download), \
                     patch.object(toutiao, 'transcribe', side_effect=recognized), \
+                    patch.object(cli, 'inspect_files', return_value=[{'duration': 38.4, 'audio': True, 'probe_ok': True}]), \
                     patch.object(cli, 'first_run') as setup, patch.object(cli, 'prepare_session') as credentials, \
                     patch.object(cli, 'import_photos') as photos, contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(cli.main(['read', URL, '--folder', str(root / 'out'), '--page-data', str(data),

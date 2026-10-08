@@ -20,6 +20,10 @@ class DownloadResult:
     variants: dict = field(default_factory=dict)
     live_pairs: list = field(default_factory=list)
     missing_motion: int = 0
+    metadata: dict = field(default_factory=dict)
+
+
+AUDIO = {'.m4a', '.mp3', '.aac', '.opus', '.ogg', '.wav', '.flac', '.webm'}
 
 
 def reference(url):
@@ -35,7 +39,7 @@ def inspect_files(files, variants=None):
     records = []
     for path in files:
         record = {"file": path.name, "bytes": path.stat().st_size, "sha256": digest(path),
-                  "kind": "video" if path.suffix.lower() in {".mp4", ".mov", ".m4v"} else "image",
+                  "kind": "audio" if path.suffix.lower() in AUDIO else "video" if path.suffix.lower() in {".mp4", ".mov", ".m4v"} else "image",
                   "source": (variants or {}).get(path.name, "engine_selected"),
                   "width": None, "height": None, "codec": None, "audio": None,
                   "duration": None, "bit_rate": None, "frame_rate": None, "probe_ok": None}
@@ -53,7 +57,7 @@ def inspect_files(files, variants=None):
                               duration=data.get("format", {}).get("duration"),
                               bit_rate=data.get("format", {}).get("bit_rate"),
                               frame_rate=video.get("avg_frame_rate"),
-                              probe_ok=process.returncode == 0 and bool(video.get("width") and video.get("height")))
+                              probe_ok=process.returncode == 0 and (any(s.get('codec_type') == 'audio' for s in streams) if record['kind'] == 'audio' else bool(video.get("width") and video.get("height"))))
             except (OSError, ValueError, subprocess.TimeoutExpired):
                 if process is not None and process.poll() is None:
                     process.kill()

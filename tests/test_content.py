@@ -120,7 +120,8 @@ class ContentTests(unittest.TestCase):
         code, _ = self.run_read('https://x.com/user/status/123', recognized=[self.recognized, RuntimeError('No speech')])
         self.assertEqual(code, 1)
         self.assertFalse((self.root / 'out/content.json').exists())
-        self.assertFalse((self.root / 'out/media').exists())
+        self.assertTrue((self.root / 'out/media').exists())
+        self.assertEqual(json.loads((self.root / 'out/.read-job.json').read_text())['status'], 'failed')
         self.assertTrue(all(not stage.exists() for stage in self.stages))
 
     def test_image_only_and_no_audio_fail_without_recognition(self):

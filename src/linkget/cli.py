@@ -401,6 +401,11 @@ def configure(args, parser):
 
 
 def main(argv=None):
+    if os.environ.get('LINKGET_GUI_JOB') == '1':
+        try:
+            os.setsid()
+        except OSError:
+            pass
     tokens = list(sys.argv[1:] if argv is None else argv)
     if tokens and tokens[0] == 'read':
         if __package__:
@@ -648,6 +653,7 @@ def download(args, setup_results, records=None, media_consumer=None):
     stage = None
     session_dir = None
     info_path = None
+    read_metadata = {}
     evidence = {"status": "failed", "reference": None, "files": []}
     domain = None
     try:
@@ -744,6 +750,10 @@ def download(args, setup_results, records=None, media_consumer=None):
                         info_path = stage / "video-info.json"
                         with activity("Preparing"):
                             command = prepare_video(command, info_path, log, domain)
+                        reader = getattr(args, 'read_metadata_consumer', None)
+                        if reader and reader(json.loads(info_path.read_text()), url, site):
+                            evidence.update(status='completed')
+                            return 0
                         quality = selected_quality(info_path)
                         if quality:
                             status("Quality", quality)
@@ -789,6 +799,14 @@ def download(args, setup_results, records=None, media_consumer=None):
                     if "blocked by copyright" in log_text.lower() or "region" in log_text.lower():
                         raise RuntimeError(f"This {site} post is blocked due to copyright or region restrictions.")
                     raise RuntimeError("Download failed.\n" + log_text)
+                if media_consumer is not None:
+                    if __package__:
+                        from .read_formats import source_metadata
+                    else:
+                        from read_formats import source_metadata
+                    read_metadata.update(source_metadata(download_info.metadata))
+                    for sidecar in media_dir.glob('*.json'):
+                        read_metadata.update(source_metadata(json.loads(sidecar.read_text())))
                 if engine == "gallery-dl":
                     # Weibo's clean-image comparison needs its source sidecars.
                     if domain == "weibo.com":
@@ -801,8 +819,9 @@ def download(args, setup_results, records=None, media_consumer=None):
                         download_info = gallery_evidence(media_dir, domain)
                 for note in source_notes:
                     status("Media", note)
-                files = sorted(path for path in media_dir.iterdir() if path.is_file() and path.suffix.lower() in MEDIA)
-                unfinished = [path for path in media_dir.iterdir() if path.suffix.lower() not in MEDIA]
+                accepted = MEDIA | ({'.m4a', '.mp3', '.aac', '.opus', '.ogg', '.wav', '.flac', '.webm'} if media_consumer else set())
+                files = sorted(path for path in media_dir.iterdir() if path.is_file() and path.suffix.lower() in accepted)
+                unfinished = [path for path in media_dir.iterdir() if path.suffix.lower() not in accepted]
                 if unfinished:
                     raise RuntimeError("The download contains unsupported or incomplete files. Files have been kept for review.")
                 if not files:
@@ -877,7 +896,7 @@ def download(args, setup_results, records=None, media_consumer=None):
         if any(r['source'] == "fallback" for r in media_records):
             status("Source", "Fallback media included", "33")
         if media_consumer is not None:
-            metadata = json.loads(info_path.read_text()) if info_path is not None else {}
+            metadata = json.loads(info_path.read_text()) if info_path is not None else read_metadata
             media_consumer(files, media_records, download_info, url, site, metadata)
             evidence.update(status="completed")
             return 0

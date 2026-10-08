@@ -286,7 +286,8 @@ def download(url, directory, cookie_path=None, *, browser_item=None):
                 if fallback:
                     fallback_used = True
 
-        return DownloadResult(["Douyin: clean source unavailable; kept the exposed media, which may contain watermarks."] if fallback_used else [], len(media), variants)
+        return DownloadResult(["Douyin: clean source unavailable; kept the exposed media, which may contain watermarks."] if fallback_used else [], len(media), variants,
+                              metadata={'description': item.get('desc', '')})
     except HTTPError as error:
         raise RuntimeError(f"Douyin request failed (HTTP {error.code}). Open the post in your browser and check access or verification, then retry.") from None
     except (URLError, OSError, HTTPException) as error:

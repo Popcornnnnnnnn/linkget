@@ -62,7 +62,8 @@ def prepare_bilibili(command, info_path, log):
             raise ValueError()
     except (IndexError, ValueError):
         raise RuntimeError("Bilibili returned unreadable video information; nothing has been downloaded.") from None
-    reason = restricted_bilibili_quality(info, messages)
+    audio_read = '-f' in command and command[command.index('-f') + 1] == 'ba/b'
+    reason = None if audio_read else restricted_bilibili_quality(info, messages)
     if reason:
         raise LoginRequired(reason)
     info_path.write_text(json.dumps(info))
@@ -206,7 +207,9 @@ def command_for(args, url, engine, domain, media_dir, tools, cookie_path=None):
     else:
         command = [tools[engine], "--ignore-config", "--no-playlist", "--no-progress",
                    "--ffmpeg-location", str(Path(tools["ffmpeg"]).parent)]
-        if domain == "reddit.com":
+        if getattr(args, 'read_audio', False):
+            command.extend(['-f', 'ba/b'])
+        elif domain == "reddit.com":
             command.extend(["-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4"])
         else:
             command.extend(["-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]", "-S", "res,fps,hdr,vbr", "--merge-output-format", "mp4"])
@@ -217,4 +220,3 @@ def command_for(args, url, engine, domain, media_dir, tools, cookie_path=None):
         command.extend(["--cookies", str(cookie_path)])
     command.append(url)
     return command
-
