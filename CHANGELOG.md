@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1.dev12 — clean Toutiao intermediates (unreleased)
+
+- Remove downloaded video, audio and duplicate transcript files after durable content capture, including partial files on failure. Preserve text and timed segments in `content.json`.
+- Add `--keep-media` for temporary recognition review; `cleanup_media` removes only known generated filenames and refuses substituted paths.
+
 ## 0.2.1.dev11 — Toutiao content reading (unreleased)
 
 - Add `linkget read URL --folder NEW_DIR` for content intended for AI summarization. Read the current rendered Chrome page without exporting browser credentials, or accept content-only evidence from an authorized browser connector with `--page-data`.

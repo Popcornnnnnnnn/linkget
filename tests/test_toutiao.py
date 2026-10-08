@@ -96,6 +96,39 @@ class ToutiaoTests(unittest.TestCase):
             self.assertNotIn('media_url', result)
             self.assertFalse(result['send_enabled'])
             self.assertFalse(result['recognition_verified'])
+            self.assertFalse((root / 'out/source.mp4').exists())
+
+    def test_cleanup_preserves_content_and_summary_and_refuses_symlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in (*toutiao.INTERMEDIATES, 'content.json', 'summary.md', 'model.bin'):
+                (root / name).write_text('evidence')
+            self.assertEqual(set(toutiao.cleanup_media(root)), set(toutiao.INTERMEDIATES))
+            for name in ('content.json', 'summary.md', 'model.bin'):
+                self.assertEqual((root / name).read_text(), 'evidence')
+            (root / 'source.mp4').symlink_to(root / 'model.bin')
+            with self.assertRaises(ValueError):toutiao.cleanup_media(root)
+            self.assertEqual((root / 'model.bin').read_text(), 'evidence')
+
+    def test_failed_download_cleans_partial_media_without_ready_content(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(toutiao.shutil, 'which', return_value='tool'):
+            root = Path(tmp); model = root / 'model.bin'; model.touch()
+            def fail(url, path):
+                path.write_bytes(b'partial');raise RuntimeError('interrupted')
+            with patch.object(toutiao, 'download_video', side_effect=fail):
+                with self.assertRaises(RuntimeError):toutiao.read(URL, root / 'out', page(), model)
+            self.assertEqual(list((root / 'out').iterdir()), [])
+            self.assertTrue(model.exists())
+
+    def test_manual_review_retains_media_until_explicit_cleanup(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(toutiao.shutil, 'which', return_value='tool'):
+            root = Path(tmp); model = root / 'model.bin'; model.touch()
+            with patch.object(toutiao, 'download_video', side_effect=lambda u,p:p.write_bytes(b'video')), \
+                    patch.object(toutiao, 'transcribe', return_value={'text':'speech'}):
+                toutiao.read(URL, root / 'out', page(), model, keep_media=True)
+            self.assertTrue((root / 'out/source.mp4').exists())
+            toutiao.cleanup_media(root / 'out')
+            self.assertTrue((root / 'out/content.json').exists())
 
     def test_rendered_reader_reads_only_matching_dom_content(self):
         script = (Path(toutiao.__file__).parent / 'toutiao_browser.js').read_text()

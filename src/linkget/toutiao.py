@@ -6,6 +6,7 @@ or LinkGet's existing daily-Chrome page controller. No credential export.
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 import re
 import shutil
@@ -16,6 +17,22 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 HOSTS = {'toutiao.com', 'www.toutiao.com', 'm.toutiao.com'}
+INTERMEDIATES = ('source.mp4', 'audio.wav', 'transcript.txt', 'transcript.json')
+
+
+def cleanup_media(folder):
+    """Remove only this reader's intermediates, without following symlinks."""
+    if folder.is_symlink() or not folder.is_dir():
+        raise ValueError('Cleanup requires a real content folder.')
+    paths = [folder / name for name in INTERMEDIATES]
+    if any(p.is_symlink() or (p.exists() and not p.is_file()) for p in paths):
+        raise ValueError('Refusing cleanup of substituted intermediate paths.')
+    removed = []
+    for path in paths:
+        if path.exists():
+            path.unlink()
+            removed.append(path.name)
+    return removed
 
 
 def canonical(url):
@@ -94,21 +111,18 @@ def download_video(url, path):
     url = media_url(url)
     request = Request(url, headers={'Referer': 'https://www.toutiao.com/', 'User-Agent': 'Mozilla/5.0'})
     limit, count, start = 200 * 1024 * 1024, 0, time.monotonic()
-    try:
-        with urlopen(request, timeout=8) as response:
-            media_url(response.geturl())
-            with path.open('xb') as output:
-                path.chmod(0o600)
-                while chunk := response.read(256 * 1024):
-                    count += len(chunk)
-                    if count > limit or time.monotonic() - start > 60:
-                        raise RuntimeError('Toutiao sample exceeds the transfer size or time bound.')
-                    output.write(chunk)
-        if count == 0:
-            raise RuntimeError('The player returned an empty video.')
-    except Exception:
-        # Retain partial media for diagnosis; never mistake it for a transcript.
-        raise
+    with urlopen(request, timeout=8) as response:
+        media_url(response.geturl())
+        with path.open('xb') as output:
+            path.chmod(0o600)
+            while chunk := response.read(256 * 1024):
+                count += len(chunk)
+                if count > limit or time.monotonic() - start > 60:
+                    raise RuntimeError('Toutiao sample exceeds the transfer size or time bound.')
+                output.write(chunk)
+    if count == 0:
+        raise RuntimeError('The player returned an empty video.')
+
 
 
 def transcribe(video, folder, model, duration):
@@ -138,7 +152,7 @@ def transcribe(video, folder, model, duration):
             'limitations': ['Automatic speech recognition may contain errors; check names, numbers and ambiguous claims.']}
 
 
-def read(url, folder, page=None, model=None):
+def read(url, folder, page=None, model=None, keep_media=False):
     url = canonical(url)
     if folder.exists():
         raise ValueError('The content folder already exists; choose a new folder to preserve prior evidence.')
@@ -152,14 +166,21 @@ def read(url, folder, page=None, model=None):
         raise RuntimeError('Check the existing whisper model and transcription tools before fetching media.')
     folder.mkdir(parents=True, mode=0o700)
     item['send_enabled'] = False
-    if item['kind'] == 'video':
-        download_video(item.pop('media_url'), folder / 'source.mp4')
-        item.update(transcribe(folder / 'source.mp4', folder, model, item['duration']))
     output = folder / 'content.json'
-    with output.open('x') as stream:
-        json.dump(item, stream, ensure_ascii=False, indent=2)
-    output.chmod(0o600)
-    return output
+    try:
+        if item['kind'] == 'video':
+            download_video(item.pop('media_url'), folder / 'source.mp4')
+            item.update(transcribe(folder / 'source.mp4', folder, model, item['duration']))
+        # Complete the durable content record before removing its source media.
+        with output.open('x') as stream:
+            output.chmod(0o600)
+            json.dump(item, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        return output
+    finally:
+        if not keep_media:
+            cleanup_media(folder)
 
 
 def main(argv):
@@ -169,13 +190,15 @@ def main(argv):
     parser.add_argument('--page-data', type=Path, help='Content-only JSON from the authorized Chrome connector')
     parser.add_argument('--transcribe', action='store_true', help='Transcribe the complete video locally')
     parser.add_argument('--whisper-model', type=Path, help='Existing whisper.cpp model; nothing is downloaded automatically')
+    parser.add_argument('--keep-media', action='store_true', help='Temporarily retain media for manual recognition review; clean after review')
     args = parser.parse_args(argv)
     if args.transcribe != (args.whisper_model is not None):
         parser.error('--transcribe and --whisper-model must be supplied together')
     try:
         page = json.loads(args.page_data.read_text()) if args.page_data else None
         output = read(args.url, args.folder.expanduser().resolve(), page,
-                      args.whisper_model.expanduser().resolve() if args.whisper_model else None)
+                      args.whisper_model.expanduser().resolve() if args.whisper_model else None,
+                      keep_media=args.keep_media)
         print(json.dumps({'status': 'content_ready', 'content': str(output), 'send_enabled': False}, ensure_ascii=False))
         return 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
