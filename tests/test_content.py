@@ -66,7 +66,7 @@ class ContentTests(unittest.TestCase):
              patch.object(cli, 'first_run') as setup, patch.object(cli, 'save_folder') as save, \
              patch.object(cli, 'import_photos') as photos, contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(io.StringIO()):
-            code = cli.main(['read', url, '--folder', str(self.root / folder), '--transcribe',
+            code = cli.main(['read', '--foreground', url, '--folder', str(self.root / folder), '--transcribe',
                              '--whisper-model', str(self.model), '--browser', 'none', *extra])
             setup.assert_not_called()
             save.assert_not_called()

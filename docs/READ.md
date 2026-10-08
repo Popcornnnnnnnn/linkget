@@ -11,6 +11,24 @@ linkget read 'POST_URL' --formats md,txt,srt,vtt --ocr
 
 The default output is a new folder under `~/Downloads/linkget-read/`. `--folder NEW_DIR` selects a new folder. Existing content and edited exports are preserved. `content.json` is always saved; Markdown, TXT and SRT are the defaults. Multiple videos get separate subtitle files and independent timelines. `--formats md,txt,srt,vtt` selects all exports.
 
+## Background execution
+
+Reads, OCR, recognition, translations, summaries, retries and read batches run in a detached background process by default. Submission returns a task ID immediately; closing the terminal does not stop processing. Configuration, prerequisite checks and task inspection remain immediate commands.
+
+```sh
+linkget read ~/Downloads/recording.m4a
+linkget read translate '/path/to/read-folder' --language zh
+linkget read status                    # recent tasks
+linkget read status TASK_ID            # phase, model and result paths
+linkget read logs TASK_ID --tail 50
+linkget read cancel TASK_ID
+linkget read ~/Downloads/recording.m4a --foreground
+```
+
+Submission exit code zero means accepted, not completed. A task reaches `completed`, `failed`, `cancelled` or `interrupted`; `status TASK_ID` exits nonzero for the last three states. Use `--foreground` when a script needs to wait and receive the processing exit code. For read batches supplied through standard input, links are collected before the terminal returns, then processed in the worker.
+
+Receipts and logs are private files under the linkget application-support directory. Logs may contain source paths and post references. Status distinguishes cloud requests, local service startup, model loading and local inference. Cancellation signals only the verified task process group, preserves source/checkpoints, and stops its child tools. A stopped worker is detected on the next status check; tasks are not automatically restarted after a reboot. Use `read recover` and `read retry FOLDER` for retained recognition checkpoints. Browser or website authorization that needs interaction must be configured before submitting the task.
+
 ## Saved defaults and prerequisites
 
 ```sh
@@ -50,7 +68,7 @@ linkget read retry '/path/to/unfinished/read-folder'
 
 Recognition processes the full downloaded audio in 10-minute chunks by default; the old 30-minute recognition cap is removed. `--chunk-seconds` accepts 30–1800. Each completed chunk is saved with media/model/language identity and absolute per-video timestamps. Failure or cancellation keeps selected media and completed chunks. Retry checks retained file hashes, resumes completed work and does not need the original local file if retained media is intact. Successful reads clean the generated `media` folder unless `--keep-media` was used. Checkpoint metadata remains for completion history.
 
-Read batches run sequentially, continue after individual failures and return a failure exit code if any item failed. A batch folder has `item-001`, etc. Only fully successful items get `content.json`; there is no partial summary-ready result.
+Read batches run sequentially and continue after individual failures. Any item failure makes the background task `failed` (or returns a failure exit code with `--foreground`). A batch folder has `item-001`, etc. Only fully successful items get `content.json`; there is no partial summary-ready result.
 
 Complete text is cached privately for 24 hours. Source identity (including Bilibili part), language, model contents, chunk size, OCR/subtitle choices and optional VAD model identify the cache. Local files also use a content hash. `--refresh` bypasses the cache; remote posts changed within 24 hours require this flag. Cache files store text and metadata, not media URLs or login information. Use `--vad-model PATH` only with an existing compatible whisper.cpp VAD model. Music/silence labels alone are rejected; repeated phrases are flagged in `suspicious_segments`, not silently deleted.
 
@@ -82,7 +100,7 @@ linkget read translate '/path/to/read-folder' --language zh
 
 `--ai-fallback-model` enables a single automatic switch on connection failures/timeouts or HTTP 404/408/429/500/502/503/504. The failed batch goes to the backup, and remaining batches use it for that command; the next command starts with the primary again. Authentication errors, invalid JSON and missing source IDs stop processing. If both routes fail, no partial translation is exported. JSON records actual models and each batch's route/reason; Markdown identifies fallback use. Disable it with `linkget read config --clear ai_fallback_model`.
 
-The accepted backup uses the already-downloaded local Qwen3.8 27B Q6_K model in LM Studio. The `lmstudio` provider starts the existing service on loopback port 1234 if needed, loads the selected downloaded model with 16K context and a ten-minute idle unload, and disables reasoning for translation. It never downloads a model or installs LM Studio. Other models already loaded by the user are preserved. This backup is independent of CPA and the network, but requires the installed `lms` CLI and local model files. Cloud and local inference have different quality and speed; source accuracy remains unverified. [LM Studio documents loopback server startup](https://lmstudio.ai/docs/cli/serve/server-start) and [idle unload](https://lmstudio.ai/docs/developer/core/ttl-and-auto-evict).
+The accepted backup uses the already-downloaded local Qwen3.8 27B Q6_K model in LM Studio. The `lmstudio` provider starts the existing service on loopback port 1234 if needed, loads the selected downloaded model with 16K context and a ten-minute idle unload, and disables reasoning for translation. The idle unload applies to instances loaded by LinkGet; an already-loaded user instance is reused without changing its lifetime. Concurrent tasks serialize local startup/loading. It never downloads a model or installs LM Studio. Other models already loaded by the user are preserved. This backup is independent of CPA and the network, but requires the installed `lms` CLI and local model files. Cloud and local inference have different quality and speed; source accuracy remains unverified. [LM Studio documents loopback server startup](https://lmstudio.ai/docs/cli/serve/server-start) and [idle unload](https://lmstudio.ai/docs/developer/core/ttl-and-auto-evict).
 
 Keep keys in the named environment variable; do not put them in URLs or configuration files. A changed fallback endpoint/provider does not inherit primary credentials; use `--ai-fallback-key-env` for a separate service. OpenAI uses Responses with `store: false`; compatible services and LM Studio use Chat Completions; Ollama uses its local `/api/chat`. HTTPS is required except loopback HTTP. Redirects are refused. There is no repeated retry on the same service; an opted-in fallback may regenerate a timed-out batch whose upstream outcome is unknown. Cloud requests use a 60-second socket timeout; local inference uses 120 seconds, with a separate bounded startup/load step. When LM Studio is selected as either route, batches are limited to 4,000 source characters to leave context for the translated output. The command submits all speech units, exposed publisher descriptions and OCR text. Summary points require valid source IDs; translation requires every source unit exactly once. Outputs link to source timestamps or original text and preserve `content.json`. This validates reference structure, not whether the model's claims are accurate.
 
@@ -90,7 +108,7 @@ A service and model must be explicitly configured. Source acquisition never invo
 
 ## Validation, 2026-10-08
 
-257 automated tests passed, including existing download/recovery tests, selected-part reads, subtitle priority/coverage, multi-video exports, >30-minute recognition checkpoints, failure recovery after deleting the original local file, modified-media rejection, batch continuation, cache invalidation, image/description references, AI HTTP protocol paths, bounded fallback, credential isolation and local startup/load behavior. These fixtures do not establish website or model availability.
+266 automated tests passed, including existing download/recovery tests, selected-part reads, subtitle priority/coverage, multi-video exports, >30-minute recognition checkpoints, failure recovery after deleting the original local file, modified-media rejection, batch continuation, cache invalidation, image/description references, AI HTTP protocol paths, bounded fallback, credential isolation and local startup/load behavior. Detached-worker tests cover immediate return during a held request, completion, failure, cancellation, stale PID protection, private logs, stdin batches and serialized local startup. These fixtures do not establish website or model availability.
 
 Fresh real samples succeeded on Bilibili `BV1bK411W797?p=1`, YouTube `jNQXAC9IVRw`, Weibo `RkpghmW5K`, Douyin `7675556744459143529` and Xiaohongshu `6abb97e1000000000200fd74`, through existing configured login/public paths. All produced Markdown/TXT/SRT/VTT from full local ASR. Xiaohongshu's sample contains song lyrics. These results verify acquisition/export, not manual transcription accuracy. Other routes have fixture coverage, not fresh live acceptance here.
 

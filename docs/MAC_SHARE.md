@@ -24,6 +24,6 @@ Installed identities:
 
 - App: `com.popcorn.linkget`
 - Share: `com.popcorn.linkget.share`
-- Historical companion: `0.2.1.dev14` (removed); current CLI: `0.2.1.dev16`.
+- Historical companion: `0.2.1.dev14` (removed); current CLI: `0.2.1.dev17`.
 
 Actual acceptance includes the installed window, local image reading, opening the result folder, Finder's Share menu entry and handoff into the host. English/Chinese and Light/Dark were checked in the real window; returning to English/Light was confirmed. Desktop Download saved the YouTube sample as MP4. Cancel stopped a generated 768-second local audio task, retained source media, wrote a cancelled checkpoint and left no media-tool process or partial content result. Installed `read retry` subsequently processed both chunks, completed the read and cleaned retained media. The first menu-localization implementation crashed at startup because macOS adds menu items; the corrected tagged-item lookup passed normal launch and cold Share-to-host launch. A native hover treatment is implemented, but the automation tool has no pointer-hover action, so exhaustive hover verification remains manual.

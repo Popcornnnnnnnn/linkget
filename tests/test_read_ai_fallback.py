@@ -16,6 +16,9 @@ class AIFallbackTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.folder = Path(temp.name)
+        root = patch.object(read_store, 'root', return_value=self.folder / 'private')
+        root.start()
+        self.addCleanup(root.stop)
         self.config = {'ai_provider': 'compatible', 'ai_model': 'primary',
                        'ai_endpoint': 'http://127.0.0.1:8317/v1', 'ai_auth': 'cpa',
                        'ai_fallback_provider': 'lmstudio', 'ai_fallback_model': 'qwen/qwen3.5-4b',

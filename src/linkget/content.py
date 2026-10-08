@@ -12,13 +12,13 @@ import uuid
 from urllib.parse import parse_qs, urlsplit
 
 if __package__:
-    from . import toutiao, read_store, read_formats, read_asr, read_ocr
+    from . import toutiao, read_store, read_formats, read_asr, read_ocr, read_tasks
     from .engines import route
     from .links import normalize_link
     from .media import reference, AUDIO, DownloadResult
     from .preflight import writable_directory
 else:
-    import toutiao, read_store, read_formats, read_asr, read_ocr
+    import toutiao, read_store, read_formats, read_asr, read_ocr, read_tasks
     from engines import route
     from links import normalize_link
     from media import reference, AUDIO, DownloadResult
@@ -99,6 +99,8 @@ def read_videos(args):
         raise ValueError('The content folder already exists; choose a new folder or use read retry FOLDER.')
     writable_directory(folder)
     folder.mkdir(parents=True, exist_ok=resume, mode=0o700)
+    read_tasks.record_output(folder)
+    read_tasks.progress(phase='reading content')
     with read_store.lock(folder / '.read.lock'):
         options = {'whisper_model': str(model) if model else None, 'language': language,
                    'formats': ','.join(formats), 'subtitles': subtitle_mode, 'ocr': ocr,
@@ -368,6 +370,27 @@ def doctor():
     return 1 if missing or not model or not model.is_file() else 0
 
 
+def read_parser(batch=False):
+    parser = argparse.ArgumentParser(prog='linkget read', description='Read post text, subtitles, local media speech and image text. Runs in the background by default. Commands: config, doctor, batch, retry, recover, summarize, translate, status, logs, cancel.')
+    parser.add_argument('url', nargs='*' if batch else None)
+    parser.add_argument('--folder', type=Path, help='New content folder; batch: parent folder')
+    parser.add_argument('--transcribe', action='store_true', help='Accepted for compatibility; missing subtitles automatically use local ASR')
+    parser.add_argument('--whisper-model', type=Path, help='Override saved/default local model')
+    parser.add_argument('--language', help='Whisper language or auto; default: saved setting or auto')
+    parser.add_argument('--formats', help='md,txt,srt,vtt; JSON is always saved')
+    parser.add_argument('--subtitles', choices=['auto', 'never', 'only'], default='auto')
+    parser.add_argument('--chunk-seconds', type=int, default=600)
+    parser.add_argument('--vad-model', type=Path, help='Existing optional speech activity model')
+    parser.add_argument('--ocr', action='store_true', help='Also OCR images in mixed video/image posts; image-only reads use OCR')
+    parser.add_argument('--refresh', action='store_true', help='Bypass the 24-hour complete-content cache')
+    parser.add_argument('--keep-media', action='store_true')
+    parser.add_argument('--page-data', type=Path, help='Toutiao only: content-only page JSON')
+    parser.add_argument('--browser', choices=['auto', 'none', 'chrome', 'firefox', 'safari', 'edge', 'brave'], default='auto')
+    parser.add_argument('--profile')
+    parser.add_argument('--foreground', action='store_true', help='Wait for completion instead of running in the background')
+    return parser
+
+
 def main(argv):
     try:
         if argv and argv[0] == 'config':
@@ -402,22 +425,7 @@ def main(argv):
                 return 0
             return read_videos(args)
         batch = bool(argv and argv[0] == 'batch')
-        parser = argparse.ArgumentParser(prog='linkget read', description='Read post text, subtitles, local media speech and image text. Commands: config, doctor, batch, retry, recover, summarize, translate.')
-        parser.add_argument('url', nargs='*' if batch else None)
-        parser.add_argument('--folder', type=Path, help='New content folder; batch: parent folder')
-        parser.add_argument('--transcribe', action='store_true', help='Accepted for compatibility; missing subtitles automatically use local ASR')
-        parser.add_argument('--whisper-model', type=Path, help='Override saved/default local model')
-        parser.add_argument('--language', help='Whisper language or auto; default: saved setting or auto')
-        parser.add_argument('--formats', help='md,txt,srt,vtt; JSON is always saved')
-        parser.add_argument('--subtitles', choices=['auto', 'never', 'only'], default='auto')
-        parser.add_argument('--chunk-seconds', type=int, default=600)
-        parser.add_argument('--vad-model', type=Path, help='Existing optional speech activity model')
-        parser.add_argument('--ocr', action='store_true', help='Also OCR images in mixed video/image posts; image-only reads use OCR')
-        parser.add_argument('--refresh', action='store_true', help='Bypass the 24-hour complete-content cache')
-        parser.add_argument('--keep-media', action='store_true')
-        parser.add_argument('--page-data', type=Path, help='Toutiao only: content-only page JSON')
-        parser.add_argument('--browser', choices=['auto', 'none', 'chrome', 'firefox', 'safari', 'edge', 'brave'], default='auto')
-        parser.add_argument('--profile')
+        parser = read_parser(batch)
         args = parser.parse_args(argv[1:] if batch else argv)
         args.resume = False
         if args.profile and args.browser in {'auto', 'none'}:

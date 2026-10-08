@@ -97,7 +97,7 @@ class ToutiaoTests(unittest.TestCase):
                     patch.object(cli, 'inspect_files', return_value=[{'duration': 38.4, 'audio': True, 'probe_ok': True}]), \
                     patch.object(cli, 'first_run') as setup, patch.object(cli, 'prepare_session') as credentials, \
                     patch.object(cli, 'import_photos') as photos, contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(cli.main(['read', URL, '--folder', str(root / 'out'), '--page-data', str(data),
+                self.assertEqual(cli.main(['read', '--foreground', URL, '--folder', str(root / 'out'), '--page-data', str(data),
                                            '--transcribe', '--whisper-model', str(model)]), 0)
                 setup.assert_not_called();credentials.assert_not_called();photos.assert_not_called()
             result = json.loads((root / 'out/content.json').read_text())

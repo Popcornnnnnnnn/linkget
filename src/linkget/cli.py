@@ -409,9 +409,9 @@ def main(argv=None):
     tokens = list(sys.argv[1:] if argv is None else argv)
     if tokens and tokens[0] == 'read':
         if __package__:
-            from .content import main as read_content
+            from .read_tasks import main as read_content
         else:
-            from content import main as read_content
+            from read_tasks import main as read_content
         return read_content(tokens[1:])
     parser = argparse.ArgumentParser(
         prog="linkget",
@@ -420,7 +420,8 @@ def main(argv=None):
         epilog="""Commands:
   help                 Show this help (also -h or --help)
   sites                List supported sites and media
-  read URL --folder D  Read article text or transcribe post videos (read --help)
+  read URL --folder D  Read/transcribe in the background (read --help)
+  read status [TASK]   Show background reading progress and results
   doctor               Check download tools and installation
   config               View or change the default save destination
   batch [LINK ...]     Download all links concurrently; paste one per line if omitted

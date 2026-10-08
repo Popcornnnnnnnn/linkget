@@ -39,9 +39,12 @@ Use straight ASCII quotes (`'` or `"`) around command-line URLs. Shells interpre
 | --- | --- |
 | `linkget help` | Commands, options and examples |
 | `linkget sites` | Supported websites and post types |
-| `linkget read URL --folder NEW_DIR` | Read subtitles, local speech, post/image text; exports and recovery; [reading options](docs/READ.md) |
+| `linkget read URL --folder NEW_DIR` | Read subtitles, local speech and post/image text in the background; [reading options](docs/READ.md) |
 | `linkget read batch URL1 URL2` | Read multiple posts; retry unfinished reads |
 | `linkget read summarize FOLDER` | Summarize saved text with an explicitly configured model |
+| `linkget read translate FOLDER --language zh` | Translate saved text in the background, with configured local fallback |
+| `linkget read status [TASK]` | Show progress, completion and result paths |
+| `linkget read logs TASK` / `linkget read cancel TASK` | Inspect or cancel a background read task |
 | `linkget doctor` | Check download tools, without account requests |
 | `linkget config` | View or change the default save destination |
 | `linkget batch URL1 URL2` | Download all supplied posts concurrently |

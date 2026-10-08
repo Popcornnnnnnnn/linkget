@@ -13,9 +13,9 @@ from urllib.parse import urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 
 if __package__:
-    from . import read_store, read_formats
+    from . import read_store, read_formats, read_tasks
 else:
-    import read_store, read_formats
+    import read_store, read_formats, read_tasks
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -47,6 +47,12 @@ def fallback_config(config):
 
 
 def prepare_lmstudio(config, base):
+    # Concurrent detached jobs must not load duplicate copies of the same model.
+    with read_store.lock(read_store.root() / '.local-ai-start.lock', wait=True):
+        return _prepare_lmstudio(config, base)
+
+
+def _prepare_lmstudio(config, base):
     """Start the installed loopback service and load an already-downloaded model only."""
     parsed = urlsplit(base)
     if parsed.scheme != 'http' or parsed.hostname not in {'localhost', '127.0.0.1'} or parsed.port != 1234 or parsed.path.rstrip('/') != '/v1' or parsed.query or parsed.fragment:
@@ -71,12 +77,14 @@ def prepare_lmstudio(config, base):
         except HTTPError:
             raise
         except (URLError, OSError):
+            read_tasks.progress(phase='starting local service', model=config['ai_model'])
             run('server', 'start', '--port', '1234', '--bind', '127.0.0.1')
             available = models()
         model = next((item for item in available if item.get('key') == config['ai_model']), None)
         if not model:
             raise ValueError('The selected LM Studio model is not downloaded; no download was started.')
         if not model.get('loaded_instances'):
+            read_tasks.progress(phase='loading local model', model=config['ai_model'])
             run('load', config['ai_model'], '--identifier', config['ai_model'], '--context-length', '16384', '--ttl', '600', '-y')
             available = models()
             model = next(item for item in available if item.get('key') == config['ai_model'])
@@ -142,6 +150,7 @@ def request(config, instructions, units, *, task=None):
     if parsed.username or parsed.password or (parsed.scheme != 'https' and not (parsed.scheme == 'http' and parsed.hostname in {'localhost', '127.0.0.1', '::1'})):
         raise ValueError('AI endpoints require HTTPS, except a loopback HTTP service; credentials belong in an environment variable.')
     user_input = json.dumps({'source_units': units}, ensure_ascii=False)
+    read_tasks.progress(phase='preparing AI request', model=model)
     if provider == 'ollama':
         endpoint = base.rstrip('/') + '/api/chat'
         body = {'model': model, 'stream': False, 'format': 'json',
@@ -173,6 +182,7 @@ def request(config, instructions, units, *, task=None):
     elif provider == 'openai' and parsed.hostname == 'api.openai.com':
         raise ValueError('The configured API-key environment variable is missing; no content was sent.')
     try:
+        read_tasks.progress(phase='local inference' if provider == 'lmstudio' else 'AI request', model=model)
         handlers = [NoRedirect()]
         if parsed.hostname in {'localhost', '127.0.0.1', '::1'}:
             handlers.append(ProxyHandler({}))
@@ -303,13 +313,19 @@ def generate(folder, task, language, config):
     return folder / (name + '.md')
 
 
-def main(argv):
+def arguments(argv):
     parser = argparse.ArgumentParser(prog='linkget read ' + argv[0], description='Send saved source text to the explicitly configured model; preserves original text.')
     parser.add_argument('folder', type=Path)
     parser.add_argument('--language', default='zh')
-    args = parser.parse_args(argv[1:])
+    parser.add_argument('--foreground', action='store_true', help='Wait for completion; default CLI execution is in the background')
+    return parser.parse_args(argv[1:])
+
+
+def main(argv):
+    args = arguments(argv)
     folder = args.folder.expanduser().resolve()
     with read_store.lock(folder / '.read.lock'):
         output = generate(folder, argv[0], args.language, read_store.settings())
     print(str(output))
+    read_tasks.record_output(output)
     return 0

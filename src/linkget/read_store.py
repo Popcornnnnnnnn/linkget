@@ -47,12 +47,12 @@ def write_json(path, value):
 
 
 @contextmanager
-def lock(path):
+def lock(path, wait=False):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
         except BlockingIOError:
             raise RuntimeError('This read record is already in use.') from None
         yield

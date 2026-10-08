@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1.dev17
+
+- Run content reads, recognition, OCR, translations, summaries, retries and read batches in detached background workers by default; return a task ID immediately and retain `--foreground` for scripts.
+- Add read task status, private logs and verified process-group cancellation, preserving source text and recognition checkpoints on interruption.
+- Show cloud/local inference phases and serialize local service/model startup across concurrent tasks; retain ten-minute idle unload for models loaded by LinkGet.
+
 ## 0.2.1.dev16
 
 - Add an opt-in automatic AI fallback on provider outages, rate limits or transport timeouts; preserve successful batches, stop after backup failure and record the actual models used.
