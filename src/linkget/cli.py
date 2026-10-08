@@ -401,6 +401,13 @@ def configure(args, parser):
 
 
 def main(argv=None):
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    if tokens and tokens[0] == 'read':
+        if __package__:
+            from .toutiao import main as read_content
+        else:
+            from toutiao import main as read_content
+        return read_content(tokens[1:])
     parser = argparse.ArgumentParser(
         prog="linkget",
         description="Save photos and videos from supported sites to macOS Photos or a folder.",
@@ -408,6 +415,7 @@ def main(argv=None):
         epilog="""Commands:
   help                 Show this help (also -h or --help)
   sites                List supported sites and media
+  read URL --folder D  Read a Toutiao post for AI summarization (read --help)
   doctor               Check download tools and installation
   config               View or change the default save destination
   batch [LINK ...]     Download all links concurrently; paste one per line if omitted
@@ -554,7 +562,8 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     if args.link == "sites":
         for site, content in [("Instagram", "Photos, videos and reels"), ("X / Twitter", "Post photos and videos"), ("Bilibili", "BV/av videos and Opus media"), ("TikTok", "Post photos and videos; share links"), ("Douyin", "Post photos and videos; share links"), ("Kuaishou", "Post videos; image galleries not supported"), ("Xiaohongshu", "Note photos and videos; xhslink shares"), ("Weibo", "Post photos and videos; t.cn shares"), ("YouTube", "Videos and Shorts; youtu.be links"), ("Reddit", "Post photos and videos"), ("Lofter", "Post photos and videos (trial)"), ("Pixiv", "Artwork images (trial); Ugoira not supported"), ("Pinterest", "Pins and boards")]:
             status(site, content)
-        print("\n  Media only. Post text is not saved. Availability varies by URL.")
+        status("Toutiao", "Article text / local video transcription via linkget read; Chrome page required")
+        print("\n  Ordinary downloads are media only. Toutiao content uses linkget read. Availability varies by URL.")
         return 0
     if args.profile and args.browser in {"auto", "none"}:
         parser.error("--profile requires an explicit --browser, such as chrome or firefox.")

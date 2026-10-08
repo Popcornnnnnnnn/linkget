@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1.dev11 — Toutiao content reading (unreleased)
+
+- Add `linkget read URL --folder NEW_DIR` for content intended for AI summarization. Read the current rendered Chrome page without exporting browser credentials, or accept content-only evidence from an authorized browser connector with `--page-data`.
+- Process Toutiao videos with explicit `--transcribe --whisper-model PATH`: verify complete downloaded audio/duration and use the existing local whisper.cpp runtime. Keep publisher descriptions separate from recognized speech. No hosted model, Photos import or message sending is enabled by this command.
+- Reject a different post after automatic playback, unsupported media hosts, title-only content and existing output folders. See [Toutiao validation and limits](docs/TOUTIAO.md).
+
 ## 0.2.1.dev10 — hide routine task identifiers (unreleased)
 
 - Stop displaying task IDs before single and batch downloads. Keep private recovery receipts, retry commands on failure/cancellation, and the explicit `recover` task listing.

@@ -39,6 +39,7 @@ Use straight ASCII quotes (`'` or `"`) around command-line URLs. Shells interpre
 | --- | --- |
 | `linkget help` | Commands, options and examples |
 | `linkget sites` | Supported websites and post types |
+| `linkget read URL --folder NEW_DIR` | Read Toutiao content for AI summarization; [video transcription options](docs/TOUTIAO.md) |
 | `linkget doctor` | Check download tools, without account requests |
 | `linkget config` | View or change the default save destination |
 | `linkget batch URL1 URL2` | Download all supplied posts concurrently |
