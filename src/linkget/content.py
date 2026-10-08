@@ -325,19 +325,25 @@ def config_command(argv):
     parser.add_argument('--output', type=Path)
     parser.add_argument('--language')
     parser.add_argument('--formats')
-    parser.add_argument('--ai-provider', choices=['openai', 'compatible', 'ollama'])
+    parser.add_argument('--ai-provider', choices=['openai', 'compatible', 'ollama', 'lmstudio'])
     parser.add_argument('--ai-model')
     parser.add_argument('--ai-endpoint')
     parser.add_argument('--ai-key-env')
     parser.add_argument('--ai-auth', choices=['env', 'cpa'], help='env: named environment key; cpa: reuse existing loopback proxy client authentication')
     parser.add_argument('--ai-auth-file', type=Path, help='Existing CPA config path; default /opt/homebrew/etc/cliproxyapi.conf')
-    parser.add_argument('--clear', action='append', choices=['model', 'output', 'language', 'formats', 'ai_provider', 'ai_model', 'ai_endpoint', 'ai_key_env', 'ai_auth', 'ai_auth_file'])
+    parser.add_argument('--ai-fallback-provider', choices=['openai', 'compatible', 'ollama', 'lmstudio'])
+    parser.add_argument('--ai-fallback-model', help='Opt into one automatic fallback on a provider outage')
+    parser.add_argument('--ai-fallback-endpoint')
+    parser.add_argument('--ai-fallback-key-env')
+    parser.add_argument('--ai-fallback-auth', choices=['env', 'cpa'])
+    parser.add_argument('--ai-fallback-auth-file', type=Path)
+    parser.add_argument('--clear', action='append', choices=['model', 'output', 'language', 'formats', 'ai_provider', 'ai_model', 'ai_endpoint', 'ai_key_env', 'ai_auth', 'ai_auth_file', 'ai_fallback_provider', 'ai_fallback_model', 'ai_fallback_endpoint', 'ai_fallback_key_env', 'ai_fallback_auth', 'ai_fallback_auth_file'])
     args = parser.parse_args(argv)
     changes = {key: value for key, value in vars(args).items() if key != 'clear' and value is not None}
-    for key in ('model', 'output', 'ai_auth_file'):
+    for key in ('model', 'output', 'ai_auth_file', 'ai_fallback_auth_file'):
         if key in changes:
             path = changes[key].expanduser().resolve()
-            if key in {'model', 'ai_auth_file'} and not path.is_file():
+            if key in {'model', 'ai_auth_file', 'ai_fallback_auth_file'} and not path.is_file():
                 raise ValueError('The model or authentication configuration file does not exist.')
             changes[key] = str(path)
     if 'language' in changes and not re.fullmatch(r'auto|[a-z]{2,3}', changes['language']):

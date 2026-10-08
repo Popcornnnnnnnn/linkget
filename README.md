@@ -209,5 +209,3 @@ See [validation scope](docs/TESTING.md). Actual Photos and OS permission dialogs
 - YouTube diagnosis: the old saved snapshot returned `LOGGED_IN=false` and `loggedOut=true`, while a fresh Chrome export returned the opposite. Seven cookie values differed although local expiry checks passed. Refreshing from Chrome restored the saved connection. No credential values were retained in development evidence.
 - Implemented: interactive `auth` refreshes explicitly rejected or expired snapshots once per authorized browser/profile, preserves sessions after failed validation, and respects logout and noninteractive checks. Cookies renewed during validation are included in newly saved snapshots.
 - Before further work, verify the working directory, this README and Git status. Real permission prompts, other browser profiles and long-term behavior under upstream website changes remain acceptance limits.
-
-Native macOS Share menu / desktop companion: [setup and usage](docs/MAC_SHARE.md).

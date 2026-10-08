@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1.dev16
+
+- Add an opt-in automatic AI fallback on provider outages, rate limits or transport timeouts; preserve successful batches, stop after backup failure and record the actual models used.
+- Keep Gemini Flash Lite as primary and configure independent local LM Studio inference as backup, with startup and downloaded-model loading on demand. Never forward the primary endpoint's credentials to another route.
+- Remove the installed LinkGet desktop companion and Share extension at the user's request; keep the CLI, saved settings and existing content.
+
 ## 0.2.1.dev15
 
 - Accept real translation through the existing loopback CPA service using `gemini-3.1-flash-lite`; add explicit client-auth reuse without copying keys or changing proxy configuration.

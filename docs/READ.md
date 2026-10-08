@@ -70,7 +70,9 @@ For the existing Homebrew CLIProxyAPI service on this Mac, translation is config
 
 ```sh
 linkget read config --ai-provider compatible --ai-model gemini-3.1-flash-lite \
-  --ai-endpoint http://127.0.0.1:8317/v1 --ai-auth cpa
+  --ai-endpoint http://127.0.0.1:8317/v1 --ai-auth cpa \
+  --ai-fallback-provider lmstudio --ai-fallback-model qwen3.8-27b-uncensored \
+  --ai-fallback-endpoint http://127.0.0.1:1234/v1
 linkget read translate '/path/to/read-folder' --language zh
 ```
 
@@ -78,17 +80,17 @@ linkget read translate '/path/to/read-folder' --language zh
 
 `gemini-3.1-flash-lite` is the accepted default for routine translation, with [translation explicitly listed in Google's model documentation](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite). `--ai-model` chooses the text translation model; `--model` chooses the local Whisper file for recognition. Translation preserves source-unit order, numbers and uncertainty; garbled recognition is marked rather than supplied with guessed alternative words. If existing source exports have an older format or edits, translation creates a matching `source-HASH.md/.txt` snapshot and cites it without replacing your files.
 
-Keep keys in the named environment variable; do not put them in URLs or configuration files. OpenAI uses Responses with `store: false`; compatible services use Chat Completions; Ollama uses its local `/api/chat`. HTTPS is required except loopback HTTP. Redirects are refused and unknown request outcomes are not automatically retried. The command submits all speech units, exposed publisher descriptions and OCR text in bounded batches. Summary points require valid source IDs; translation requires every source unit exactly once. Outputs link to source timestamps or original text and preserve `content.json`. This validates reference structure, not whether the model's claims are accurate.
+`--ai-fallback-model` enables a single automatic switch on connection failures/timeouts or HTTP 404/408/429/500/502/503/504. The failed batch goes to the backup, and remaining batches use it for that command; the next command starts with the primary again. Authentication errors, invalid JSON and missing source IDs stop processing. If both routes fail, no partial translation is exported. JSON records actual models and each batch's route/reason; Markdown identifies fallback use. Disable it with `linkget read config --clear ai_fallback_model`.
+
+The accepted backup uses the already-downloaded local Qwen3.8 27B Q6_K model in LM Studio. The `lmstudio` provider starts the existing service on loopback port 1234 if needed, loads the selected downloaded model with 16K context and a ten-minute idle unload, and disables reasoning for translation. It never downloads a model or installs LM Studio. Other models already loaded by the user are preserved. This backup is independent of CPA and the network, but requires the installed `lms` CLI and local model files. Cloud and local inference have different quality and speed; source accuracy remains unverified. [LM Studio documents loopback server startup](https://lmstudio.ai/docs/cli/serve/server-start) and [idle unload](https://lmstudio.ai/docs/developer/core/ttl-and-auto-evict).
+
+Keep keys in the named environment variable; do not put them in URLs or configuration files. A changed fallback endpoint/provider does not inherit primary credentials; use `--ai-fallback-key-env` for a separate service. OpenAI uses Responses with `store: false`; compatible services and LM Studio use Chat Completions; Ollama uses its local `/api/chat`. HTTPS is required except loopback HTTP. Redirects are refused. There is no repeated retry on the same service; an opted-in fallback may regenerate a timed-out batch whose upstream outcome is unknown. Cloud requests use a 60-second socket timeout; local inference uses 120 seconds, with a separate bounded startup/load step. When LM Studio is selected as either route, batches are limited to 4,000 source characters to leave context for the translated output. The command submits all speech units, exposed publisher descriptions and OCR text. Summary points require valid source IDs; translation requires every source unit exactly once. Outputs link to source timestamps or original text and preserve `content.json`. This validates reference structure, not whether the model's claims are accurate.
 
 A service and model must be explicitly configured. Source acquisition never invokes a cloud model automatically. Real summary/translation acceptance requires a working service configuration; local HTTP fixtures only validate request/response integration.
 
-## Mac Share menu
-
-[Mac application and Share extension](MAC_SHARE.md) provide Read / Download and an explicit Start button. They use the installed CLI.
-
 ## Validation, 2026-10-08
 
-248 automated tests passed, including existing download/recovery tests, selected-part reads, subtitle priority/coverage, multi-video exports, >30-minute recognition checkpoints, failure recovery after deleting the original local file, modified-media rejection, batch continuation, cache invalidation, image/description references and all three AI HTTP protocol paths. These fixtures do not establish website or model availability.
+257 automated tests passed, including existing download/recovery tests, selected-part reads, subtitle priority/coverage, multi-video exports, >30-minute recognition checkpoints, failure recovery after deleting the original local file, modified-media rejection, batch continuation, cache invalidation, image/description references, AI HTTP protocol paths, bounded fallback, credential isolation and local startup/load behavior. These fixtures do not establish website or model availability.
 
 Fresh real samples succeeded on Bilibili `BV1bK411W797?p=1`, YouTube `jNQXAC9IVRw`, Weibo `RkpghmW5K`, Douyin `7675556744459143529` and Xiaohongshu `6abb97e1000000000200fd74`, through existing configured login/public paths. All produced Markdown/TXT/SRT/VTT from full local ASR. Xiaohongshu's sample contains song lyrics. These results verify acquisition/export, not manual transcription accuracy. Other routes have fixture coverage, not fresh live acceptance here.
 
