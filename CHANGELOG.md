@@ -2,6 +2,7 @@
 
 ## 0.2.1.dev17
 
+- Expand top-level and read command help with translation, summaries, task management, examples, background/foreground behavior and fallback configuration guidance.
 - Run content reads, recognition, OCR, translations, summaries, retries and read batches in detached background workers by default; return a task ID immediately and retain `--foreground` for scripts.
 - Add read task status, private logs and verified process-group cancellation, preserving source text and recognition checkpoints on interruption.
 - Show cloud/local inference phases and serialize local service/model startup across concurrent tasks; retain ten-minute idle unload for models loaded by LinkGet.

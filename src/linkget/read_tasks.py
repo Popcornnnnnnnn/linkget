@@ -101,8 +101,8 @@ def show(value):
 
 
 def status(argv):
-    parser = argparse.ArgumentParser(prog='linkget read status')
-    parser.add_argument('task', nargs='?')
+    parser = argparse.ArgumentParser(prog='linkget read status', description='Show phase, model and result paths. Failed, cancelled or interrupted tasks return a nonzero exit code.')
+    parser.add_argument('task', nargs='?', help='Submitted task ID; omit to list the latest 20 tasks')
     args = parser.parse_args(argv)
     if args.task:
         value = refresh(args.task)
@@ -117,9 +117,9 @@ def status(argv):
 
 
 def logs(argv):
-    parser = argparse.ArgumentParser(prog='linkget read logs')
-    parser.add_argument('task')
-    parser.add_argument('--tail', type=int, default=50)
+    parser = argparse.ArgumentParser(prog='linkget read logs', description='Show the private log of a background read task.')
+    parser.add_argument('task', help='Submitted task ID')
+    parser.add_argument('--tail', type=int, default=50, help='Last 1–1000 lines; default: 50')
     args = parser.parse_args(argv)
     if not 1 <= args.tail <= 1000:
         raise ValueError('Use --tail between 1 and 1000.')
@@ -135,8 +135,8 @@ def logs(argv):
 
 
 def cancel(argv):
-    parser = argparse.ArgumentParser(prog='linkget read cancel')
-    parser.add_argument('task')
+    parser = argparse.ArgumentParser(prog='linkget read cancel', description='Stop the verified task and its child tools; retain source text and recognition checkpoints.')
+    parser.add_argument('task', help='Submitted task ID')
     args = parser.parse_args(argv)
     value = refresh(args.task)
     if value['status'] in TERMINAL:

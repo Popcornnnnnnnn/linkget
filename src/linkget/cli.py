@@ -422,6 +422,15 @@ def main(argv=None):
   sites                List supported sites and media
   read URL --folder D  Read/transcribe in the background (read --help)
   read status [TASK]   Show background reading progress and results
+  read logs TASK       Show a background read task's log
+  read cancel TASK     Cancel a background read task; preserve checkpoints
+  read batch [LINK ...] Read multiple posts or local files in the background
+  read translate DIR   Translate saved text with the configured model
+  read summarize DIR   Summarize saved text with source references
+  read recover         List unfinished reads and retained checkpoints
+  read retry [DIR]     Resume a retained unfinished read in the background
+  read config          View/change recognition, translation and fallback settings
+  read doctor          Check local recognition tools and model
   doctor               Check download tools and installation
   config               View or change the default save destination
   batch [LINK ...]     Download all links concurrently; paste one per line if omitted
@@ -443,12 +452,22 @@ Examples:
   linkget URL --folder ~/Downloads     Save to a folder
   linkget batch URL1 URL2 --folder     Download multiple posts
   linkget batch --folder ~/Downloads   Paste links; blank line starts downloads
+  linkget read URL                     Submit a background content read
+  linkget read recording.m4a           Transcribe local audio in the background
+  linkget read translate DIR --language zh Translate saved text into Chinese
+  linkget read status TASK             Check progress and find result paths
+  linkget read URL --foreground        Wait for completion and its exit code
   linkget auth                         Check website logins and public access
   linkget auth bilibili                Connect Bilibili for higher quality
   linkget config                       View the default save destination
   linkget config --photos              Default to Photos (initial setting)
   linkget config --folder              Default to the current folder each time
   linkget config --folder ~/Downloads  Default to a fixed folder
+
+Read processing runs in the background by default and returns a task ID.
+Closing the terminal does not stop it; use read status/logs/cancel to manage it.
+Use --foreground with read/translate/summarize when a script needs to wait.
+Configured AI fallback handles provider outages; read config --help lists settings.
 
 First use guides you through connecting a browser. You can skip it.
 Downloads use public access first, then your connected logins when needed.

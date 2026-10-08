@@ -314,9 +314,11 @@ def generate(folder, task, language, config):
 
 
 def arguments(argv):
-    parser = argparse.ArgumentParser(prog='linkget read ' + argv[0], description='Send saved source text to the explicitly configured model; preserves original text.')
-    parser.add_argument('folder', type=Path)
-    parser.add_argument('--language', default='zh')
+    parser = argparse.ArgumentParser(prog='linkget read ' + argv[0],
+        description='Process complete saved text with the explicitly configured model; preserves original text. Runs in the background by default.',
+        epilog='Returns a task ID: use linkget read status/logs/cancel TASK. An enabled fallback handles provider outages. Configure it with linkget read config --help.')
+    parser.add_argument('folder', type=Path, help='Read folder containing complete content.json')
+    parser.add_argument('--language', default='zh', help='Output language code, e.g. zh, en, ja; default: zh')
     parser.add_argument('--foreground', action='store_true', help='Wait for completion; default CLI execution is in the background')
     return parser.parse_args(argv[1:])
 

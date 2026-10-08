@@ -371,7 +371,35 @@ def doctor():
 
 
 def read_parser(batch=False):
-    parser = argparse.ArgumentParser(prog='linkget read', description='Read post text, subtitles, local media speech and image text. Runs in the background by default. Commands: config, doctor, batch, retry, recover, summarize, translate, status, logs, cancel.')
+    parser = argparse.ArgumentParser(prog='linkget read',
+        description='Read post text, subtitles, local media speech and image text. Runs in the background by default.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''Commands:
+  config [OPTIONS]          View/change recognition and AI/fallback settings
+  doctor                    Check local recognition tools and model
+  batch [URL_OR_FILE ...]    Read multiple inputs; accepts one per stdin line
+  recover                   List unfinished reads and retained checkpoints
+  retry [FOLDER]            Resume a retained unfinished read
+  translate FOLDER          Translate complete saved text (--language zh)
+  summarize FOLDER          Summarize complete saved text with source references
+  status [TASK]             List recent tasks, or inspect one task and results
+  logs TASK [--tail N]      Show a task's private log (default: last 50 lines)
+  cancel TASK               Stop a task and preserve source/checkpoints
+
+Examples:
+  linkget read 'https://www.bilibili.com/video/BV1bK411W797?p=1'
+  linkget read ~/Downloads/recording.m4a --language zh
+  linkget read ~/Downloads/screenshot.png
+  linkget read translate '/path/to/read-folder' --language en
+  linkget read status TASK
+  linkget read logs TASK
+  linkget read cancel TASK
+
+Processing returns a task ID immediately; closing the terminal does not stop it.
+Submission success means accepted; inspect status for completion or failure.
+Add --foreground to read, batch, retry, translate or summarize to wait.
+Recognition/OCR run locally. Only translate/summarize use the configured AI.
+An enabled AI fallback switches on provider outages; config --help lists options.''')
     parser.add_argument('url', nargs='*' if batch else None)
     parser.add_argument('--folder', type=Path, help='New content folder; batch: parent folder')
     parser.add_argument('--transcribe', action='store_true', help='Accepted for compatibility; missing subtitles automatically use local ASR')
@@ -398,6 +426,7 @@ def main(argv):
         if argv and argv[0] == 'doctor':
             return doctor()
         if argv and argv[0] == 'recover':
+            argparse.ArgumentParser(prog='linkget read recover', description='List unfinished reads and retained checkpoint folders; use read retry FOLDER to resume.').parse_args(argv[1:])
             for job in read_store.unfinished():
                 print(job['status'] + '  ' + job['folder'])
             return 0
@@ -408,10 +437,12 @@ def main(argv):
                 from read_ai import main as ai_main
             return ai_main(argv)
         if argv and argv[0] == 'retry':
-            if len(argv) > 2:
-                raise ValueError('Use linkget read retry [FOLDER].')
+            parser = argparse.ArgumentParser(prog='linkget read retry', description='Resume retained media and recognition checkpoints in the background; preserves completed chunks.')
+            parser.add_argument('folder', nargs='?', type=Path, help='Unfinished read folder; omit to select the latest unfinished read')
+            parser.add_argument('--foreground', action='store_true', help='Wait for completion and return its exit code')
+            retry = parser.parse_args(argv[1:])
             pending = read_store.unfinished()
-            folder = Path(argv[1]).expanduser().resolve() if len(argv) == 2 else Path(pending[0]['folder']) if pending else None
+            folder = retry.folder.expanduser().resolve() if retry.folder else Path(pending[0]['folder']) if pending else None
             if folder is None:
                 raise ValueError('No unfinished read was found.')
             record = read_store.read_json(folder / '.read-job.json')
