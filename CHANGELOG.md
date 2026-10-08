@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1.dev13 — video content reading across channels (unreleased)
+
+- Extend `linkget read` to existing video post channels: Bilibili (including a selected part), YouTube, Instagram, X, TikTok, Douyin, Kuaishou, Xiaohongshu, Weibo, Reddit, LOFTER and individual Pinterest pins. Reuse the existing download, format validation and configured login flow; Pixiv remains static-image only.
+- Transcribe each ordinary video locally with the existing whisper.cpp model, save speech and independent timed segments in `content.json`, and optionally select `--language auto`, `zh` or `en`. Keep publisher descriptions separate from speech, ignore pictures and explicit Live Photo motion, and refuse missing audio, over-30-minute videos or incomplete results.
+- Clean temporary downloads and recognition files by default, preserve optional review media with `--keep-media`, and commit content only after every video succeeds. Existing content folders are refused. See [reading options and validation limits](docs/READ.md).
+
 ## 0.2.1.dev12 — clean Toutiao intermediates (unreleased)
 
 - Remove downloaded video, audio and duplicate transcript files after durable content capture, including partial files on failure. Preserve text and timed segments in `content.json`.

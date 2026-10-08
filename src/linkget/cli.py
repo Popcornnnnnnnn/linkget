@@ -404,9 +404,9 @@ def main(argv=None):
     tokens = list(sys.argv[1:] if argv is None else argv)
     if tokens and tokens[0] == 'read':
         if __package__:
-            from .toutiao import main as read_content
+            from .content import main as read_content
         else:
-            from toutiao import main as read_content
+            from content import main as read_content
         return read_content(tokens[1:])
     parser = argparse.ArgumentParser(
         prog="linkget",
@@ -415,7 +415,7 @@ def main(argv=None):
         epilog="""Commands:
   help                 Show this help (also -h or --help)
   sites                List supported sites and media
-  read URL --folder D  Read a Toutiao post for AI summarization (read --help)
+  read URL --folder D  Read article text or transcribe post videos (read --help)
   doctor               Check download tools and installation
   config               View or change the default save destination
   batch [LINK ...]     Download all links concurrently; paste one per line if omitted
@@ -563,7 +563,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         for site, content in [("Instagram", "Photos, videos and reels"), ("X / Twitter", "Post photos and videos"), ("Bilibili", "BV/av videos and Opus media"), ("TikTok", "Post photos and videos; share links"), ("Douyin", "Post photos and videos; share links"), ("Kuaishou", "Post videos; image galleries not supported"), ("Xiaohongshu", "Note photos and videos; xhslink shares"), ("Weibo", "Post photos and videos; t.cn shares"), ("YouTube", "Videos and Shorts; youtu.be links"), ("Reddit", "Post photos and videos"), ("Lofter", "Post photos and videos (trial)"), ("Pixiv", "Artwork images (trial); Ugoira not supported"), ("Pinterest", "Pins and boards")]:
             status(site, content)
         status("Toutiao", "Article text / local video transcription via linkget read; Chrome page required")
-        print("\n  Ordinary downloads are media only. Toutiao content uses linkget read. Availability varies by URL.")
+        print("\n  Use linkget read for video speech on these channels, or Toutiao article text.\n  Pixiv is image-only. Availability varies by URL; read --help shows transcription options.")
         return 0
     if args.profile and args.browser in {"auto", "none"}:
         parser.error("--profile requires an explicit --browser, such as chrome or firefox.")
@@ -644,7 +644,7 @@ def batch_download(args, parser, links, records=None):
     return run_batch(args, parser, links, records, download, first_run, status, jobs.Journal.create)
 
 
-def download(args, setup_results, records=None):
+def download(args, setup_results, records=None, media_consumer=None):
     stage = None
     session_dir = None
     info_path = None
@@ -876,6 +876,11 @@ def download(args, setup_results, records=None):
         status("Media count", count_text)
         if any(r['source'] == "fallback" for r in media_records):
             status("Source", "Fallback media included", "33")
+        if media_consumer is not None:
+            metadata = json.loads(info_path.read_text()) if info_path is not None else {}
+            media_consumer(files, media_records, download_info, url, site, metadata)
+            evidence.update(status="completed")
+            return 0
         ready = {"files": [{"path": str(path.resolve()), "sha256": record.get("sha256") or jobs.digest(path)}
                            for path, record in zip(files, media_records)],
                  "live_pairs": download_info.live_pairs, "prepared": [], "evidence": dict(evidence)}
@@ -935,10 +940,13 @@ def download(args, setup_results, records=None):
         if session_dir is not None:
             session_dir.cleanup()
         if stage is not None:
-            if domain == "weibo.com":
+            if media_consumer is not None:
+                shutil.rmtree(stage)
+            elif domain == "weibo.com":
                 for metadata in stage.glob("*/*.json"):
                     metadata.unlink(missing_ok=True)
-            status("Files kept", str(stage), "33", stream=sys.stderr)
+            if media_consumer is None:
+                status("Files kept", str(stage), "33", stream=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -125,26 +125,39 @@ def download_video(url, path):
 
 
 
-def transcribe(video, folder, model, duration):
+def transcribe(video, folder, model, duration=None, language='zh'):
     tools = {name: shutil.which(name) for name in ('ffmpeg', 'ffprobe', 'whisper-cli')}
     if not all(tools.values()) or not model.is_file():
         raise RuntimeError('Local transcription requires ffmpeg, ffprobe, whisper-cli and an existing --whisper-model file.')
     probe = subprocess.run([tools['ffprobe'], '-v', 'error', '-show_streams', '-show_format', '-of', 'json', str(video)],
                            check=True, capture_output=True, text=True, timeout=20)
-    info = json.loads(probe.stdout)
-    actual = float(info['format']['duration'])
-    if abs(actual - duration) > max(1, duration * .02) or not any(s.get('codec_type') == 'audio' for s in info['streams']):
-        raise RuntimeError('Downloaded media duration/audio does not match the rendered player.')
+    try:
+        info = json.loads(probe.stdout)
+        actual = float(info['format']['duration'])
+        streams = info['streams']
+    except (ValueError, KeyError, TypeError):
+        raise RuntimeError('Downloaded media has no readable duration/audio evidence.') from None
+    if not math.isfinite(actual) or not 0 < actual <= 1800:
+        raise RuntimeError('Local transcription supports finite video durations of up to 30 minutes.')
+    if (duration is not None and abs(actual - duration) > max(1, duration * .02)) or not any(s.get('codec_type') == 'audio' for s in streams):
+        raise RuntimeError('Downloaded media duration/audio does not match the source evidence.')
     audio, base = folder / 'audio.wav', folder / 'transcript'
     subprocess.run([tools['ffmpeg'], '-nostdin', '-hide_banner', '-loglevel', 'error', '-i', str(video),
-                    '-vn', '-ac', '1', '-ar', '16000', str(audio)], check=True, capture_output=True, timeout=60)
-    subprocess.run([tools['whisper-cli'], '-m', str(model), '-f', str(audio), '-l', 'zh', '-otxt', '-oj', '-of', str(base)],
-                   check=True, capture_output=True, timeout=180)
+                    '-vn', '-ac', '1', '-ar', '16000', str(audio)], check=True, capture_output=True, timeout=max(60, actual))
+    subprocess.run([tools['whisper-cli'], '-m', str(model), '-f', str(audio), '-l', language, '-otxt', '-oj', '-of', str(base)],
+                   check=True, capture_output=True, timeout=max(180, actual * 3))
     data = json.loads(base.with_suffix('.json').read_text())
     segments = [{'text': s['text'].strip(), 'start': s['offsets']['from'] / 1000,
                  'end': s['offsets']['to'] / 1000} for s in data.get('transcription', []) if s.get('text', '').strip()]
     if not segments:
         raise RuntimeError('No speech was recognized; do not generate a content summary from the title.')
+    markers = {'music', 'lyrics', 'instrumental', 'applause', 'silence', 'inaudible',
+               '音乐', '音樂', '音楽', '歌詞', '歌词', '掌声', '掌聲', '无声', '無聲'}
+    if all(s['text'].strip(' ()[]（）【】♪♫.。').casefold() in markers for s in segments):
+        raise RuntimeError('Recognition returned only music/silence labels, not readable speech.')
+    if any(not math.isfinite(s['start']) or not math.isfinite(s['end']) or
+           not 0 <= s['start'] < s['end'] <= actual + 1 for s in segments):
+        raise RuntimeError('Local recognition returned invalid timed segments.')
     return {'text': '\n'.join(s['text'] for s in segments), 'segments': segments,
             'content_complete': True, 'content_basis': 'full_video_local_asr',
             'recognition_verified': False,
@@ -152,7 +165,7 @@ def transcribe(video, folder, model, duration):
             'limitations': ['Automatic speech recognition may contain errors; check names, numbers and ambiguous claims.']}
 
 
-def read(url, folder, page=None, model=None, keep_media=False):
+def read(url, folder, page=None, model=None, keep_media=False, language='zh'):
     url = canonical(url)
     if folder.exists():
         raise ValueError('The content folder already exists; choose a new folder to preserve prior evidence.')
@@ -170,7 +183,8 @@ def read(url, folder, page=None, model=None, keep_media=False):
     try:
         if item['kind'] == 'video':
             download_video(item.pop('media_url'), folder / 'source.mp4')
-            item.update(transcribe(folder / 'source.mp4', folder, model, item['duration']))
+            options = {} if language == 'zh' else {'language': language}
+            item.update(transcribe(folder / 'source.mp4', folder, model, item['duration'], **options))
         # Complete the durable content record before removing its source media.
         with output.open('x') as stream:
             output.chmod(0o600)
@@ -191,6 +205,7 @@ def main(argv):
     parser.add_argument('--transcribe', action='store_true', help='Transcribe the complete video locally')
     parser.add_argument('--whisper-model', type=Path, help='Existing whisper.cpp model; nothing is downloaded automatically')
     parser.add_argument('--keep-media', action='store_true', help='Temporarily retain media for manual recognition review; clean after review')
+    parser.add_argument('--language', default='zh', help='Whisper language code or auto; default: zh')
     args = parser.parse_args(argv)
     if args.transcribe != (args.whisper_model is not None):
         parser.error('--transcribe and --whisper-model must be supplied together')
@@ -198,7 +213,7 @@ def main(argv):
         page = json.loads(args.page_data.read_text()) if args.page_data else None
         output = read(args.url, args.folder.expanduser().resolve(), page,
                       args.whisper_model.expanduser().resolve() if args.whisper_model else None,
-                      keep_media=args.keep_media)
+                      keep_media=args.keep_media, language=args.language)
         print(json.dumps({'status': 'content_ready', 'content': str(output), 'send_enabled': False}, ensure_ascii=False))
         return 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
