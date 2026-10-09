@@ -13,11 +13,11 @@ import shutil
 import subprocess
 import sys
 import time
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit,parse_qs
 from urllib.request import Request, urlopen
 
 HOSTS = {'toutiao.com', 'www.toutiao.com', 'm.toutiao.com'}
-INTERMEDIATES = ('source.mp4', 'audio.wav', 'transcript.txt', 'transcript.json')
+INTERMEDIATES = ('source.mp4', 'source-video.mp4', 'source-audio.m4a', 'audio.wav', 'transcript.txt', 'transcript.json')
 
 
 def cleanup_media(folder):
@@ -66,6 +66,22 @@ def media_url(url):
     return url
 
 
+def media_pair(streams):
+    if not isinstance(streams,dict) or set(streams)!= {'video','audio'}:
+        raise ValueError('One exact video/audio resource pair is required.')
+    result={role:media_url(url) for role,url in streams.items()}
+    parts={role:urlsplit(url) for role,url in result.items()}
+    for role,suffix in [('video','/media-video-avc1/'),('audio','/media-audio-und-mp4a/')]:
+        if '/video/tos/' not in parts[role].path or not parts[role].path.endswith(suffix):
+            raise ValueError('Unsupported separate Toutiao track identity.')
+    queries={role:parse_qs(p.query) for role,p in parts.items()}
+    if parts['video'].netloc!=parts['audio'].netloc or any(
+            len(queries['video'].get(key,[]))!=1 or not queries['video'][key][0] or
+            queries['video'].get(key)!=queries['audio'].get(key) for key in ('l','dy_q')):
+        raise ValueError('Audio/video must belong to the same observed request batch.')
+    return result
+
+
 def validate_page(url, page):
     expected = canonical(url)
     if not isinstance(page, dict) or canonical(page.get('url', '')) != expected:
@@ -84,10 +100,12 @@ def validate_page(url, page):
         result.update(text=body.strip(), content_complete=True, content_basis='rendered_article')
     else:
         duration = page.get('duration')
-        pending = duration is None and page.get('duration_pending') is True and page.get('media_binding') == 'player_current_src' and not page.get('captions')
+        paired=page.get('media_binding')=='paired_page_vod_resources'
+        pending = duration is None and page.get('duration_pending') is True and (paired or page.get('media_binding') == 'player_current_src') and not page.get('captions')
         if not pending and (type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0):
             raise ValueError('A finite positive video duration is required.')
-        result.update(media_url=media_url(page.get('media_url', '')), duration=duration,
+        media={'media_streams':media_pair(page.get('media_streams'))} if paired else {'media_url':media_url(page.get('media_url', ''))}
+        result.update(**media,duration=duration,
                       description=title.strip(), captions=[], content_complete=False, content_basis='description_only')
         if pending:result['duration_basis']='pending_download_probe'
         for cue in page.get('captions', []):
@@ -153,6 +171,32 @@ def transcribe(video, folder, model, duration=None, language='zh', **options):
     return recognize(video, folder, model, duration, language=language, **options)
 
 
+def merge_tracks(streams,folder,expected_duration):
+    streams=media_pair(streams)
+    paths={'video':folder/'source-video.mp4','audio':folder/'source-audio.m4a'}
+    durations={};starts={}
+    for role,path in paths.items():
+        download_video(streams[role],path)
+        data=json.loads(subprocess.run([shutil.which('ffprobe'),'-v','error','-show_streams','-show_format','-of','json',str(path)],
+            check=True,capture_output=True,text=True,timeout=20).stdout)
+        if [s.get('codec_type') for s in data.get('streams',[])]!=[role]:
+            raise RuntimeError('Separate media resources do not match their exact track roles.')
+        durations[role]=float(data['format']['duration']);starts[role]=float(data['format'].get('start_time','0'))
+        if not math.isfinite(durations[role]) or durations[role]<=0 or not math.isfinite(starts[role]):
+            raise RuntimeError('Separate tracks need finite timing evidence.')
+    duration=max(durations.values());tolerance=max(.5,duration*.002)
+    if abs(durations['video']-durations['audio'])>tolerance or abs(starts['video']-starts['audio'])>.5:
+        raise RuntimeError('Audio/video timing does not match; never transcribe an incomplete pair.')
+    if expected_duration is not None and abs(duration-expected_duration)>max(1,expected_duration*.02):
+        raise RuntimeError('Separate tracks do not cover the player duration.')
+    if sum(p.stat().st_size for p in paths.values())>200*1024*1024:raise RuntimeError('Combined media exceeds transfer bound.')
+    subprocess.run([shutil.which('ffmpeg'),'-nostdin','-hide_banner','-loglevel','error',
+        '-i',str(paths['video']),'-i',str(paths['audio']),'-map','0:v:0','-map','1:a:0','-c','copy',
+        '-movflags','+faststart',str(folder/'source.mp4')],check=True,capture_output=True,timeout=60)
+    return {'video_duration':durations['video'],'audio_duration':durations['audio'],
+            'same_request_batch':True,'timing_matched':True,'duration':duration}
+
+
 def read(url, folder, page=None, model=None, keep_media=False, language='zh'):
     url = canonical(url)
     if folder.exists():
@@ -170,7 +214,11 @@ def read(url, folder, page=None, model=None, keep_media=False, language='zh'):
     output = folder / 'content.json'
     try:
         if item['kind'] == 'video':
-            download_video(item.pop('media_url'), folder / 'source.mp4')
+            if 'media_streams' in item:
+                evidence=merge_tracks(item.pop('media_streams'),folder,item['duration'])
+                item['paired_media_evidence']=evidence
+                if item['duration'] is None:item.update(duration=evidence['duration'],duration_basis='complete_paired_download_ffprobe')
+            else:download_video(item.pop('media_url'), folder / 'source.mp4')
             if item['duration'] is None:
                 if __package__:from .read_asr import probe
                 else:from read_asr import probe

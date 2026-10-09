@@ -12,6 +12,8 @@ from linkget import cli, toutiao, read_store
 
 URL = 'https://www.toutiao.com/video/7693844463388655644/'
 MEDIA = 'https://v9-web.toutiaovod.com/fixture/video.mp4?signature=synthetic'
+PAIR={'video':'https://v9-web.toutiaovod.com/video/tos/fixture/media-video-avc1/?l=batch&dy_q=123',
+      'audio':'https://v9-web.toutiaovod.com/video/tos/fixture/media-audio-und-mp4a/?l=batch&dy_q=123'}
 
 
 def page():
@@ -94,6 +96,37 @@ class ToutiaoTests(unittest.TestCase):
                     if status==200 and headers['Content-Length']=='3':toutiao.download_video(MEDIA,Path(tmp)/'video.mp4')
                     else:
                         with self.assertRaises(RuntimeError):toutiao.download_video(MEDIA,Path(tmp)/'video.mp4')
+
+    def test_separate_pair_requires_matching_batch_roles_and_no_arbitrary_extra_url(self):
+        pending={**page(),'duration':None,'duration_pending':True,'media_binding':'paired_page_vod_resources','media_streams':PAIR}
+        self.assertEqual(toutiao.validate_page(URL,pending)['media_streams'],PAIR)
+        for streams in ({**PAIR,'audio':PAIR['audio'].replace('batch','other')},
+                        {**PAIR,'audio':PAIR['video']},{**PAIR,'extra':MEDIA},
+                        {**PAIR,'audio':PAIR['audio'].replace('v9-web','v8-web')}):
+            with self.assertRaises(ValueError):toutiao.validate_page(URL,{**pending,'media_streams':streams})
+
+    def test_real_mux_preserves_both_tracks_and_rejects_mismatched_or_wrong_role_media(self):
+        ffmpeg=toutiao.shutil.which('ffmpeg')
+        if not ffmpeg or not toutiao.shutil.which('ffprobe'):self.skipTest('ffmpeg/ffprobe unavailable')
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);video=root/'fixture-video.mp4';audio=root/'fixture-audio.m4a'
+            subprocess.run([ffmpeg,'-nostdin','-loglevel','error','-f','lavfi','-i','color=size=32x32:rate=10',
+                '-t','1.2','-an','-c:v','libx264',str(video)],check=True,capture_output=True)
+            subprocess.run([ffmpeg,'-nostdin','-loglevel','error','-f','lavfi','-i','sine=frequency=440',
+                '-t','1.2','-vn','-c:a','aac',str(audio)],check=True,capture_output=True)
+            for wrong_role,expected in [(False,1.2),(False,30),(True,1.2)]:
+                folder=root/str((wrong_role,expected));folder.mkdir()
+                def download(url,path):toutiao.shutil.copyfile(video if url==PAIR['video'] or wrong_role else audio,path)
+                with patch.object(toutiao,'download_video',side_effect=download):
+                    if wrong_role or expected==30:
+                        with self.assertRaises(RuntimeError):toutiao.merge_tracks(PAIR,folder,expected)
+                    else:
+                        evidence=toutiao.merge_tracks(PAIR,folder,expected)
+                        from linkget.read_asr import probe
+                        duration,has_audio=probe(folder/'source.mp4')
+                        self.assertTrue(has_audio);self.assertAlmostEqual(duration,1.2,delta=.1)
+                        self.assertTrue(evidence['timing_matched'])
+                toutiao.cleanup_media(folder);self.assertEqual(list(folder.iterdir()),[])
 
     def test_repeated_run_preserves_evidence_without_browser_or_download(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(toutiao, 'read_browser') as browser:
