@@ -90,3 +90,27 @@ The inspected [public Weibo script](https://github.com/fmz200/wool_scripts/blob/
 The public [SnapAny Weibo service](https://snapany.com/weibo), which advertises full-size unmarked photos, was also queried anonymously with the public post URL. It returned direct Weibo `osj1080` URLs. Actual decoded dimensions were still 690×863, 690×951 and 690×610. The first direct request using the service's specified empty User-Agent likewise remained 690×863. A rendition name containing `1080` is not evidence of a 1080-pixel file; this route did not satisfy the requirement. The service was not integrated into linkget, and no personal cookies were sent to it.
 
 The b13 live CLI check retained the original three image dimensions (896×1120, 824×1136, 896×792), verified the first file byte-for-byte against the native source, and printed that watermark removal was unavailable at that resolution. This validates refusal of the downgrade, not successful full-resolution removal for that post.
+
+## Further recovery experiments — 2026-09-30
+
+The user requested further attempts before accepting the original-quality fallback. No production behavior was changed in this round.
+
+### Alternative full-size images and complementary pixels
+
+Two marked samples were checked: the reported 896×1120 cycling photo and a 4032×2690 photo from the existing audit. Six requests per sample compared `large`, `orj1080`, `mw2000`, `oslarge`, and the same `large` identifier with `.png`/`.webp` extensions. The extension alternatives returned HTTP errors for both samples. The larger photo's `orj1080` and `mw2000` renditions were smaller, at 1619×1080 and 2000×1334.
+
+For the cycling photo, `large`, `orj1080` and `mw2000` all decoded at 896×1120, but had different JPEG sizes (1,038,043; 249,338; 428,837 bytes). Native-pixel crops showed the watermark at the same location in all three. Of 451 high-contrast watermark pixels identified against the aligned smaller clean reference, all still differed strongly from that reference in both additional full-size renditions. These copies do not expose complementary clean pixels for that tested region; their equal dimensions do not imply equal compression quality.
+
+An additional open-source parser was inspected: [CurrentCortex's Weibo parser](https://github.com/backrooms-yrc/astrbot_plugin_currentcortex/blob/main/media_parser.py) returns the mobile API's `pics[].large.url`, not a documented separate clean master. A live mobile-API request for the reported post did not return parseable JSON, so that route remains unverified rather than being counted as proof that no source exists.
+
+### One actual generative repair attempt: rejected
+
+A built-in image editing model was given the 896×1120 native photo plus the genuine 690×863 clean reference, instructed to repair only the bottom-right watermark and preserve the native canvas and all other pixels. The watermark was visually removed, but the output was 1122×1402 and altered the image beyond the requested region. After resizing the result only in memory for comparison, mean absolute RGB error outside the requested edit region was 38.04/255; 62.8% of those pixels had mean channel error greater than 10. These figures are a pixel-comparison diagnostic, not a perceptual quality score. Visual inspection also showed changes to subject and equipment detail.
+
+This result fails the preservation requirement and was not integrated into linkget or imported into Photos. It is an edited reconstruction, not a recovered original. The rejected generated file and all temporary source/comparison files were removed after inspection.
+
+### Research directions are not verified fixes
+
+[Google's multi-image watermark study](https://research.google/pubs/on-the-effectiveness-of-visible-watermarks/) demonstrates estimation and inversion of consistent semi-transparent marks across image collections. That supports treating some watermark recovery as a research possibility, not asserting that all cases are impossible. It does not establish successful recovery of these Weibo photos. A public [Weibo-specific neural restoration project](https://github.com/ming19956/n2n-weibo-watermark-remove-master) was inspected but not executed or integrated; its published training instructions and checkpoints alone do not establish fidelity on the current samples.
+
+**Current conclusion:** no method verified in these experiments meets both full original quality and watermark removal for the reported photo. Retain the native high-quality file under b13. This is a practical validation result, not a claim of mathematical impossibility or that every possible source has been exhausted.
