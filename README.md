@@ -215,9 +215,9 @@ See [validation scope](docs/TESTING.md). Actual Photos and OS permission dialogs
 
 
 <!-- workspace-maintenance:start -->
-## 本地维护入口
+## 维护与问题入口
 
-工作目录：`/Users/forge/Workspace/linkget`。代码与必要文档备份到 [私有仓库](https://github.com/Popcornnnnnnnn/linkget-private)；[问题入口](https://github.com/Popcornnnnnnnn/linkget-private/issues)。
-日常分支：`codex/batch-downloads`，私有远端：`backup`。需跟进的问题先查重，进展与完成条件留在 Issue；项目功能和验收沿用现有记录。
-既有公开问题仍从[原 Issue 入口](https://github.com/Popcornnnnnnnn/linkget/issues)接续；本地未发布工作使用私有入口，避免重复建单。
+代码与必要文档沿用 [GitHub 仓库](https://github.com/Popcornnnnnnnn/linkget)；需跟进的问题统一从 [Issues](https://github.com/Popcornnnnnnnn/linkget/issues) 接续，先查重，再记录进展与完成条件。
+未完成开发的快照保存在 `codex/workspace-backup-20261010` 分支，便于恢复与接续。
+项目功能与验收沿用已有记录。
 <!-- workspace-maintenance:end -->
