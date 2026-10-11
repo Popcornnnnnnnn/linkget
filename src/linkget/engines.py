@@ -185,7 +185,15 @@ def browser_spec(args, engine, domain):
 def command_for(args, url, engine, domain, media_dir, tools, cookie_path=None):
     if engine == "gallery-dl":
         command = [tools[engine], "--config-ignore", "--write-metadata", "--directory", str(media_dir)]
-        if domain == "tiktok.com":
+        if domain == "instagram.com":
+            # Use gallery-dl's external-extractor hook in its own environment.
+            # Its default count includes intentionally excluded music tracks.
+            sources = [{"from": str(Path(__file__).resolve().parent),
+                        "import": ["instagram_visual"]}, None]
+            command.extend(["-o", "extractor.module-sources=" + json.dumps(sources),
+                            "-o", "extractor.instagram.audio=false",
+                            "-o", "extractor.instagram.previews=false"])
+        elif domain == "tiktok.com":
             command.extend(["-o", "extractor.tiktok.audio=false", "-o", "extractor.tiktok.covers=false",
                             "-o", "extractor.tiktok.subtitles=false", "-o", "extractor.tiktok.videos=true",
                             "-o", "extractor.tiktok.photos=true", "-o", "extractor.tiktok.filename=tiktok_{id}_{num:03d}.{extension}"])

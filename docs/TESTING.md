@@ -4,6 +4,7 @@ Automated tests use temporary directories, synthetic sessions and mocked Photos 
 
 Covered behaviors include:
 
+- Instagram visual-source counts exclude optional standalone music; Reel and mixed-gallery tests use the real gallery-dl extractor, and missing source/downloaded media still fail completeness checks;
 - first-use connection, skip, denied access, explicit browser/profile selection, and connecting a site before a download;
 - missing/expired/rejected sessions versus network errors, parallel checks, logout and explicit reconnection;
 - automatic refresh for all eight channels, grouping by browser/profile, explicit browser overrides, failed-refresh snapshot preservation, and no refresh for unknown states or noninteractive checks;
@@ -86,5 +87,10 @@ An isolated 64-asset fixture with 512 entries in one originals directory reduced
 PYTHONPATH=src python3 -m unittest discover -s tests -q
 uv build
 ```
+
+`test_instagram.py` runs its command checks without gallery-dl's Python package.
+To also run its offline extractor integration cases with an isolated Homebrew
+installation, use `PYTHONPATH=src /opt/homebrew/opt/gallery-dl/libexec/bin/python -m unittest discover -s tests -p test_instagram.py -v`.
+These cases use synthetic post data and make no network or Photos requests.
 
 GitHub Actions runs source and installed-wheel tests on Linux/Python 3.10 and macOS/Python 3.14, and compiles the AppleScript on the isolated macOS runner. The tap's `brew test linkget` does not request browser or Photos permissions.

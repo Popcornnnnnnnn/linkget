@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1.dev19
+
+- Fix Instagram Reel and gallery completeness when gallery-dl counts optional standalone audio that is not saved. Count the source photos/videos before downloading, and still reject missing source media or incomplete downloaded sets.
+
 ## 0.2.1.dev17
 
 - Expand top-level and read command help with translation, summaries, task management, examples, background/foreground behavior and fallback configuration guidance.
