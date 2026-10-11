@@ -8,3 +8,5 @@ dist/
 # Local development evidence and personal downloads must not be published.
 docs/validation.md
 *.log
+
+.local/media-validation/

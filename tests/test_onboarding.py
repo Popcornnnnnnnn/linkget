@@ -9,6 +9,7 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+from media_stub import uninspected
 
 from linkget import accounts, cli, session
 
@@ -20,6 +21,9 @@ def add_cookie(jar, domain, name="sessionid"):
 
 class OnboardingTests(unittest.TestCase):
     def setUp(self):
+        probe = patch.object(cli, "inspect_files", side_effect=uninspected)
+        probe.start()
+        self.addCleanup(probe.stop)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
@@ -57,6 +61,8 @@ class OnboardingTests(unittest.TestCase):
             self.assertEqual(prompt.call_count, 2)
             self.assertIn("Firefox (default browser)", out.getvalue())
             self.assertIn("Connected", out.getvalue())
+            self.assertNotIn("Sign in", out.getvalue())
+            self.assertNotIn("Open these links", out.getvalue())
             self.assertNotIn("test-secret", out.getvalue())
             self.assertNotIn("linkget login", out.getvalue())
             self.assertEqual(len(self.exports), 1)
@@ -131,11 +137,11 @@ class OnboardingTests(unittest.TestCase):
 
     def test_auth_connects_before_download_and_guides_missing_browser_login(self):
         accounts.set_preferences(setup=True, browser="firefox")
-        with patch.object(accounts, "status", return_value=session.Session("missing", "Not saved")), patch.object(accounts, "import_browser", side_effect=[session.Session("missing", "Not signed in"), session.Session("valid", "Valid")]) as connect, patch("builtins.input", side_effect=["bilibili", "", "q"]) as prompt, contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(cli.main(["auth"]), 0)
+        with patch.object(accounts, "status", return_value=session.Session("missing", "Not saved")), patch.object(accounts, "import_browser", side_effect=[session.Session("missing", "Not signed in"), session.Session("valid", "Valid")]) as connect, patch("builtins.input", return_value="") as prompt, contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(cli.main(["auth", "bilibili"]), 0)
             self.assertEqual(connect.call_count, 2)
             self.assertEqual(connect.call_args.args[1], "firefox/bilibili.com")
-            self.assertEqual(prompt.call_count, 3)
+            prompt.assert_called_once()
             self.assertIn(session.LOGIN_URLS["bilibili.com"], out.getvalue())
             self.assertIn("Connected", out.getvalue())
             self.assertNotIn("linkget login", out.getvalue())
@@ -148,26 +154,24 @@ class OnboardingTests(unittest.TestCase):
             add_cookie(jar, domain, "SESSDATA")
             jar.save(ignore_discard=True)
             return session.Session("valid", "Valid")
-        with patch.object(accounts, "status", return_value=session.Session("valid", "Valid")), patch.object(accounts, "prepare_session", side_effect=prepare) as connect, patch("builtins.input", side_effect=[""]) as prompt, contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(cli.main(["auth"]), 0)
+        with patch.object(accounts, "status", return_value=session.Session("valid", "Valid")), patch.object(accounts, "prepare_session", side_effect=prepare) as connect, patch("builtins.input") as prompt, contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(cli.main(["auth", "bilibili"]), 0)
             connect.assert_called_once()
-            self.assertEqual(prompt.call_count, 1)
-            self.assertIn("Enter to connect bilibili", prompt.call_args_list[0].args[0])
+            prompt.assert_not_called()
             self.assertNotIn("Sign in", out.getvalue())
             self.assertNotIn("Safe Storage", out.getvalue())
-            self.assertNotIn("Access", out.getvalue())
             self.assertNotIn("bilibili.com", accounts.preferences()["blocked"])
             self.assertTrue(accounts.path_for("bilibili.com").exists())
 
     def test_every_site_gets_a_login_link_when_connection_check_is_inconclusive(self):
         accounts.set_preferences(setup=True, browser="chrome")
         for site, domain in accounts.SITES.items():
-            with self.subTest(site=site), patch.object(accounts, "status", return_value=session.Session("missing", "Not saved")), patch.object(accounts, "import_browser", return_value=session.Session("unverified", "Website check inconclusive")), patch("builtins.input", side_effect=[site, "q", "q"]) as prompt, contextlib.redirect_stdout(io.StringIO()) as out:
-                self.assertEqual(cli.main(["auth"]), 0)
+            with self.subTest(site=site), patch.object(accounts, "status", return_value=session.Session("missing", "Not saved")), patch.object(accounts, "import_browser", return_value=session.Session("unverified", "Website check inconclusive")), patch("builtins.input", return_value="q") as prompt, contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(cli.main(["auth", site]), 0)
                 self.assertIn(f"Sign in      {site}", out.getvalue())
                 self.assertIn(session.LOGIN_URLS[domain], out.getvalue())
                 self.assertIn("Open this link in Chrome", out.getvalue())
-                self.assertIn("Press Enter to check again", prompt.call_args_list[1].args[0])
+                self.assertIn("Press Enter to check again", prompt.call_args.args[0])
                 self.assertNotIn("Safe Storage", out.getvalue())
 
     def test_terminal_login_links_and_site_emphasis_have_plain_text_fallbacks(self):
@@ -187,8 +191,8 @@ class OnboardingTests(unittest.TestCase):
 
     def test_permission_help_only_follows_a_failed_browser_read(self):
         accounts.set_preferences(setup=True, browser="chrome")
-        with patch.object(cli.sys, "platform", "darwin"), patch.object(accounts, "status", return_value=session.Session("missing", "Not saved")), patch.object(accounts, "import_browser", return_value=session.Session("unavailable", "Browser access denied")), patch("builtins.input", side_effect=["weibo", "q", "q"]), contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(cli.main(["auth"]), 0)
+        with patch.object(cli.sys, "platform", "darwin"), patch.object(accounts, "status", return_value=session.Session("missing", "Not saved")), patch.object(accounts, "import_browser", return_value=session.Session("unavailable", "Browser access denied")), patch("builtins.input", return_value="q"), contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(cli.main(["auth", "weibo"]), 0)
             text = out.getvalue()
             self.assertIn("Keychain access permission", text)
             self.assertLess(text.index("Browser access denied"), text.index("Keychain access permission"))
@@ -199,6 +203,34 @@ class OnboardingTests(unittest.TestCase):
             self.assertEqual(cli.main(["auth"]), 0)
             connect.assert_not_called()
             prompt.assert_not_called()
+
+    def test_auth_public_channels_do_not_prompt_or_reconnect_after_logout(self):
+        accounts.set_preferences(setup=True, browser="chrome")
+        accounts.logout("douyin")
+        previous = accounts.preferences()
+        with patch.object(accounts, "status", return_value=session.Session("missing", "Not saved")), patch.object(accounts, "import_browser") as connect, patch.object(accounts, "connect_browser") as browser, patch("builtins.input") as prompt, contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(cli.main(["auth"]), 0)
+            connect.assert_not_called()
+            browser.assert_not_called()
+            prompt.assert_not_called()
+            self.assertEqual(accounts.preferences(), previous)
+            lines = out.getvalue().splitlines()
+            for site, domain in accounts.SITES.items():
+                line = next(line for line in lines if line.split() and line.split()[0] == site)
+                if domain == "instagram.com":
+                    self.assertIn("Login for tested posts", line)
+                elif domain == "reddit.com":
+                    self.assertIn("Public access unverified", line)
+                elif domain in accounts.PUBLIC_ACCESS and domain != "bilibili.com":
+                    self.assertIn("Public access", line)
+                    self.assertNotIn("Connected", line)
+                    self.assertNotIn("connected", line)
+                    self.assertNotIn("Disconnected", line)
+            self.assertIn("Login for higher quality", out.getvalue())
+            self.assertNotIn("Not ready", out.getvalue())
+            self.assertNotIn("Sign in", out.getvalue())
+            self.assertNotIn("Note", out.getvalue())
+            self.assertNotIn("login optional", out.getvalue())
 
     def test_network_check_failure_keeps_login_and_never_offers_default_reconnect(self):
         accounts.set_preferences(setup=True, browser="chrome")
@@ -212,8 +244,8 @@ class OnboardingTests(unittest.TestCase):
             return session.Session("unverified", "Network check failed") if domain == "tiktok.com" else session.Session("valid", "Valid")
         with patch.object(accounts, "status", side_effect=state), patch.object(accounts, "import_browser") as connect, patch("builtins.input", return_value="") as prompt, contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(cli.main(["auth"]), 0)
-            self.assertIn("Network error · login unchanged", out.getvalue())
-            self.assertIn("Press Enter to exit", prompt.call_args.args[0])
+            self.assertIn("Public access", next(line for line in out.getvalue().splitlines() if line.startswith("  tiktok")))
+            prompt.assert_not_called()
             connect.assert_not_called()
             self.assertEqual(path.read_bytes(), original)
 
@@ -227,8 +259,10 @@ class OnboardingTests(unittest.TestCase):
             states = cli.show_logins()
         self.assertEqual(list(states), list(accounts.SITES))
         self.assertEqual(set(states.values()), {"valid"})
-        lines = [line.split()[0] for line in out.getvalue().splitlines() if "Connected" in line]
+        lines = [line.split()[0] for line in out.getvalue().splitlines()
+                 if line.split() and line.split()[0] in accounts.SITES]
         self.assertEqual(lines, list(accounts.SITES))
+        self.assertEqual(out.getvalue().count("Connected"), 2)  # Instagram and Bilibili only.
         self.assertIn("Checking", out.getvalue())
         connect.assert_not_called()
 

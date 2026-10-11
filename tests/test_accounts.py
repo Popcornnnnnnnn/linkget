@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from media_stub import uninspected
 
 from linkget import accounts, cli, session
 
@@ -26,6 +27,9 @@ def write_cookies(path, domain="bilibili.com", expired=False, visitor=False):
 
 class AccountTests(unittest.TestCase):
     def setUp(self):
+        probe = patch.object(cli, "inspect_files", side_effect=uninspected)
+        probe.start()
+        self.addCleanup(probe.stop)
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
@@ -122,6 +126,26 @@ class AccountTests(unittest.TestCase):
             self.assertFalse(cli.needs_login(message))
         for message in ("'cookies' needed to access this post", "Login required", "Please log in", "Account credentials required"):
             self.assertTrue(cli.needs_login(message))
+
+    def test_kuaishou_login_required_reuses_saved_session(self):
+        source = self.root / "input.txt"
+        write_cookies(source, "kuaishou.com")
+        accounts.save(source, "kuaishou.com")
+        attempts = []
+
+        def download(url, folder, cookies):
+            attempts.append(cookies is not None)
+            if cookies is None:
+                raise cli.KuaishouBrowserRequired("This post requires a browser login.")
+            (folder / "sample.mp4").write_bytes(b"video")
+            self.snapshot = cookies
+
+        with patch.object(cli, "download_kuaishou", side_effect=download), patch.object(cli, "prepare_session") as browser, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(["https://www.kuaishou.com/short-video/example", "--folder", str(self.root / "out")]), 0)
+            self.assertEqual(attempts, [False, True])
+            self.assertFalse(self.snapshot.exists())
+            self.assertTrue(accounts.path_for("kuaishou.com").exists())
+            browser.assert_not_called()
 
     def test_auth_failure_without_saved_login_prints_link_and_full_commands(self):
         def download(command, **kwargs):

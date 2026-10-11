@@ -6,7 +6,22 @@ Checked locally for 0.2.0b11 on 2026-09-30. Download success and session verific
 
 Prefer usable sources without added platform marks. If none can be obtained, retain the available media instead of refusing the whole post. Douyin, Xiaohongshu and Weibo report known source fallbacks. This is not a visual watermark detector: logos burned into an upload can still appear, including on an otherwise clean rendition. There is no pixel erasure, cropping, blurring or re-encoding.
 
-Weibo's alternate image rendition can be smaller than its marked image. Since 0.2.0b13, selection requires both a supported watermark improvement and no reduction in either dimension. Smaller alternatives are never saved as the output; the original file is kept with a notice when watermark removal at its resolution is unavailable. Version 0.2.0b12 still allowed smaller output and did not satisfy the requested quality requirement. Video downloads preserve source quality. Previously saved files and Photos items are not changed; redownload to apply new source selection.
+Weibo's alternate image rendition can be smaller than its marked image. Since 0.2.0b13, selection requires both a supported watermark improvement and no reduction in either dimension. Smaller alternatives are never saved as the output; the original file is kept with a notice when watermark removal at its resolution is unavailable. Version 0.2.0b12 still allowed smaller output and did not satisfy the requested quality requirement. Previously saved files and Photos items are not changed; redownload to apply new source selection.
+
+## Quality selection per channel
+
+Removing a mark must not trade away resolution, bitrate or original bytes. Current source selection:
+
+| Channel | Images | Video |
+| --- | --- | --- |
+| Douyin | Known clean `douyinpic.com` templates only; unknown templates fall back with a notice | Highest `video.bit_rate` gear by pixels, then declared bitrate and size; otherwise the ordinary `/play/` variant at the best ratio the endpoint serves (1080p, clamped). `/playwm/` is only a fallback, with a notice |
+| Xiaohongshu | Original file ID (`sns-img-bd`); display fallback keeps the largest declared rendition | Original `originVideoKey`; display fallback keeps the largest exposed stream by pixels, then bitrate |
+| Weibo | `oslarge` only when a pixel comparison supports a localized mark and neither dimension shrinks; otherwise the original bytes | Best exposed stream via yt-dlp |
+| TikTok | Original media from gallery-dl | `bitrateInfo` gears, highest pixel count first (gallery-dl) |
+| Instagram, X, Bilibili posts | Originals from gallery-dl | — |
+| Bilibili, YouTube video | — | Highest resolution, fps and HDR, then bitrate (`-S res,fps,hdr,vbr`) |
+
+Douyin's public playback endpoint clamps a requested ratio to the best gear the post actually has, so asking for 1080p never upscales; it recovered 720p → 1080p on a sampled post. When the API exposes `bit_rate`, its explicit gears win over the default `play_addr`. Video downloads otherwise preserve source quality.
 
 ## Actual samples
 
@@ -17,8 +32,10 @@ Weibo's alternate image rendition can be smaller than its marked image. Since 0.
 | X | One 5568×3712 NASA photo checked, no visible X mark. | NASA Artemis video sampled; no X mark, but the NASA logo remains. | Publisher branding is part of the sampled video. |
 | Bilibili | One 4096×3072 opus photo and its live-photo video checked/sampled, no visible Bilibili mark. | A regular video sampled; no platform mark seen, credits/subtitles remain. | Use highest available native quality; embedded marks in other videos may remain. |
 | TikTok | Two photos (1290×824 and 1440×2470) checked, no visible TikTok mark. | One 1080×1920 video sampled, no visible TikTok stamp. | Selects playback media, not the marked download variant; embedded captions remain. |
-| Douyin | Ten photos from one gallery checked, no visible Douyin mark. | One video using ordinary `/play/` sampled, no visible Douyin stamp. | Earlier user-provided gallery was unavailable to the public request; no watermark conclusion for that unavailable post. |
-| Xiaohongshu | All three images in the reported note checked (two original HEIC and one JPEG), no visible Xiaohongshu mark. | Reported cycling video downloaded from the exposed original source and sampled, no visible Xiaohongshu mark. | If originals are unavailable, display media may retain marks; a fallback notice is printed. |
+| Douyin | Ten photos from one gallery checked, no visible Douyin mark. | One video using ordinary `/play/` sampled, no visible Douyin stamp; the best served ratio is now requested, so the sample moved from 720×1280 to 1080×1920. | Earlier user-provided gallery was unavailable to the public request; no watermark conclusion for that unavailable post. |
+| Xiaohongshu | All three images in the reported note checked (two original HEIC and one JPEG), no visible Xiaohongshu mark. Exposed `livePhoto` MP4 streams are saved separately alongside the still image; resolution depends on the post. | Reported cycling video downloaded from the exposed original source and sampled, no visible Xiaohongshu mark. | If originals are unavailable, display media may retain marks; a fallback notice is printed. |
+| Kuaishou | Image galleries are not implemented. | The user-provided 2026-10-02 sample downloaded anonymously as 720×1280 HEVC with audio. No Kuaishou-added mark was observed in five inspected frames. | The page exposed a 720p ceiling for this request; uploader maximum quality and whole-video watermark absence remain unproven. |
+| Reddit | Original uploaded images. | Original uploaded videos containing the merged audio tracks. | Some third-party embedded URLs may fall back to alternative scrapers. |
 | YouTube | Not applicable to the supported video route. | “Me at the zoo” downloaded and sampled, no visible YouTube mark. | Earlier extractor test video was unavailable and was not counted as a pass. |
 
 Videos were inspected at approximately 10%, 50% and 90% of duration, not frame by frame. Results apply to these samples; they do not certify every post on a platform. HEIC images were converted only for temporary visual inspection; downloaded originals were not altered.

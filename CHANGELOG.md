@@ -1,5 +1,185 @@
 # Changelog
 
+## 0.2.1.dev20
+
+- After a same-item retry/recovery has saved and verified complete media, remove its unchanged tracked earlier staging directories, including partial downloads, metadata and logs. Keep files on failure/cancellation, content changes, symbolic links, destination overlap or uncertain ownership.
+- Verify folder and Live Photo copies before cleanup; retain the existing managed Photos original verification requirement.
+
+## 0.2.1.dev19
+
+- Fix Instagram Reel and gallery completeness when gallery-dl counts optional standalone audio that is not saved. Count the source photos/videos before downloading, and still reject missing source media or incomplete downloaded sets.
+- Run the real Instagram extractor regression cases in CI, and find Node.js on PATH for the offline DOM test on both Linux and macOS.
+
+## 0.2.1.dev17
+
+- Expand top-level and read command help with translation, summaries, task management, examples, background/foreground behavior and fallback configuration guidance.
+- Run content reads, recognition, OCR, translations, summaries, retries and read batches in detached background workers by default; return a task ID immediately and retain `--foreground` for scripts.
+- Add read task status, private logs and verified process-group cancellation, preserving source text and recognition checkpoints on interruption.
+- Show cloud/local inference phases and serialize local service/model startup across concurrent tasks; retain ten-minute idle unload for models loaded by LinkGet.
+
+## 0.2.1.dev16
+
+- Add an opt-in automatic AI fallback on provider outages, rate limits or transport timeouts; preserve successful batches, stop after backup failure and record the actual models used.
+- Keep Gemini Flash Lite as primary and configure independent local LM Studio inference as backup, with startup and downloaded-model loading on demand. Never forward the primary endpoint's credentials to another route.
+- Remove the installed LinkGet desktop companion and Share extension at the user's request; keep the CLI, saved settings and existing content.
+
+## 0.2.1.dev15
+
+- Accept real translation through the existing loopback CPA service using `gemini-3.1-flash-lite`; add explicit client-auth reuse without copying keys or changing proxy configuration.
+- Preserve older/user-edited exports by citing matching source snapshots, and restore source timeline order if the model reorders translated units.
+- Strengthen uncertainty handling for garbled recognition; validate English/Chinese/Japanese, exact source-unit coverage, numbers, negation and multi-batch output.
+
+## 0.2.1.dev14
+
+- Add subtitle-first reading, saved defaults, doctor, Markdown/TXT/SRT/VTT exports, local media and macOS Vision OCR.
+- Add full-audio chunk checkpoints, sequential read batches, failure retry and a 24-hour text cache; request audio-only where available.
+- Add explicit configurable summaries/translations with validated source references and original text preservation.
+- Add native macOS Read/Download host, Share extension and Services.
+- Validate real Bilibili, YouTube, Weibo, Douyin and Xiaohongshu samples; preserve channel and recognition limitations in read documentation.
+
+
+## 0.2.1.dev13 — video content reading across channels (unreleased)
+
+- Extend `linkget read` to existing video post channels: Bilibili (including a selected part), YouTube, Instagram, X, TikTok, Douyin, Kuaishou, Xiaohongshu, Weibo, Reddit, LOFTER and individual Pinterest pins. Reuse the existing download, format validation and configured login flow; Pixiv remains static-image only.
+- Transcribe each ordinary video locally with the existing whisper.cpp model, save speech and independent timed segments in `content.json`, and optionally select `--language auto`, `zh` or `en`. Keep publisher descriptions separate from speech, ignore pictures and explicit Live Photo motion, and refuse missing audio, over-30-minute videos or incomplete results.
+- Clean temporary downloads and recognition files by default, preserve optional review media with `--keep-media`, and commit content only after every video succeeds. Existing content folders are refused. See [reading options and validation limits](docs/READ.md).
+
+## 0.2.1.dev12 — clean Toutiao intermediates (unreleased)
+
+- Remove downloaded video, audio and duplicate transcript files after durable content capture, including partial files on failure. Preserve text and timed segments in `content.json`.
+- Add `--keep-media` for temporary recognition review; `cleanup_media` removes only known generated filenames and refuses substituted paths.
+
+## 0.2.1.dev11 — Toutiao content reading (unreleased)
+
+- Add `linkget read URL --folder NEW_DIR` for content intended for AI summarization. Read the current rendered Chrome page without exporting browser credentials, or accept content-only evidence from an authorized browser connector with `--page-data`.
+- Process Toutiao videos with explicit `--transcribe --whisper-model PATH`: verify complete downloaded audio/duration and use the existing local whisper.cpp runtime. Keep publisher descriptions separate from recognized speech. No hosted model, Photos import or message sending is enabled by this command.
+- Reject a different post after automatic playback, unsupported media hosts, title-only content and existing output folders. See [Toutiao validation and limits](docs/TOUTIAO.md).
+
+## 0.2.1.dev10 — hide routine task identifiers (unreleased)
+
+- Stop displaying task IDs before single and batch downloads. Keep private recovery receipts, retry commands on failure/cancellation, and the explicit `recover` task listing.
+
+## 0.2.1.dev9 — faster repeated lookups (unreleased)
+
+- Query Photos once per ordinary asset or Live Photo pair, reuse existing identifiers, and match new import results by filename rather than return order. Group source filenames once and preserve per-resource IDs for verification.
+- Enumerate each relevant managed-originals directory once per verification, indexing only requested assets. Continue checking both Live Photo components, rejecting symlinks and mismatched bytes.
+- Reuse unchanged SHA-256 results within one download/recovery item. Invalidate on file identity, size, modification or change time; detect changes during reads. Final Photos verification and recovery content checks still force actual reads.
+- Share exact short-link resolutions across concurrent and queued items in one batch. Keep query tokens separate, retry failures, respect cancellation and platform redirect boundaries, and discard the cache after each run.
+
+## 0.2.1.dev8 — task recovery and bounded batch execution (unreleased)
+
+- Add private task receipts and `retry [TASK]`, preserving original item numbers and skipping completed downloads. Reuse a complete retained set after save failure; `--redownload` fetches again while keeping earlier files.
+- Add `recover [TASK]`, per-item recovery, destination overrides and `--verify` cleanup using recorded Photos asset identifiers and byte checks. Refuse incomplete, changed or out-of-stage files; retain referenced and untracked originals.
+- Check writable destinations, ExifTool and the selected Swift compiler before download/browser work; extend destination-aware `doctor` checks without opening Photos or reading a browser.
+- Add optional `--jobs N` without changing default concurrency. Show active phases, elapsed time and transfer size. Cancel external engine process groups and check cancellation between native adapter chunks; preserve active-save safety.
+- Extract batch coordination, engine routing/format selection, output, destination saves, cancellation and recovery from the main CLI. Preserve direct Homebrew script execution and packaged entry points.
+- Add an opt-in generated-media Live Photo acceptance script, checking source preservation, encoded stream hashes, repeat packaging, and named-library import/deduplication/verified cleanup. Actual playback still requires UI acceptance; offline recognition alone is insufficient.
+
+## 0.2.1.dev7 — Douyin browser-assisted recovery (unreleased)
+
+- When public metadata is missing or a transfer is interrupted, use daily Chrome's normal post page once, without exporting browser credentials. Reuse an existing matching page or temporarily select a new page so Chrome initializes its player; restore the previous tab and close only newly created tabs. Browser reads remain coordinated during concurrent batches.
+- Select the highest exposed player quality, validate the complete gallery count, and reuse normal downloads, duplicate handling and verified Photos cleanup. Explain missing Chrome scripting permission and record the canonical source link in failure logs. Clarify Douyin's Public access status; backport to local `0.2.0+douyin-browser.1`.
+
+## 0.2.1.dev6 — preserve Douyin failure reasons (unreleased)
+
+- Replace the generic `download interrupted` message with the underlying timeout, connection, transfer or local file error. Do not tell users to check their connection for every local I/O failure. Backport to the installed `0.2.0+douyin-errors.1` build.
+
+## 0.2.1.dev5 — Douyin cold share-page initialization (unreleased)
+
+- Handle a requested post's empty SSR shell before its anonymous visitor cookie is issued. Allow up to three share-page requests during this observed initialization sequence; stop immediately for unrecognized pages or another post, and retain the existing failure after the bounded initialization attempt.
+- Reproduce the old failure and verify the corrected path without browser login data. Backport the fix to the installed `0.2.0+douyin-bootstrap.1` build, retaining concurrent batch downloads and verified Photos cleanup.
+
+## 0.2.1.dev4 — concurrent batch downloads (unreleased)
+
+- Start one download worker per supplied link. Keep input numbers on output and report failures independently; accept one sharing text per line, with a blank line starting interactive downloads.
+- Coordinate browser/login requests on the calling thread and serialize final Photos/folder saves. Keep duplicate handling and verified Photos cleanup; cancellation preserves unfinished files and waits for active requests to finish.
+- Backport batch downloads to the local installed stable build `0.2.0+parallel-batch.1`; retain its existing download behavior and Photos cleanup without adding unrelated development features.
+
+## 0.2.1.dev3 — verified Photos copy cleanup (unreleased)
+
+- Remove staged download originals and Live Photo resources after comparing their bytes with the managed originals belonging to the saved Photos item IDs. Verify existing duplicates too; preserve failed, referenced or unverified imports and report their location. Successful Photos saves no longer report an extra Originals folder. Locate the running Photos app's open library instead of using caller-specific Photos preferences or accessing the protected container. Ignore its internal Syndication library; preserve files if the active library cannot be identified. Folder saving is unchanged.
+
+## 0.2.1.dev2 — media evidence, gallery checks and Live Photo pairing (unreleased)
+
+- Verify supported exposed gallery counts and probe downloaded media before saving; preserve failures for review. Show actual dimensions, codec, video frame rate/bitrate/audio, fallback choices and unknown source counts.
+- Add opt-in `--report PATH` and `linkget compare FIRST.json SECOND.json`, recording token-free references and byte/property comparisons without claiming absolute maximum quality or watermark absence. Add a baseline regression gate to the opt-in real-media corpus.
+- Add opt-in `--live-photos` for explicit Xiaohongshu, Weibo and Bilibili source pairs on macOS. Preserve original downloads, create separate paired copies without picture/video/audio re-encoding, validate offline with PhotoKit, and retain stable copies for Photos. ExifTool and developer tools are required. Real Photos library pairing/playback still needs manual acceptance.
+- Drain audio/video tracks together after a real audio-bearing remux test reproduced a stall. Keep paired filenames aligned through folder collisions, normalize generated container dates for duplicate detection, and protect existing retained components from copy failures/races.
+
+## 0.2.1.dev1 — batch downloads and clearer failures (unreleased)
+
+- Add `linkget batch`: ordered command-line links, one sharing text per pasted line, or piped input. Reuse the ordinary downloader and destination options; continue after item failures and report failed item numbers. Cancel stops remaining items and preserves partial downloads.
+- Distinguish known network failures, website checks, access refusal, rate limits, unsupported media and unavailable posts, with relevant next steps. Generic HTTP errors do not initiate login recovery.
+- Keep the accepted 0.2.0 release artifacts and installed stable CLI separate from this development version.
+
+## 0.2.0 — public mobile Kuaishou extraction and release acceptance
+
+- Recover Kuaishou videos when desktop HTML contains only site configuration by reading the same post's public mobile page. Match the requested post ID before selecting media; reject invalid MP4 responses and incomplete downloads.
+- Select the largest exposed Kuaishou resolution, preserving the HEVC preference at equal resolution. Codec preference is not a claim of absolute highest quality. Full `/short-video/` links are supported; profiles and image galleries are rejected.
+- If Douyin's public response omits media, try an existing authorized login once in automatic mode. Respect public-only mode and logout; do not infer expiry, refresh a browser or prompt for sign-in from this failure alone.
+- Keep Xiaohongshu fallback media tied to the same gallery item, including Live Photos without exposed video tracks. Never substitute another item's video when a live track is unavailable.
+- Include native Pixiv extraction in the saved-session corpus comparison. Static Pixiv originals, Reddit image/video download, clean macOS installation/upgrades and user-reviewed Photos image/video imports have separate acceptance evidence.
+- Keep account status compact and distinguish public access from quality and watermark guarantees. Website restrictions, unsupported media routes and unverified browser/architecture combinations remain documented.
+
+## 0.2.0b16.dev7 — verified public Kuaishou sample
+
+- Mark Kuaishou as `Public access` in the compact account overview after an ordinary anonymous download passed on both the host and clean macOS VM. Image galleries remain unsupported.
+- Add the user-provided video to the opt-in corpus: 720×1280 HEVC, 114.2 seconds, audible audio and complete decode. Five sampled frames show no observed Kuaishou-added mark; uploader maximum quality remains unproven.
+- Record the user's successful Pixiv image import into Photos separately from pending video import/playback acceptance.
+
+## 0.2.0b16.dev6 — Pixiv web originals and browser login
+
+- Download every original static page of a single Pixiv artwork through the website API, without requiring gallery-dl OAuth authorization. Reject incomplete page lists, non-image responses and Ugoira covers; retain partial files on an interrupted original download.
+- Verify Pixiv browser sessions through its viewer-only JSON endpoint instead of searching homepage text for login links. Live Chrome verification passed; anonymous and invalid-cookie controls were rejected.
+- Show `Public access` for Pixiv static artworks without optional-login clutter. Public single-image and three-page samples downloaded; the three-page artwork also passed the normal Chrome-login flow.
+
+## 0.2.0b16.dev5 — Reddit video engine connection
+
+- Connect gallery-dl to the yt-dlp package in its separate Homebrew/pipx installation when available. Reddit videos request the best exposed video/audio streams and merge to MP4 using the installed ffmpeg; Reddit image posts still use gallery-dl.
+- Check Reddit's video dependencies before downloading, instead of failing later with `Cannot import yt-dlp or youtube-dl`.
+- Verify the ordinary installed CLI against a user-provided image and native video: 1100×1429 JPEG and 1280×720 MP4 with audible audio. Keep both posts in the opt-in regression corpus; remove full test downloads and temporary login snapshots after acceptance.
+
+## 0.2.0b16.dev4 — real media corpus and evidence-based access labels
+
+- Replace the overbroad `No login needed` claim with `Public access`. Instagram's tested posts required login; Reddit and Kuaishou anonymous access remain unverified. No general sign-in prompts are added.
+- Add an opt-in corpus covering all 13 channels, image/video routes and explicit unsupported slots, plus isolated anonymous downloads and existing-session comparisons. Preserve originals, hashes, metadata and five video frames for review.
+- Record maximum quality separately from request-exposed resolution and visible watermarks. Weibo image/video, LOFTER video and one Bilibili video retain visible platform marks; successful downloading does not prove a clean original.
+
+## 0.2.0b16.dev3 — compact account overview
+
+- Show `No login needed` for public channels instead of optional account states and repeated explanations. Retain Bilibili's higher-quality login state and mark Pixiv as `Not ready`.
+- Remove the general note from `auth`; explicit `auth SITE` requests still show that website's login state.
+
+## 0.2.0b16.dev2 — optional logins for public access
+
+- Annotate account status with each adapter's public access capability, Bilibili's higher-quality login requirement and Pixiv's incomplete downloader authorization.
+- Ordinary `auth` checks exit without sign-in prompts. `auth SITE` explicitly connects an optional website login; first-run browser checks no longer invite sign-in for public channels.
+- Downloads continue to request a login when a specific post requires it.
+
+## 0.2.0b16.dev1 — local channel synchronization
+
+- Synchronize the local command with all 13 channel entries and document the five trial integrations. This development build is not a published Homebrew release.
+- Clarify that account connection does not guarantee maximum quality or watermark-free media; correct the Kuaishou gallery and Pixiv Ugoira listings.
+- Handle Kuaishou login requests through the existing saved-session recovery and reject an explicit `isLogin: false` response during account checks.
+
+## 0.2.0b16 — Reddit and Kuaishou support
+
+- Reddit images, galleries, and videos with audio are now supported natively. You can use `--browser` or `linkget auth` to authorize an active Reddit session and download age-restricted or quarantined content.
+- Initial Kuaishou (快手) video support reads exposed sources from `window.__APOLLO_STATE__` and prefers HEVC (H.265). This did not establish the uploader's highest quality or universal watermark absence; 0.2.0 adds mobile-page recovery.
+
+## 0.2.0b15 — Live Photos support for Xiaohongshu and Weibo
+
+- Xiaohongshu Live Photos (`livePhoto: true`) save the original still image (HEIC/JPEG) and an exposed MP4 motion track when available. Track resolution depends on the post; the files remain separate rather than being paired as a native Photos Live Photo.
+- Weibo extraction arguments now set `extractor.weibo.livephoto=true` instead of `false`, enabling the simultaneous download of Weibo Live Photos (Dynamic Photos) as paired images and videos.
+
+## 0.2.0b14 — best available Douyin quality, audited source selection
+
+- Douyin videos no longer stop at the share page's 720p default. Ask the public playback endpoint for the best ratio it serves (1080p, clamped down when the post has less), and rank `video.bit_rate` gears by pixels, then declared bitrate and size. The watermarked distribution variant remains only a fallback with a notice.
+- Live check: sample 7675556744459143529 changed from H.264 720×1280 (5,162,997 bytes) to H.264 1080×1920 (6,396,748 bytes); the watermarked variant at the same ratio was still 720×1280. A horizontal sample whose public ceiling is 720p was unchanged, so the change only fills in missing gears.
+- Xiaohongshu display fallback keeps the largest declared image rendition instead of the default URL; originals remain the primary source.
+- yt-dlp format sort adds `vbr`, so Bilibili, Weibo and YouTube prefer the higher-bitrate stream when resolution, fps and HDR are equal.
+- Re-checked all eight channels live and re-ran the Weibo no-downgrade audit (20 images, zero reductions); the Weibo video sample kept its best exposed 720p stream and its burned-in 视频号 mark is disclosed. See `docs/WATERMARKS.md` and `docs/validation.md`.
+
 ## 0.2.0b13 — never downgrade resolution for watermark removal
 
 - Correct the requirement missed by 0.2.0b11/b12: a cleaner source must not reduce either image dimension. Keep the original bytes when only a smaller alternative exists and explicitly report that watermark removal at that resolution was unavailable.

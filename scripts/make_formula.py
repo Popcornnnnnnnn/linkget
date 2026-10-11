@@ -28,6 +28,7 @@ args.output.write_text('''class Linkget < Formula
 
   depends_on "deno"
   depends_on "ffmpeg"
+  depends_on "exiftool"
   depends_on "gallery-dl"
   depends_on :macos
   depends_on "python@3.14"
@@ -45,7 +46,7 @@ args.output.write_text('''class Linkget < Formula
     <<~EOS
       Run linkget and paste a post link. Use --folder to save to the current folder.
       Use linkget config to view or change your default save destination.
-      Photos imports retain originals in ~/Library/Application Support/linkget/originals.
+      Verified Photos imports remove staged copies; failed imports retain originals.
       Uninstalling does not remove your downloads or saved account data.
     EOS
   end
@@ -54,7 +55,7 @@ args.output.write_text('''class Linkget < Formula
     assert_match "%s", shell_output("#{bin}/linkget --version")
     assert_match "Instagram", shell_output("#{bin}/linkget sites")
     assert_match "--folder [FOLDER]", shell_output("#{bin}/linkget help")
-    assert_match "Not connected", shell_output("LINKGET_HOME=#{testpath}/data #{bin}/linkget auth")
+    assert_match "Public access", shell_output("LINKGET_HOME=#{testpath}/data #{bin}/linkget auth")
     with_env("LINKGET_HOME" => "#{testpath}/data") do
       assert_match "Photos", shell_output("#{bin}/linkget config")
       assert_match "Saved", shell_output("#{bin}/linkget config --folder")

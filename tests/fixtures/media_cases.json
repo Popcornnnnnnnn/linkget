@@ -1,0 +1,314 @@
+{
+  "cases": [
+    {
+      "id": "instagram-gallery",
+      "site": "instagram",
+      "kind": "image",
+      "url": "https://www.instagram.com/p/DdHyaYAifb6/",
+      "coverage": "active",
+      "source": "docs/validation.md: prior authenticated sample",
+      "note": "",
+      "expected_count": 4
+    },
+    {
+      "id": "instagram-reel",
+      "site": "instagram",
+      "kind": "video",
+      "url": "https://www.instagram.com/reel/Chunk8-jurw/",
+      "coverage": "active",
+      "source": "yt-dlp instagram.py upstream test case",
+      "note": ""
+    },
+    {
+      "id": "x-nasa-photo",
+      "site": "x",
+      "kind": "image",
+      "url": "https://x.com/NASA/status/2040059770237849635/photo/1",
+      "coverage": "active",
+      "source": "docs/validation.md: prior public sample",
+      "note": "",
+      "expected_count": 1
+    },
+    {
+      "id": "x-artemis",
+      "site": "x",
+      "kind": "video",
+      "url": "https://x.com/NASAArtemis/status/2040619776100147411",
+      "coverage": "active",
+      "source": "docs/validation.md: prior public sample",
+      "note": ""
+    },
+    {
+      "id": "bilibili-opus",
+      "site": "bilibili",
+      "kind": "image",
+      "url": "https://www.bilibili.com/opus/1154738799821979656",
+      "coverage": "active",
+      "source": "docs/validation.md: prior public live-photo sample",
+      "note": "图文与实况视频作为两个文件，不判作原生 Photos 配对。",
+      "expected_count": 2
+    },
+    {
+      "id": "bilibili-720-source",
+      "site": "bilibili",
+      "kind": "video",
+      "url": "https://www.bilibili.com/video/BV1bK411W797?p=1",
+      "coverage": "active",
+      "source": "docs/validation.md: public and signed 720p source",
+      "note": "",
+      "expected_count": 1
+    },
+    {
+      "id": "bilibili-login-quality",
+      "site": "bilibili",
+      "kind": "video",
+      "url": "https://www.bilibili.com/video/BV1i4aL6QEYX",
+      "coverage": "active",
+      "source": "docs/validation.md: signed 1080p sample",
+      "note": "验证匿名访问与普通已保存登录对画质的影响；不是大会员基线。",
+      "expected_count": 1
+    },
+    {
+      "id": "tiktok-photo-set",
+      "site": "tiktok",
+      "kind": "image",
+      "url": "https://www.tiktok.com/@hullcity/photo/7553302113757990166",
+      "coverage": "active",
+      "source": "docs/validation.md: prior public two-photo sample",
+      "note": "",
+      "expected_count": 2
+    },
+    {
+      "id": "tiktok-playback",
+      "site": "tiktok",
+      "kind": "video",
+      "url": "https://www.tiktok.com/@memezar/video/7449708266168274208",
+      "coverage": "active",
+      "source": "docs/validation.md: prior public HEVC video",
+      "note": "",
+      "expected_count": 1
+    },
+    {
+      "id": "douyin-photo-set",
+      "site": "douyin",
+      "kind": "image",
+      "url": "https://www.douyin.com/note/7606317587148095823",
+      "coverage": "active",
+      "source": "docs/validation.md: prior public ten-photo sample",
+      "note": "",
+      "expected_count": 10
+    },
+    {
+      "id": "douyin-1080-playback",
+      "site": "douyin",
+      "kind": "video",
+      "url": "https://www.douyin.com/video/7675556744459143529",
+      "coverage": "active",
+      "source": "docs/validation.md: prior 1080p public ceiling",
+      "note": "",
+      "expected_count": 1
+    },
+    {
+      "id": "douyin-landscape",
+      "site": "douyin",
+      "kind": "video",
+      "url": "https://www.douyin.com/video/7640490555692076303",
+      "coverage": "active",
+      "source": "docs/validation.md: marked distribution versus public playback",
+      "note": "",
+      "expected_count": 1
+    },
+    {
+      "id": "weibo-originals",
+      "site": "weibo",
+      "kind": "image",
+      "url": "https://weibo.com/5595931769/RklUpAkt0",
+      "coverage": "active",
+      "source": "docs/WEIBO_IMAGE_AUDIT.md: image watermark rendition comparison",
+      "note": ""
+    },
+    {
+      "id": "weibo-embedded-mark",
+      "site": "weibo",
+      "kind": "video",
+      "url": "https://weibo.com/2601052263/RkpghmW5K",
+      "coverage": "active",
+      "source": "docs/validation.md: prior platform-marked video",
+      "note": "旧采样看到微博视频号标记，本次必须重新判断。",
+      "expected_count": 1
+    },
+    {
+      "id": "youtube-zoo",
+      "site": "youtube",
+      "kind": "video",
+      "url": "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+      "coverage": "active",
+      "source": "docs/validation.md: prior public 240p original",
+      "note": "低分辨率原片用来区分“取到源上限”和“所有视频都应达到高清”。",
+      "expected_count": 1
+    },
+    {
+      "id": "youtube-upstream-short",
+      "site": "youtube",
+      "kind": "video",
+      "url": "https://www.youtube.com/watch?v=el3E4MbxRqQ",
+      "coverage": "active",
+      "source": "yt-dlp youtube/_video.py upstream five-second test",
+      "note": "",
+      "expected_count": 1
+    },
+    {
+      "id": "youtube-shorts",
+      "site": "youtube",
+      "kind": "video",
+      "url": "https://www.youtube.com/shorts/18NGQq7p3LY",
+      "coverage": "active",
+      "source": "yt-dlp youtube/_video.py upstream Shorts test",
+      "note": "",
+      "expected_count": 1
+    },
+    {
+      "id": "reddit-old-photo",
+      "site": "reddit",
+      "kind": "image",
+      "url": "https://www.reddit.com/r/pics/comments/1fpi61c/the_oldest_surviving_photograph_taken_in/",
+      "coverage": "active",
+      "source": "Existing local exploration test_reddit.py",
+      "note": ""
+    },
+    {
+      "id": "reddit-user-1ws8p4o",
+      "site": "reddit",
+      "kind": "image",
+      "url": "https://www.reddit.com/r/google_antigravity/comments/1ws8p4o/",
+      "coverage": "active",
+      "source": "User-provided post; ordinary installed CLI regression",
+      "note": "User accepted the signed-in image as matching the post; anonymous access remains unverified.",
+      "expected_count": 1
+    },
+    {
+      "id": "reddit-user-1wurwev",
+      "site": "reddit",
+      "kind": "video",
+      "url": "https://www.reddit.com/r/China_irl/comments/1wurwev/",
+      "coverage": "active",
+      "source": "User-provided post; ordinary installed CLI regression",
+      "note": "Signed-in 720p video with audio passed after the gallery-dl/yt-dlp connection repair; absolute highest quality remains unproven. Clean full test downloads after inspection.",
+      "expected_count": 1
+    },
+    {
+      "id": "reddit-aww",
+      "site": "reddit",
+      "kind": "video",
+      "url": "https://www.reddit.com/r/aww/comments/90bu6w/heat_index_was_110_degrees_so_we_offered_him_a/",
+      "coverage": "active",
+      "source": "yt-dlp reddit.py upstream hosted-video test",
+      "note": ""
+    },
+    {
+      "id": "kuaishou-web-state",
+      "site": "kuaishou",
+      "kind": "video",
+      "url": "https://www.kuaishou.com/short-video/3xu7kpznwgbvtds",
+      "coverage": "active",
+      "source": "Existing local exploration test_ks.py",
+      "note": "",
+      "expected_count": 1
+    },
+    {
+      "id": "kuaishou-user-3xz5t5ber85wq7g",
+      "site": "kuaishou",
+      "kind": "video",
+      "url": "https://www.kuaishou.com/short-video/3xz5t5ber85wq7g?authorId=3xsafng3tf9q47w&streamSource=find&area=homexxbrilliant",
+      "coverage": "active",
+      "source": "User-provided working video; ordinary installed CLI regression",
+      "note": "Anonymous host and macOS VM downloads passed: 720×1280 HEVC with audio, 114.2 seconds. Uploader quality ceiling remains unproven. Clean full test downloads after inspection.",
+      "expected_count": 1
+    },
+    {
+      "id": "lofter-upstream-gallery",
+      "site": "lofter",
+      "kind": "image",
+      "url": "https://gengar563.lofter.com/post/1e82da8c_1c98dae1b",
+      "coverage": "active",
+      "source": "https://github.com/mikf/gallery-dl/blob/master/test/results/lofter.py",
+      "note": "",
+      "expected_count": 7
+    },
+    {
+      "id": "lofter-upstream-video",
+      "site": "lofter",
+      "kind": "video",
+      "url": "https://wooden-brain.lofter.com/post/1e60de5b_1c9bf8efb",
+      "coverage": "active",
+      "source": "https://github.com/mikf/gallery-dl/blob/master/test/results/lofter.py",
+      "note": "后端有视频样本，当前渠道文档仅写图片；按真实结果判断。",
+      "expected_count": 1
+    },
+    {
+      "id": "pixiv-web-single",
+      "site": "pixiv",
+      "kind": "image",
+      "url": "https://www.pixiv.net/artworks/966412",
+      "coverage": "active",
+      "source": "https://github.com/mikf/gallery-dl/blob/master/test/results/pixiv.py",
+      "note": "Static artwork web originals; public download passed after replacing the OAuth route.",
+      "expected_count": 1
+    },
+    {
+      "id": "pixiv-web-gallery",
+      "site": "pixiv",
+      "kind": "image",
+      "url": "https://www.pixiv.net/artworks/148094125",
+      "coverage": "active",
+      "source": "Public artwork discovered through Pixiv's web profile API",
+      "note": "Three original pages; anonymous and normal Chrome-login flows both passed.",
+      "expected_count": 3
+    },
+    {
+      "id": "pinterest-nasa-pin",
+      "site": "pinterest",
+      "kind": "image",
+      "url": "https://www.pinterest.com/pin/1067142074180813172/",
+      "coverage": "active",
+      "source": "https://in.pinterest.com/pin/1067142074180813172/",
+      "note": ""
+    },
+    {
+      "id": "pinterest-upstream-video",
+      "site": "pinterest",
+      "kind": "video",
+      "url": "https://www.pinterest.com/pin/664281013778109217/",
+      "coverage": "active",
+      "source": "yt-dlp pinterest.py upstream video test",
+      "note": ""
+    },
+    {
+      "id": "youtube-image-route",
+      "site": "youtube",
+      "kind": "image",
+      "url": null,
+      "coverage": "not_applicable",
+      "source": "Current adapter code",
+      "note": "当前路由仅支持视频，图片不纳入成功率。"
+    },
+    {
+      "id": "kuaishou-gallery-route",
+      "site": "kuaishou",
+      "kind": "image",
+      "url": null,
+      "coverage": "unsupported",
+      "source": "Current adapter code",
+      "note": "当前适配器图集分支未实现，不能标记为已验证；需要真实图集 URL 做后续负例。"
+    },
+    {
+      "id": "pixiv-ugoira-route",
+      "site": "pixiv",
+      "kind": "video",
+      "url": null,
+      "coverage": "unsupported",
+      "source": "Current adapter code",
+      "note": "Ugoira 默认是 ZIP 帧包，当前 linkget 没有可播放动画输出。"
+    }
+  ]
+}

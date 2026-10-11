@@ -38,6 +38,11 @@ ENDPOINTS = {
     "xiaohongshu.com": "https://www.xiaohongshu.com/explore",
     "weibo.com": "https://weibo.com/",
     "youtube.com": "https://www.youtube.com/",
+    "reddit.com": "https://www.reddit.com/",
+    "kuaishou.com": "https://www.kuaishou.com/",
+    "lofter.com": "https://www.lofter.com/",
+    "pixiv.net": "https://www.pixiv.net/ajax/user/extra",
+    "pinterest.com": "https://www.pinterest.com/"
 }
 LOGIN_URLS = {
     "instagram.com": "https://www.instagram.com/accounts/login/",
@@ -48,9 +53,15 @@ LOGIN_URLS = {
     "xiaohongshu.com": "https://www.xiaohongshu.com/",
     "weibo.com": "https://weibo.com/login.php",
     "youtube.com": "https://www.youtube.com/",
+    "reddit.com": "https://www.reddit.com/login/",
+    "kuaishou.com": "https://www.kuaishou.com/",
+    "lofter.com": "https://www.lofter.com/",
+    "pixiv.net": "https://accounts.pixiv.net/login",
+    "pinterest.com": "https://www.pinterest.com/login/"
 }
 AUTH_COOKIE = {"instagram.com": "sessionid", "x.com": "auth_token", "bilibili.com": "SESSDATA", "tiktok.com": "sessionid", "douyin.com": "sessionid",
-               "xiaohongshu.com": "web_session", "weibo.com": "SUB", "youtube.com": "SAPISID"}
+               "xiaohongshu.com": "web_session", "weibo.com": "SUB", "youtube.com": "SAPISID", "reddit.com": "reddit_session", "kuaishou.com": "did",
+               "lofter.com": "NTES_LF_SI", "pixiv.net": "PHPSESSID", "pinterest.com": "_pinterest_sess"}
 
 
 def login_cookies(jar, domain):
@@ -98,6 +109,24 @@ def webpage_login(domain, html):
                     return {"authenticated": not logged_out}
             except (ValueError, AttributeError):
                 continue
+    elif domain == "reddit.com":
+        if "user-dropdown-button" in html or "data-testid=\"user-drawer\"" in html or "user-drawer-button" in html:
+            return {"authenticated": True}
+        if "login-button" in html or "login-form" in html:
+            return {"authenticated": False}
+        if "document.forms[0]" in html and "d992a3e763c670b7" in html:
+            # Captcha / security gate check instead of homepage content
+            pass
+    elif domain == "kuaishou.com":
+        login = re.search(r'"isLogin"\s*:\s*(true|false)\b', html)
+        if login and (login[1] == "false" or "userInfo" in html):
+            return {"authenticated": login[1] == "true"}
+    elif domain == "lofter.com":
+        if "window.user=" in html and "userId" in html:
+            return {"authenticated": True}
+    elif domain == "pinterest.com":
+        if "unauth_home_page" not in html and "Pinner" in html:
+            return {"authenticated": True}
     return {}
 
 
@@ -156,7 +185,15 @@ def classify_response(domain, code, data):
             return Session("valid", "Valid")
         if code == 200 and data.get("message") == "error" and account.get("error_code") == 13:
             return Session("invalid", "Session rejected")
-    elif domain in {"xiaohongshu.com", "weibo.com", "youtube.com"} and code == 200:
+    elif domain == "pixiv.net":
+        account = data.get("body")
+        # This viewer-only endpoint rejects anonymous and invalid-cookie controls.
+        if (code == 200 and data.get("error") is False and isinstance(account, dict)
+                and all(type(account.get(key)) is int for key in ("following", "followers", "mypixivCount"))):
+            return Session("valid", "Valid")
+        if code == 401:
+            return Session("invalid", "Session rejected")
+    elif domain in {"xiaohongshu.com", "weibo.com", "youtube.com", "reddit.com", "kuaishou.com", "lofter.com", "pinterest.com"} and code == 200:
         if data.get("authenticated") is True:
             return Session("valid", "Valid")
         if data.get("authenticated") is False:
@@ -184,7 +221,7 @@ def check_session(jar, domain):
         # Public X web-client identifier, also used by gallery-dl; not a user token.
         headers.update({"authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
                         "x-csrf-token": values["ct0"], "x-twitter-auth-type": "OAuth2Session", "x-twitter-active-user": "yes"})
-    if domain in {"xiaohongshu.com", "weibo.com", "youtube.com"}:
+    if domain in {"xiaohongshu.com", "weibo.com", "youtube.com", "reddit.com", "kuaishou.com", "lofter.com", "pinterest.com"}:
         headers["Accept"] = "text/html"
     opener = build_opener(HTTPCookieProcessor(jar), NoRedirect())
     try:
@@ -214,7 +251,7 @@ def check_session(jar, domain):
             try:
                 body = response.read(4_000_000)
                 data = (webpage_login(domain, body.decode("utf-8", "replace"))
-                        if domain in {"xiaohongshu.com", "weibo.com", "youtube.com"} else json.loads(body))
+                        if domain in {"xiaohongshu.com", "weibo.com", "youtube.com", "reddit.com", "kuaishou.com", "lofter.com", "pinterest.com"} else json.loads(body))
             except (ValueError, UnicodeError):
                 data = None
         return classify_response(domain, code, data)

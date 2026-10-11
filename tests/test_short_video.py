@@ -2,6 +2,7 @@
 
 import contextlib
 from http.cookiejar import Cookie
+from http.client import IncompleteRead
 import io
 import json
 from pathlib import Path
@@ -9,7 +10,8 @@ from subprocess import CompletedProcess
 import tempfile
 import unittest
 from unittest.mock import patch
-from urllib.error import HTTPError
+from media_stub import uninspected
+from urllib.error import HTTPError, URLError
 
 from linkget import accounts, cli, douyin, links, session
 
@@ -29,12 +31,78 @@ def page(item):
 
 class ShortVideoTests(unittest.TestCase):
     def setUp(self):
+        browser = patch.object(accounts, "default_browser", return_value="safari")
+        browser.start()
+        self.addCleanup(browser.stop)
+        probe = patch.object(cli, "inspect_files", side_effect=uninspected)
+        probe.start()
+        self.addCleanup(probe.stop)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name) / "sessions"
         mocked = patch.object(accounts, "directory", return_value=root)
         mocked.start()
         self.addCleanup(mocked.stop)
+
+    def test_browser_fallback_recovers_missing_metadata_and_interrupted_transfer(self):
+        for failure in (douyin.MediaUnavailable, douyin.DownloadInterrupted):
+            with self.subTest(failure=failure.__name__), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                item = {"aweme_id": "123", "video": {"play_addr": {"url_list": ["https://cdn.example/video.mp4"]}}}
+                def download(url, folder, cookie_path=None, *, browser_item=None):
+                    if browser_item is None:
+                        raise failure("synthetic failure")
+                    self.assertEqual(browser_item, item)
+                    self.assertIsNone(cookie_path)
+                    (folder / "video.mp4").write_bytes(b"video")
+                with patch.object(cli, "download_douyin", side_effect=download), patch.object(cli, "read_douyin_browser", return_value=item) as reader, patch.object(accounts, "default_browser", return_value="chrome"), patch.object(accounts, "copy_saved") as cookies, patch.object(cli, "prepare_session") as export, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    code = cli.main(["https://www.douyin.com/video/123", "--folder", str(root), "--browser", "chrome"])
+                self.assertEqual(code, 0)
+                reader.assert_called_once_with("https://www.douyin.com/video/123")
+                cookies.assert_not_called()
+                export.assert_not_called()
+                self.assertEqual((root / "video.mp4").read_bytes(), b"video")
+
+    def test_browser_fallback_stops_after_one_browser_source_failure(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(cli, "download_douyin", side_effect=douyin.MediaUnavailable("missing")) as downloader, patch.object(cli, "read_douyin_browser", return_value={"aweme_id": "123", "video": {}}) as reader, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["https://www.douyin.com/video/123", "--folder", temporary, "--browser", "chrome"]), 1)
+        self.assertEqual(downloader.call_count, 2)
+        reader.assert_called_once()
+
+    def test_douyin_missing_public_metadata_uses_only_an_allowed_saved_session(self):
+        for mode in ("auto", "none", "blocked", "signed_unavailable"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                settings = root / "settings" / "sessions"
+                settings.mkdir(parents=True)
+                with patch.object(accounts, "directory", return_value=settings):
+                    jar = session.MozillaCookieJar(str(accounts.path_for("douyin.com")))
+                    jar.set_cookie(Cookie(0, "sessionid", "synthetic", None, False, ".douyin.com", True, True,
+                                         "/", True, True, None, True, None, None, {}))
+                    jar.save(ignore_discard=True)
+                    if mode == "blocked":
+                        accounts.set_preferences(blocked=["douyin.com"])
+                    calls = []
+
+                    def download(url, folder, cookie_path=None):
+                        calls.append(cookie_path is not None)
+                        if cookie_path is None or mode == "signed_unavailable":
+                            raise douyin.MediaUnavailable("Douyin did not expose this post's media.")
+                        (folder / "video.mp4").write_bytes(b"video")
+
+                    real_mkdtemp = tempfile.mkdtemp
+
+                    def stage(*args, **kwargs):
+                        return real_mkdtemp(dir=root, prefix=kwargs.get("prefix", "tmp"))
+
+                    with patch.object(cli, "download_douyin", side_effect=download), patch.object(cli.tempfile, "tempdir", str(root)), patch.object(cli.tempfile, "mkdtemp", side_effect=stage), patch.object(cli, "recover_login") as recover, patch.object(accounts, "import_auto") as browser, patch("builtins.input") as prompt, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                        code = cli.main(["https://www.douyin.com/video/123", "--folder", str(root / "output"), "--browser", "none" if mode == "none" else "auto"])
+                    self.assertEqual(code, 0 if mode == "auto" else 1)
+                    self.assertEqual(calls, [False, True] if mode in {"auto", "signed_unavailable"} else [False])
+                    recover.assert_not_called()
+                    browser.assert_not_called()
+                    prompt.assert_not_called()
+
     def test_full_sharing_text_as_words_quoted_text_or_prompt(self):
         text = "3.53 复制打开抖音，看看【笛笛的坐标系的作品】还有比pro20x更有性价比的消费吗？ # cod... https://v.douyin.com/lnufhXLTfmU/ ban:/ :5pm M@J.Iv 01/01"
 
@@ -95,39 +163,17 @@ class ShortVideoTests(unittest.TestCase):
                     else:
                         network.assert_not_called()
 
-    def test_successful_download_hides_authentication_details(self):
+    def test_successful_public_and_browser_downloads_do_not_export_credentials(self):
         item = {"aweme_id": "123", "images": [{"url_list": ["https://p3.douyinpic.com/image~tplv-dy-lqen-new:4510:1626:q80.webp"]}]}
         jpg = b"\xff\xd8\xff" + b"image" * 30
-
-        def prepare(tool, spec, path, domain):
-            jar = session.MozillaCookieJar(str(path))
-            jar.set_cookie(Cookie(0, "sessionid", "synthetic", None, False, ".douyin.com", True, True,
-                                 "/", True, True, None, True, None, None, {}))
-            jar.save(ignore_discard=True)
-            return session.Session("valid", "Valid")
-
-        for mode in ("api", "fallback", "unsafe_api", "anonymous"):
-            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as t, patch.object(cli, "find_tool", return_value="gallery-dl"), patch.object(cli, "prepare_session", side_effect=prepare), patch.object(douyin, "build_opener") as build, patch.object(cli, "import_photos") as photos, contextlib.redirect_stdout(io.StringIO()) as out:
-                responses = [Response(jpg)]
-                if mode == "api":
-                    responses.insert(0, Response(json.dumps({"aweme_detail": item}).encode()))
-                else:
-                    responses.insert(0, Response(page(item)))
-                    if mode == "fallback":
-                        responses.insert(0, Response(b"{}"))
-                    elif mode == "unsafe_api":
-                        unsafe = {"aweme_id": "123", "images": [{"url_list": ["https://p3.douyinpic.com/image~tplv-dy-lqen-new-water:q80.webp"]}]}
-                        responses.insert(0, Response(json.dumps({"aweme_detail": unsafe}).encode()))
-                build.return_value.open.side_effect = responses
-                code = cli.main(["https://www.douyin.com/note/123", "--browser", "none" if mode == "anonymous" else "chrome", "--folder", t])
-                self.assertEqual(code, 0)
-                text = out.getvalue()
-                self.assertNotIn("login validity", text)
-                self.assertNotIn("Session", text)
-                self.assertNotIn("Browser", text)
-                self.assertNotIn("Continuing", text)
-                self.assertNotIn("Public share page", text)
-                self.assertNotIn("browser cookies", text)
+        for mode in ("public", "browser"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary, patch.object(cli, "prepare_session") as export, patch.object(cli, "read_douyin_browser", return_value=item) as reader, patch.object(douyin, "build_opener") as build, patch.object(cli, "import_photos") as photos, contextlib.redirect_stdout(io.StringIO()) as out:
+                build.return_value.open.side_effect = [Response(page(item) if mode == "public" else b"{}"), Response(jpg)]
+                self.assertEqual(cli.main(["https://www.douyin.com/note/123", "--browser", "chrome", "--folder", temporary]), 0)
+                export.assert_not_called()
+                self.assertEqual(reader.call_count, 1 if mode == "browser" else 0)
+                self.assertNotIn("Session", out.getvalue())
+                self.assertNotIn("browser cookies", out.getvalue())
                 photos.assert_not_called()
 
     def test_douyin_ignores_other_posts_and_uses_all_images_in_order(self):
@@ -143,7 +189,7 @@ class ShortVideoTests(unittest.TestCase):
     def test_douyin_prefers_playback_variant_and_rejects_unknown_sources(self):
         original = "https://aweme.snssdk.com/aweme/v1/playwm/?video_id=example&ratio=720p&line=0"
         item = {"aweme_id": "123", "video": {"play_addr": {"url_list": [original]}}}
-        expected = original.replace("/playwm/", "/play/")
+        expected = original.replace("/playwm/", "/play/").replace("ratio=720p", "ratio=1080p")
         self.assertEqual(douyin.media_urls(item), [("video", expected)])
         mp4 = b"\x00\x00\x00\x18ftypmp42" + b"x" * 100
         with tempfile.TemporaryDirectory() as t, patch.object(douyin, "build_opener") as build:
@@ -162,6 +208,31 @@ class ShortVideoTests(unittest.TestCase):
         item["video"]["has_watermark"] = False
         self.assertEqual(douyin.media_urls(item), [("video", url)])
 
+    def test_douyin_selects_highest_quality_gear_not_the_default_playback(self):
+        def play(ratio):
+            return f"https://aweme.snssdk.com/aweme/v1/play/?video_id=example&ratio={ratio}&line=0"
+
+        item = {"aweme_id": "123", "video": {
+            "play_addr": {"url_list": [play("720p")]},
+            "bit_rate": [
+                {"gear_name": "normal_720_0", "bit_rate": 1000000, "play_addr": {"width": 720, "height": 1280, "url_list": [play("720p")]}},
+                {"gear_name": "normal_1080_0", "bit_rate": 2000000, "play_addr": {"width": 1080, "height": 1920, "url_list": [play("1080p")]}},
+                {"gear_name": "normal_4k_0", "bit_rate": 3000000, "play_addr": {"width": 2160, "height": 3840, "url_list": [play("4k")]}}]}}
+        self.assertEqual(douyin.media_urls(item), [("video", play("4k"))])
+        # Equal pixels: the higher declared bitrate wins.
+        item["video"]["bit_rate"] = [
+            {"bit_rate": 900000, "play_addr": {"width": 1080, "height": 1920, "url_list": [play("1080p")]}},
+            {"bit_rate": 1500000, "play_addr": {"width": 1080, "height": 1920, "url_list": [play("1080p") + "1"]}}]
+        self.assertEqual(douyin.media_urls(item), [("video", play("1080p") + "1")])
+        # An unknown host still ranks, but only when the API marks it clean.
+        item["video"]["bit_rate"] = [{"bit_rate": 500000, "play_addr": {"width": 2160, "height": 3840, "url_list": ["https://cdn.test/video.mp4"]}}]
+        with self.assertRaises(RuntimeError):
+            douyin.media_urls(item)
+        item["video"]["has_watermark"] = False
+        self.assertEqual(douyin.media_urls(item), [("video", "https://cdn.test/video.mp4")])
+        # Native fallback keeps the exposed watermarked rendition, not the rewrite.
+        self.assertEqual(douyin.media_urls(item, prefer_clean=False), [("video", "https://cdn.test/video.mp4")])
+
     def test_rejected_douyin_clean_source_keeps_available_native_media(self):
         native_video = "https://aweme.snssdk.com/aweme/v1/playwm/?video_id=example"
         clean_image = "https://p3.douyinpic.com/1~tplv-dy-aweme-images:q75.webp"
@@ -173,7 +244,7 @@ class ShortVideoTests(unittest.TestCase):
                 network.return_value.open.side_effect = [Response(page(item)),
                     HTTPError("https://cdn.test/missing", 404, "missing", {}, None), Response(content)]
                 notes = douyin.download("https://www.douyin.com/video/123", Path(temp))
-                self.assertIn("may contain watermarks", notes[0])
+                self.assertIn("may contain watermarks", notes.notes[0])
                 self.assertEqual(network.return_value.open.call_args.args[0].full_url, native)
                 self.assertEqual(next(Path(temp).iterdir()).read_bytes(), content)
 
@@ -187,7 +258,7 @@ class ShortVideoTests(unittest.TestCase):
                 jar.save()
                 network.return_value.open.side_effect = [Response(json.dumps({"aweme_detail": item}).encode()), share, Response(content)]
                 notes = douyin.download("https://www.douyin.com/video/123", root, root / "cookies.txt")
-                self.assertIn("may contain watermarks", notes[0])
+                self.assertIn("may contain watermarks", notes.notes[0])
                 self.assertEqual((root / "douyin_123_001.mp4").read_bytes(), content)
 
     def test_douyin_bootstraps_visitor_cookie_once_and_downloads_all_photos(self):
@@ -215,6 +286,70 @@ class ShortVideoTests(unittest.TestCase):
             self.assertEqual([p.read_bytes() for p in files], [jpg, jpg])
         self.assertEqual(len(calls), 4)
 
+    def test_douyin_handles_ssr_shell_before_the_visitor_cookie_is_issued(self):
+        shell = ('<script>window._ROUTER_DATA = ' + json.dumps({"loaderData": {
+            "video_(id)/page": {"itemId": "123", "renderInSSR": 1}
+        }}) + ';</script>').encode()
+        item = {"aweme_id": "123", "video": {"play_addr": {"url_list": [
+            "https://aweme.snssdk.com/aweme/v1/play/?video_id=example"
+        ]}}}
+        mp4 = b"\x00\x00\x00\x18ftypmp42" + b"video" * 30
+        calls = []
+
+        def build(processor):
+            class Opener:
+                def open(self, req, **kwargs):
+                    calls.append(req.full_url)
+                    if len(calls) == 1:
+                        return Response(shell)
+                    if len(calls) == 2:
+                        processor.cookiejar.set_cookie(Cookie(0, "ttwid", "visitor", None, False,
+                                                             ".iesdouyin.com", True, True, "/", True,
+                                                             True, None, True, None, None, {}))
+                        return Response(shell)
+                    if len(calls) == 3:
+                        return Response(page(item))
+                    return Response(mp4, headers={"Content-Length": str(len(mp4))})
+            return Opener()
+
+        with tempfile.TemporaryDirectory() as temp, patch.object(douyin, "build_opener", side_effect=build):
+            douyin.download("https://www.douyin.com/video/123", Path(temp))
+            self.assertEqual(next(Path(temp).iterdir()).read_bytes(), mp4)
+        self.assertEqual(calls[:3], ["https://www.iesdouyin.com/share/video/123/"] * 3)
+        self.assertEqual(len(calls), 4)
+
+    def test_douyin_bootstrap_stops_for_checks_other_posts_and_persistent_shells(self):
+        for content, requests in [(b'<html>Verification required</html>', 1),
+                                  (page({"aweme_id": "456"}), 1),
+                                  (b'<script>window._ROUTER_DATA = {"loaderData":{"page":'
+                                   b'{"itemId":"456","renderInSSR":1}}};</script>', 1),
+                                  (b'<script>window._ROUTER_DATA = {"loaderData":{"page":'
+                                   b'{"itemId":"123","renderInSSR":1}}};</script>', 3)]:
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as temp, patch.object(douyin, "build_opener") as network:
+                network.return_value.open.side_effect = lambda *a, **kw: Response(content)
+                with self.assertRaises(douyin.MediaUnavailable):
+                    douyin.download("https://www.douyin.com/video/123", Path(temp))
+                self.assertEqual(network.return_value.open.call_count, requests)
+                self.assertEqual(list(Path(temp).iterdir()), [])
+
+    def test_douyin_preserves_network_and_local_write_failure_reasons(self):
+        item = {"aweme_id": "123", "video": {"play_addr": {"url_list": [
+            "https://aweme.snssdk.com/aweme/v1/play/?video_id=example"
+        ]}}}
+        errors = [(URLError(TimeoutError("timed out")), "timed out"),
+                  (ConnectionResetError(54, "Connection reset by peer"), "Connection reset by peer"),
+                  (IncompleteRead(b"partial", 100), "IncompleteRead"),
+                  (PermissionError(13, "Permission denied"), "Permission denied")]
+        for failure, detail in errors:
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temp, patch.object(douyin, "build_opener") as network:
+                write_failure = isinstance(failure, PermissionError)
+                content = Response(b"\x00\x00\x00\x18ftypmp42" + b"video" * 30)
+                network.return_value.open.side_effect = [Response(page(item)), content if write_failure else failure]
+                with patch.object(Path, "open", side_effect=failure) if write_failure else contextlib.nullcontext(), self.assertRaises(RuntimeError) as result:
+                    douyin.download("https://www.douyin.com/video/123", Path(temp))
+                self.assertIn(detail, str(result.exception))
+                self.assertNotIn("Check your connection", str(result.exception))
+
     def test_douyin_requires_clean_source_for_every_image_before_downloading(self):
         clean = "https://p3.douyinpic.com/image~tplv-dy-lqen-new:4510:1626:q80.webp"
         marked = clean.replace("lqen-new:", "lqen-new-water:")
@@ -226,7 +361,7 @@ class ShortVideoTests(unittest.TestCase):
             jpg = b"\xff\xd8\xff" + b"image" * 20
             build.return_value.open.side_effect = [Response(page(item)), Response(jpg), Response(jpg)]
             notes = douyin.download("https://www.douyin.com/note/123", Path(t))
-            self.assertIn("may contain watermarks", notes[0])
+            self.assertIn("may contain watermarks", notes.notes[0])
             self.assertEqual(build.return_value.open.call_count, 3)
             self.assertEqual(len(list(Path(t).glob('*.jpg'))), 2)
         for url in ("https://p3.douyinpic.com/image~unknown:q80.webp", "https://other.test/image~tplv-dy-lqen-new:q80.webp"):

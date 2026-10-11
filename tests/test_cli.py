@@ -8,11 +8,22 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+from media_stub import uninspected
 
-from linkget import cli
+from linkget import accounts, cli
 
 
 class CommandTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        directory = patch.object(accounts, "directory", return_value=Path(temporary.name) / "sessions")
+        directory.start()
+        self.addCleanup(directory.stop)
+        probe = patch.object(cli, "inspect_files", side_effect=uninspected)
+        probe.start()
+        self.addCleanup(probe.stop)
+
     def test_bare_folder_before_url_uses_current_directory(self):
         from subprocess import CompletedProcess
         def download(command, **kwargs):
@@ -79,7 +90,7 @@ class CommandTests(unittest.TestCase):
     def test_photos_reports_which_files_were_added(self):
         from subprocess import CompletedProcess
         files = [Path("existing.jpg"), Path("new.mp4")]
-        with patch.object(cli, "retain_originals", side_effect=lambda files: files), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, "1:1:2\n", "")):
+        with patch.object(cli, "retain_originals", side_effect=lambda files: files), patch.object(cli, "verify_library_copies"), patch.object(Path, "unlink"), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, "1:1:2\n", "")):
             self.assertEqual(cli.import_photos(files, False), ([files[1]], 1))
         for response in ("1:1:3", "2:0:1:1", "1:1", "invalid"):
             with patch.object(cli, "retain_originals", side_effect=lambda files: files), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, response, "")):
@@ -158,19 +169,27 @@ class CommandTests(unittest.TestCase):
         self.assertIn("brew install gallery-dl", stderr.getvalue())
         run.assert_not_called()
 
+    def test_reddit_missing_video_engine_is_reported_before_download(self):
+        stderr = io.StringIO()
+        with patch.object(cli, "find_tool", side_effect=lambda name: None if name == "yt-dlp" else "tool"), patch.object(cli.subprocess, "run") as run, contextlib.redirect_stderr(stderr):
+            result = cli.main(["https://www.reddit.com/r/test/comments/abc123/post/", "--folder", "/tmp/not-created-linkget", "--browser", "none"])
+        self.assertEqual(result, 1)
+        self.assertIn("brew install yt-dlp", stderr.getvalue())
+        run.assert_not_called()
+
     def test_folder_download_and_failure_preservation(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             downloader = root / "gallery-dl"
             downloader.write_text("#!/bin/sh\nwhile [ \"$1\" != \"--directory\" ]; do shift; done\nshift\nprintf sample > \"$1/sample.jpg\"\nexit \"${LINKGET_TEST_EXIT:-0}\"\n")
             downloader.chmod(0o755)
-            stage = root / "stage"
+            stage = root / "linkget-test"
 
             def make_stage(**kwargs):
                 stage.mkdir()
                 return str(stage)
 
-            with patch.object(cli, "find_tool", return_value=str(downloader)), patch.object(cli.tempfile, "mkdtemp", side_effect=make_stage), patch.object(cli, "import_photos") as photos, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            with patch.object(cli, "find_tool", return_value=str(downloader)), patch.object(cli.tempfile, "tempdir", str(root)), patch.object(cli.tempfile, "mkdtemp", side_effect=make_stage), patch.object(cli, "import_photos") as photos, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 args = ["https://x.com/user/status/123", "--folder", str(root / "output"), "--browser", "none"]
                 self.assertEqual(cli.main(args), 0)
                 self.assertFalse(stage.exists())

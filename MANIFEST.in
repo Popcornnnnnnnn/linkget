@@ -1,5 +1,7 @@
 include README.md LICENSE CHANGELOG.md
 include docs/TESTING.md docs/INSTALL.md docs/WATERMARKS.md docs/WEIBO_IMAGE_AUDIT.md
+include docs/MEDIA_VALIDATION.md docs/READ.md docs/TOUTIAO.md docs/MAC_SHARE.md docs/TRANSLATION_VALIDATION.md
+recursive-include macos *.py *.swift
 recursive-include scripts *.py
-recursive-include tests *.py
+recursive-include tests *.py *.json
 exclude docs/validation.md

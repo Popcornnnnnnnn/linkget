@@ -11,6 +11,7 @@ import time
 import unittest
 from urllib.error import HTTPError
 from unittest.mock import patch
+from media_stub import uninspected
 
 from linkget import accounts, cli, session
 
@@ -22,7 +23,19 @@ def cookie(name, domain, expires=None):
 
 
 class SessionTests(unittest.TestCase):
+    def test_kuaishou_guest_state_never_proves_login(self):
+        for html, expected in [
+            ('{"userInfo":{},"isLogin":false}', "invalid"),
+            ('{"userInfo":{"id":"123"},"isLogin":true}', "valid"),
+            ('{"userInfo":{},"isLogin":"unknown"}', "unverified"),
+        ]:
+            data = session.webpage_login("kuaishou.com", html)
+            self.assertEqual(session.classify_response("kuaishou.com", 200, data).state, expected)
+
     def setUp(self):
+        probe = patch.object(cli, "inspect_files", side_effect=uninspected)
+        probe.start()
+        self.addCleanup(probe.stop)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         mocked = patch.object(accounts, "directory", return_value=Path(temporary.name) / "sessions")

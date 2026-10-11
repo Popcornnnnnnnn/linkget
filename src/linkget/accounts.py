@@ -17,7 +17,15 @@ else:
 
 SITES = {"instagram": "instagram.com", "x": "x.com", "bilibili": "bilibili.com",
          "tiktok": "tiktok.com", "douyin": "douyin.com", "xiaohongshu": "xiaohongshu.com",
-         "weibo": "weibo.com", "youtube": "youtube.com"}
+         "weibo": "weibo.com", "youtube": "youtube.com", "reddit": "reddit.com", "kuaishou": "kuaishou.com",
+         "lofter": "lofter.com", "pixiv": "pixiv.net", "pinterest": "pinterest.com"}
+
+# Public requests are supported, not every post or every quality tier.
+PUBLIC_ACCESS = {
+    "instagram.com", "x.com", "bilibili.com", "tiktok.com", "douyin.com",
+    "xiaohongshu.com", "weibo.com", "youtube.com", "reddit.com",
+    "kuaishou.com", "lofter.com", "pinterest.com", "pixiv.net",
+}
 
 
 def directory():
