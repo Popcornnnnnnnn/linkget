@@ -1,0 +1,75 @@
+"""Exercise the actual browser script against single and incomplete galleries."""
+
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import unittest
+
+
+@unittest.skipUnless(shutil.which("node"), "Node.js is needed for browser-script tests")
+class DouyinBrowserTests(unittest.TestCase):
+    def snapshot(self, *, sources=("https://cdn.example/one.jpg",), counter="",
+                 slides=1, complete=True, width=690, track_children=1,
+                 panel_children=1, panel_class="focusPanel", video=False):
+        fixture = dict(sources=sources, counter=counter, slides=slides,
+                       complete=complete, width=width, track_children=track_children,
+                       panel_children=panel_children, panel_class=panel_class, video=video)
+        script = (Path(__file__).resolve().parents[1] / "src/linkget/douyin_browser.js").read_text()
+        harness = r"""
+const fixture = JSON.parse(process.argv[1]);
+const pictures = fixture.sources.map(src => ({src, currentSrc: src,
+  complete: fixture.complete, naturalWidth: fixture.width}));
+const panel = {children: Array(fixture.panel_children),
+  classList: {contains: name => name === fixture.panel_class}};
+const track = {children: Array(fixture.track_children), parentElement: panel};
+const slides = Array.from({length: fixture.slides}, () => ({parentElement: track,
+  querySelectorAll: selector => selector === 'img' ? pictures : []}));
+const player = {innerText: fixture.counter, querySelectorAll: selector => {
+  if (selector === '.dySwiperSlide img') return pictures;
+  if (selector === '.dySwiperSlide') return slides;
+  if (selector === 'video' && fixture.video) return [{videoWidth: 1920,
+    videoHeight: 1080, readyState: 4, currentSrc: 'https://cdn.example/video.mp4'}];
+  return [];
+}};
+global.document = {querySelector: () => player};
+"""
+        result = subprocess.run([shutil.which("node"), "-e",
+                                 harness + "\nconsole.log(JSON.stringify((" + script + ")()));",
+                                 json.dumps(fixture)], capture_output=True, text=True, check=True)
+        return json.loads(result.stdout)
+
+    def test_reported_single_slide_with_duplicate_rendered_image(self):
+        result = self.snapshot(sources=["https://cdn.example/one.jpg"] * 2)
+        self.assertEqual(result, {"images": [{"url_list": ["https://cdn.example/one.jpg"]}]})
+
+    def test_single_picture_without_counter(self):
+        self.assertEqual(len(self.snapshot()["images"]), 1)
+
+    def test_counterless_gallery_must_have_single_complete_slide(self):
+        cases = [dict(slides=2), dict(track_children=2), dict(panel_children=2),
+                 dict(panel_class="unknown"), dict(complete=False), dict(width=0),
+                 dict(sources=["https://cdn.example/one.jpg", ""]),
+                 dict(sources=["data:image/png;base64,placeholder"]),
+                 dict(sources=["https://cdn.example/one.jpg", "https://cdn.example/two.jpg"])]
+        for case in cases:
+            with self.subTest(case=case):
+                self.assertIsNone(self.snapshot(**case))
+
+    def test_counter_does_not_allow_a_partial_gallery(self):
+        self.assertIsNone(self.snapshot(counter="1/2"))
+
+    def test_complete_gallery_keeps_source_order(self):
+        urls = ["https://cdn.example/two.jpg", "https://cdn.example/one.jpg"]
+        self.assertEqual(self.snapshot(sources=urls, counter="1/2", slides=2,
+                                       track_children=2, panel_children=3),
+                         {"images": [{"url_list": [url]} for url in urls]})
+
+    def test_unknown_gallery_and_video_paths(self):
+        self.assertIsNone(self.snapshot(sources=[]))
+        self.assertEqual(self.snapshot(sources=[], video=True), {"video": {"play_addr": {
+            "url_list": ["https://cdn.example/video.mp4"], "width": 1920, "height": 1080}}})
+
+
+if __name__ == "__main__":
+    unittest.main()

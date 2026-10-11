@@ -37,7 +37,7 @@ on run argv
                 end if
                 delay 0.3
             end repeat
-            error "Chrome did not expose the complete post media. Check login or verification in Chrome."
+            error "Chrome did not expose a complete media set. Check that the post loads normally; its gallery may be incomplete or use an unsupported layout."
         on error messageText number messageNumber
             try
                 if createdTab then

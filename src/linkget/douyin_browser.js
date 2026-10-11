@@ -5,7 +5,22 @@ function snapshot() {
     .map(image => image.currentSrc || image.src).filter(Boolean))];
   if (images.length) {
     const counter = player.innerText.match(/(?:^|\n)(\d+)\/(\d+)(?:\n|$)/);
-    if (!counter || images.length !== Number(counter[2])) return null;
+    if (counter) {
+      if (images.length !== Number(counter[2])) return null;
+    } else {
+      // Single-picture posts omit the counter. Accept only the fully loaded
+      // single-slide panel, not a lone loaded image from a larger gallery.
+      const slides = Array.from(player.querySelectorAll('.dySwiperSlide'));
+      if (slides.length !== 1 || images.length !== 1) return null;
+      const slide = slides[0];
+      const track = slide.parentElement;
+      const panel = track && track.parentElement;
+      if (!track || track.children.length !== 1 || !panel
+          || !panel.classList.contains('focusPanel') || panel.children.length !== 1) return null;
+      const pictures = Array.from(slide.querySelectorAll('img'));
+      if (!pictures.length || pictures.some(image => !image.complete || !image.naturalWidth
+          || !/^https:/.test(image.currentSrc || image.src))) return null;
+    }
     return {images: images.map(url => ({url_list: [url]}))};
   }
   const video = Array.from(player.querySelectorAll('video')).find(v => v.videoWidth && /^https:/.test(v.currentSrc));
