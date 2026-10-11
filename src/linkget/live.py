@@ -70,7 +70,7 @@ def save_pairs(pairs, folder):
         while True:
             stem = image.stem + (f"-{suffix}" if suffix else "")
             targets = [folder / (stem + image.suffix), folder / (stem + video.suffix)]
-            if all(p.is_file() for p in targets) and all(digest(a) == digest(b) for a, b in zip((image, video), targets)):
+            if all(p.is_file() for p in targets) and all(digest(a, fresh=True) == digest(b, fresh=True) for a, b in zip((image, video), targets)):
                 skipped += 2
                 break
             if any(p.exists() for p in targets):
@@ -83,6 +83,8 @@ def save_pairs(pairs, folder):
                         created.append(target)
                         with source.open("rb") as input_file:
                             shutil.copyfileobj(input_file, output)
+                    if digest(source, fresh=True) != digest(target, fresh=True):
+                        raise RuntimeError("Saved Live Photo verification failed; temporary files have been kept.")
                 saved.extend((image, video))
                 break
             except BaseException:

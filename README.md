@@ -84,10 +84,10 @@ linkget recover                      # retained locations and recovery status
 linkget recover TASK --folder ~/Downloads
 linkget recover TASK --photos --item 2
 linkget recover TASK --verify         # no import; verify existing Photos copies
-linkget retry TASK --redownload       # fetch again, preserving older files
+linkget retry TASK --redownload       # fetch again; old staging is kept until success
 ```
 
-Replace `TASK` with the printed ID. Recovery refuses incomplete, missing or changed media; it does not silently import a partial set. A folder or Photos override applies to that recovery command. Older partial files remain available at the locations shown by `recover`. Files retained by older builds without a task receipt are listed but kept; download their original link again to obtain verified Photos cleanup. Saving a previously failed Photos task to a folder does not delete resources that Photos may still reference; its import receipt remains available to `recover TASK --verify`.
+Replace `TASK` with the printed ID. Recovery refuses incomplete, missing or changed media; it does not silently import a partial set. A folder or Photos override applies to that recovery command. Since `0.2.1.dev20`, a successful same-item retry/recovery removes its unchanged tracked earlier temporary directories after complete media have been saved and verified. Folder copies are checked against the source bytes; Photos imports must pass managed-original verification. Failed/cancelled retries keep older files. Changed or newly added files, symbolic links, another task's sources and destinations inside a staging directory are kept with a notice. Files retained by older builds without a task receipt are listed but kept; download their original link again to obtain verified Photos cleanup. Saving a previously failed Photos task to a folder does not delete resources that Photos may still reference; its import receipt remains available to `recover TASK --verify`.
 
 Receipts are kept in `~/Library/Application Support/linkget/jobs/` on macOS, with user-only directory/file permissions. Unfinished tasks retain their original share text or link, including access tokens needed to retry, plus a selected browser profile path if supplied. They contain no browser cookies. Successful items drop their share text; do not share unfinished task receipts. Optional `--report` files continue to exclude share tokens and local recovery paths. Retrying with `--report` reports only the retried subset.
 

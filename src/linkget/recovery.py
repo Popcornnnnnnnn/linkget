@@ -4,12 +4,12 @@ from contextlib import nullcontext
 import subprocess
 
 if __package__:
-    from . import jobs
+    from . import jobs, staging
     from .photos import originals_directory, verify_library_copies, digest
     from .media import inspect_files
     from .live import prepare_pairs, save_pairs
 else:
-    import jobs
+    import jobs, staging
     from photos import originals_directory, verify_library_copies, digest
     from media import inspect_files
     from live import prepare_pairs, save_pairs
@@ -73,6 +73,7 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
             row = journal.data["items"][index - 1]
             try:
                 with jobs.item(journal, index):
+                    staging.remember_earlier(status)
                     if args.verify:
                         receipt = row.get("receipt")
                         if not receipt or not receipt.get("identifiers"):
@@ -130,10 +131,12 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                         else:
                             saved, skipped = import_photos(files, args.date_now)
                         # All output saves passed; remove only the exact checked downloads.
-                        remove_verified(ready["files"], stage)
-                        for pair in ready.get("prepared", []):
-                            remove_verified(pair, stage)
+                        if not staging.contains(stage, args.folder):
+                            remove_verified(ready["files"], stage)
+                            for pair in ready.get("prepared", []):
+                                remove_verified(pair, stage)
                         status("Recovered", f"Item {index} · {len(saved)} saved · {skipped} duplicates")
+                    staging.cleanup(status, args.folder)
                     jobs.record(status="completed")
             except (OSError, ValueError, RuntimeError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
                 failures += 1

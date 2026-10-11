@@ -1,5 +1,4 @@
 """Non-overwriting folder saves and verified Photos imports."""
-import filecmp
 from pathlib import Path
 import re
 import shutil
@@ -24,7 +23,7 @@ def save_folder(files, folder):
         target = folder / source.name
         suffix = 1
         while True:
-            if target.is_file() and filecmp.cmp(source, target, shallow=False):
+            if target.is_file() and jobs.digest(source, fresh=True) == jobs.digest(target, fresh=True):
                 skipped += 1
                 break
             created = False
@@ -33,6 +32,8 @@ def save_folder(files, folder):
                     created = True
                     with source.open("rb") as input_file:
                         shutil.copyfileobj(input_file, output)
+                if jobs.digest(target, fresh=True) != jobs.digest(source, fresh=True):
+                    raise RuntimeError("Saved file verification failed; temporary files have been kept.")
                 saved.append(source)
                 break
             except FileExistsError:

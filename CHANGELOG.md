@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1.dev20
+
+- After a same-item retry/recovery has saved and verified complete media, remove its unchanged tracked earlier staging directories, including partial downloads, metadata and logs. Keep files on failure/cancellation, content changes, symbolic links, destination overlap or uncertain ownership.
+- Verify folder and Live Photo copies before cleanup; retain the existing managed Photos original verification requirement.
+
 ## 0.2.1.dev19
 
 - Fix Instagram Reel and gallery completeness when gallery-dl counts optional standalone audio that is not saved. Count the source photos/videos before downloading, and still reject missing source media or incomplete downloaded sets.

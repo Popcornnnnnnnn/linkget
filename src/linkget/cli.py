@@ -14,7 +14,7 @@ import tempfile
 import time
 
 if __package__:
-    from . import accounts, jobs, destinations, preflight, recovery
+    from . import accounts, jobs, destinations, preflight, recovery, staging
     from .runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from .output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description
     from .batch import run_batch
@@ -33,7 +33,7 @@ if __package__:
     from .media import DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
     from .live import prepare_pairs, save_pairs
 else:  # Homebrew launches this file directly.
-    import accounts, jobs, destinations, preflight, recovery
+    import accounts, jobs, destinations, preflight, recovery, staging
     from runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description
     from batch import run_batch
@@ -689,11 +689,12 @@ def download(args, setup_results, records=None, media_consumer=None):
                 return result
         url = args.link or (input("  Paste a link (no quotes needed): ") if sys.stdin.isatty() else sys.stdin.read())
         if current:
+            staging.remember_earlier(status)
             previous = journal.data["items"][index - 1]
             if previous.get("stage"):
                 stages = previous.get("previous_stages", []) + [previous["stage"]]
                 jobs.record(previous_stages=list(dict.fromkeys(stages)))
-        jobs.record(input=url, status="running", ready=None, receipt=None, stage=None)
+        jobs.record(input=url, status="running", ready=None, receipt=None, stage=None, stage_identity=None)
         started = time.monotonic()
         with activity("Resolving") if any(host in url for host in ("v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/", "xhslink.com", "xhslink.cn", "t.cn/")) else nullcontext():
             url = normalize_link(url)
@@ -746,7 +747,7 @@ def download(args, setup_results, records=None, media_consumer=None):
             if accounts.copy_saved(domain, candidate):
                 cookie_path = candidate
         stage = Path(tempfile.mkdtemp(prefix="linkget-"))
-        jobs.record(stage=str(stage.resolve()))
+        jobs.record(stage=str(stage.resolve()), stage_identity=staging.identity(stage))
         tried_saved = cookie_path is not None
         tried_browser = used_browser or domain in setup_results
         browser_item = None
@@ -950,7 +951,8 @@ def download(args, setup_results, records=None, media_consumer=None):
                 summary = f"{saved_description(saved)} · {format_size(sum(path.stat().st_size for path in saved))}"
             else:
                 summary = "No new files"
-            shutil.rmtree(stage)
+            staging.remember(stage, journal.data["items"][index - 1].get("stage_identity") if current else None)
+            staging.cleanup(status, folder)
             stage = None
         status("Done", f"{summary} · {time.monotonic() - started:.1f}s", "32")
         if skipped:
@@ -985,6 +987,10 @@ def download(args, setup_results, records=None, media_consumer=None):
                 for metadata in stage.glob("*/*.json"):
                     metadata.unlink(missing_ok=True)
             if media_consumer is None:
+                try:
+                    staging.remember(stage, journal.data["items"][index - 1].get("stage_identity") if current else None)
+                except (OSError, ValueError, RuntimeError) as error:
+                    status("Files kept", f"Temporary files could not be recorded for cleanup: {error}", "33", stream=sys.stderr)
                 status("Files kept", str(stage), "33", stream=sys.stderr)
 
 

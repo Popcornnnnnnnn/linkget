@@ -8,7 +8,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from linkget import accounts, batch, cli, jobs, photos, recovery
+from linkget import accounts, batch, cli, destinations, jobs, photos, recovery
 from media_stub import uninspected
 
 URL = "https://www.pixiv.net/artworks/"
@@ -91,11 +91,172 @@ class RecoveryTests(unittest.TestCase):
 
     def test_retry_reuses_a_complete_failed_save_without_browser_or_download(self):
         task = self.failed_save()
+        stage = Path(task.data["items"][0]["stage"])
         with patch.object(cli, "download_pixiv") as download, patch.object(cli, "first_run") as setup:
             self.assertEqual(self.run_cli("retry", task.identifier)[0], 0)
         download.assert_not_called()
         setup.assert_not_called()
         self.assertTrue((self.root / "out/1.jpg").exists())
+        self.assertFalse(stage.exists())
+
+    def partial_task(self):
+        def partial(url, folder, cookies):
+            (folder / "1.jpg.part").write_bytes(b"partial")
+            raise RuntimeError("interrupted")
+        with patch.object(cli, "download_pixiv", side_effect=partial):
+            self.assertEqual(self.run_cli(URL + "1", "--folder", str(self.root / "out"), "--browser", "none")[0], 1)
+        return self.task(), partial
+
+    def test_repeated_partial_failures_clean_only_after_verified_retry_success(self):
+        task, partial = self.partial_task()
+        first = Path(task.data["items"][0]["stage"])
+        with patch.object(cli, "download_pixiv", side_effect=partial):
+            self.assertEqual(self.run_cli("retry", task.identifier)[0], 1)
+        second = Path(jobs.Journal.load(task.identifier).data["items"][0]["stage"])
+        self.assertTrue(first.exists())
+        self.assertTrue(second.exists())
+        with patch.object(cli, "download_pixiv", side_effect=self.downloaded):
+            self.assertEqual(self.run_cli("retry", task.identifier)[0], 0)
+        row = jobs.Journal.load(task.identifier).data["items"][0]
+        self.assertEqual((self.root / "out/1.jpg").read_bytes(), (URL + "1").encode())
+        self.assertFalse(first.exists())
+        self.assertFalse(second.exists())
+        self.assertEqual(row["previous_stages"], [])
+        self.assertEqual(row["stage_snapshots"], {})
+
+    def test_changed_added_or_linked_old_files_are_kept_after_success(self):
+        for kind in ("changed", "added", "symlink", "directory_symlink"):
+            with self.subTest(kind=kind):
+                task, _ = self.partial_task()
+                old = Path(task.data["items"][0]["stage"])
+                external = self.root / "personal.txt"
+                external.write_bytes(b"keep")
+                if kind == "changed":
+                    (old / "media/1.jpg.part").write_bytes(b"changed")
+                elif kind == "added":
+                    (old / "personal.txt").write_bytes(b"keep")
+                elif kind == "symlink":
+                    (old / "link").symlink_to(external)
+                else:
+                    (old / "link").symlink_to(self.root / "settings", target_is_directory=True)
+                with patch.object(cli, "download_pixiv", side_effect=self.downloaded):
+                    code, out, _ = self.run_cli("retry", task.identifier)
+                self.assertEqual(code, 0)
+                self.assertTrue(old.exists())
+                self.assertEqual(external.read_bytes(), b"keep")
+                self.assertIn("Files kept", out)
+
+    def test_destination_corruption_never_cleans_previous_failure(self):
+        task, _ = self.partial_task()
+        old = Path(task.data["items"][0]["stage"])
+        with patch.object(cli, "download_pixiv", side_effect=self.downloaded), patch.object(destinations.shutil, "copyfileobj", side_effect=lambda src, dst: dst.write(b"corrupt")):
+            code, _, err = self.run_cli("retry", task.identifier)
+        self.assertEqual(code, 1)
+        self.assertIn("verification failed", err)
+        self.assertTrue(old.exists())
+        self.assertFalse((self.root / "out/1.jpg").exists())
+
+    def test_cancelled_retry_keeps_all_previous_files(self):
+        task, _ = self.partial_task()
+        old = Path(task.data["items"][0]["stage"])
+        with patch.object(cli, "download_pixiv", side_effect=KeyboardInterrupt):
+            self.assertEqual(self.run_cli("retry", task.identifier)[0], 130)
+        self.assertTrue(old.exists())
+
+    def test_batch_success_does_not_clean_the_other_failed_item(self):
+        def partial(url, folder, cookies):
+            (folder / "partial.jpg.part").write_bytes(b"partial")
+            raise RuntimeError("interrupted")
+        with patch.object(cli, "download_pixiv", side_effect=partial):
+            self.run_cli("batch", URL + "1", URL + "2", "--folder", str(self.root / "out"), "--browser", "none")
+        task = self.task()
+        old = [Path(row["stage"]) for row in task.data["items"]]
+        def retry(url, folder, cookies):
+            if url.endswith("2"):
+                partial(url, folder, cookies)
+            else:
+                self.downloaded(url, folder, cookies)
+        with patch.object(cli, "download_pixiv", side_effect=retry):
+            self.assertEqual(self.run_cli("retry", task.identifier)[0], 1)
+        self.assertFalse(old[0].exists())
+        self.assertTrue(old[1].exists())
+
+    def test_replaced_root_and_paths_outside_temp_base_are_kept(self):
+        task, _ = self.partial_task()
+        old = Path(task.data["items"][0]["stage"])
+        moved = self.root / "kept-original"
+        old.rename(moved)
+        old.mkdir()
+        (old / "personal.txt").write_bytes(b"keep")
+        outside = self.root / "elsewhere/linkget-personal"
+        outside.mkdir(parents=True)
+        (outside / "personal.txt").write_bytes(b"keep")
+        task.data["items"][0]["previous_stages"] = [str(outside)]
+        task.write()
+        with patch.object(cli, "download_pixiv", side_effect=self.downloaded):
+            self.assertEqual(self.run_cli("retry", task.identifier)[0], 0)
+        self.assertEqual((old / "personal.txt").read_bytes(), b"keep")
+        self.assertEqual((outside / "personal.txt").read_bytes(), b"keep")
+        self.assertTrue(moved.exists())
+
+    def test_verified_redownload_removes_unchanged_complete_old_set(self):
+        task = self.failed_save()
+        old = Path(task.data["items"][0]["stage"])
+        with patch.object(cli, "download_pixiv", side_effect=self.downloaded):
+            self.assertEqual(self.run_cli("retry", task.identifier, "--redownload")[0], 0)
+        self.assertFalse(old.exists())
+
+    def test_nested_recovery_destination_is_preserved(self):
+        task = self.failed_save()
+        stage = Path(task.data["items"][0]["stage"])
+        target = stage / "media"
+        self.assertEqual(self.run_cli("recover", task.identifier, "--folder", str(target))[0], 0)
+        self.assertEqual((target / "1.jpg").read_bytes(), (URL + "1").encode())
+        self.assertTrue(stage.exists())
+
+    def test_other_task_stage_reference_blocks_cleanup(self):
+        task, _ = self.partial_task()
+        old = Path(task.data["items"][0]["stage"])
+        other = self.failed_save()
+        other.data["items"][0]["previous_stages"] = [str(old)]
+        other.write()
+        with patch.object(cli, "download_pixiv", side_effect=self.downloaded):
+            self.assertEqual(self.run_cli("retry", task.identifier)[0], 0)
+        self.assertTrue(old.exists())
+
+    def test_legacy_partial_receipt_without_ownership_record_is_kept(self):
+        task, _ = self.partial_task()
+        row = task.data["items"][0]
+        old = Path(row["stage"])
+        row.pop("stage_snapshots")
+        row.pop("stage_identity")
+        task.write()
+        with patch.object(cli, "download_pixiv", side_effect=self.downloaded):
+            self.assertEqual(self.run_cli("retry", task.identifier)[0], 0)
+        self.assertTrue(old.exists())
+
+    def test_photos_rejection_keeps_earlier_files_until_managed_copy_verifies(self):
+        from subprocess import CompletedProcess
+        task, _ = self.partial_task()
+        old = Path(task.data["items"][0]["stage"])
+        identifier = "90FA4F22-C80E-43F2-A2AF-FE5BA03A989E/L0/001"
+        library = self.root / "Test.photoslibrary"
+        managed = library / "originals/9/90FA4F22-C80E-43F2-A2AF-FE5BA03A989E.jpg"
+        managed.parent.mkdir(parents=True)
+        task.data["options"].pop("folder")
+        task.write()
+        with patch.object(cli.sys, "platform", "darwin"), patch.object(cli, "download_pixiv", side_effect=self.downloaded), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, "1:0:1\n" + identifier, "")), patch.object(photos, "library_directory", return_value=library):
+            self.assertEqual(self.run_cli("retry", task.identifier)[0], 1)
+        self.assertTrue(old.exists())
+        row = jobs.Journal.load(task.identifier).data["items"][0]
+        latest = Path(row["stage"])
+        source = Path(row["receipt"]["files"][0]["path"])
+        managed.write_bytes(source.read_bytes())
+        with patch.object(cli.sys, "platform", "darwin"), patch.object(photos, "library_directory", return_value=library):
+            self.assertEqual(self.run_cli("recover", task.identifier, "--verify")[0], 0)
+        self.assertFalse(old.exists())
+        self.assertFalse(latest.exists())
+        self.assertEqual(managed.read_bytes(), (URL + "1").encode())
 
     def test_redownload_keeps_changed_old_files_and_records_their_location(self):
         task = self.failed_save()

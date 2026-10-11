@@ -183,13 +183,13 @@ class CommandTests(unittest.TestCase):
             downloader = root / "gallery-dl"
             downloader.write_text("#!/bin/sh\nwhile [ \"$1\" != \"--directory\" ]; do shift; done\nshift\nprintf sample > \"$1/sample.jpg\"\nexit \"${LINKGET_TEST_EXIT:-0}\"\n")
             downloader.chmod(0o755)
-            stage = root / "stage"
+            stage = root / "linkget-test"
 
             def make_stage(**kwargs):
                 stage.mkdir()
                 return str(stage)
 
-            with patch.object(cli, "find_tool", return_value=str(downloader)), patch.object(cli.tempfile, "mkdtemp", side_effect=make_stage), patch.object(cli, "import_photos") as photos, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            with patch.object(cli, "find_tool", return_value=str(downloader)), patch.object(cli.tempfile, "tempdir", str(root)), patch.object(cli.tempfile, "mkdtemp", side_effect=make_stage), patch.object(cli, "import_photos") as photos, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 args = ["https://x.com/user/status/123", "--folder", str(root / "output"), "--browser", "none"]
                 self.assertEqual(cli.main(args), 0)
                 self.assertFalse(stage.exists())

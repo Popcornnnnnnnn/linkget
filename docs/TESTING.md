@@ -4,6 +4,7 @@ Automated tests use temporary directories, synthetic sessions and mocked Photos 
 
 Covered behaviors include:
 
+- Same-item retry cleanup after repeated partial failures, complete-set recovery and verified Photos originals; cancelled/failed saves, corrupt destination copies, edited/added files, symbolic links, replaced/outside roots, another task's sources and nested destinations retain their files;
 - Instagram visual-source counts exclude optional standalone music; Reel and mixed-gallery tests use the real gallery-dl extractor, and missing source/downloaded media still fail completeness checks;
 - first-use connection, skip, denied access, explicit browser/profile selection, and connecting a site before a download;
 - missing/expired/rejected sessions versus network errors, parallel checks, logout and explicit reconnection;

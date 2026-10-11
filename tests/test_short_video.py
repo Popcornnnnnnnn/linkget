@@ -93,9 +93,9 @@ class ShortVideoTests(unittest.TestCase):
                     real_mkdtemp = tempfile.mkdtemp
 
                     def stage(*args, **kwargs):
-                        return real_mkdtemp(dir=root)
+                        return real_mkdtemp(dir=root, prefix=kwargs.get("prefix", "tmp"))
 
-                    with patch.object(cli, "download_douyin", side_effect=download), patch.object(cli.tempfile, "mkdtemp", side_effect=stage), patch.object(cli, "recover_login") as recover, patch.object(accounts, "import_auto") as browser, patch("builtins.input") as prompt, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    with patch.object(cli, "download_douyin", side_effect=download), patch.object(cli.tempfile, "tempdir", str(root)), patch.object(cli.tempfile, "mkdtemp", side_effect=stage), patch.object(cli, "recover_login") as recover, patch.object(accounts, "import_auto") as browser, patch("builtins.input") as prompt, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                         code = cli.main(["https://www.douyin.com/video/123", "--folder", str(root / "output"), "--browser", "none" if mode == "none" else "auto"])
                     self.assertEqual(code, 0 if mode == "auto" else 1)
                     self.assertEqual(calls, [False, True] if mode in {"auto", "signed_unavailable"} else [False])
