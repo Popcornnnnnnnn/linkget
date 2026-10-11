@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -213,6 +214,9 @@ class ToutiaoTests(unittest.TestCase):
             self.assertTrue((root / 'out/content.json').exists())
 
     def test_rendered_reader_reads_only_matching_dom_content(self):
+        node = shutil.which('node')
+        if node is None:
+            self.skipTest('Node.js is required for the offline DOM fixture')
         script = (Path(toutiao.__file__).parent / 'toutiao_browser.js').read_text()
         cases = [('video', 'https://v9-web.toutiaovod.com/video.mp4', 38.4), ('video', '', 38.4)]
         for kind, src, duration in cases:
@@ -220,7 +224,7 @@ class ToutiaoTests(unittest.TestCase):
             code += 'const document={querySelector:s=>s==="h1"?{innerText:"展开\\nTitle"}:s==="video"?'
             code += json.dumps({'currentSrc': src, 'duration': duration, 'textTracks': []}) + ':null};\n'
             code += 'process.stdout.write(JSON.stringify((' + script + ')()));'
-            result = subprocess.run(['/opt/homebrew/bin/node', '-'], input=code, text=True, capture_output=True, check=True)
+            result = subprocess.run([node, '-'], input=code, text=True, capture_output=True, check=True)
             data = json.loads(result.stdout)
             self.assertEqual(data['title'], 'Title') if src else self.assertIsNone(data)
 

@@ -3,6 +3,7 @@
 ## 0.2.1.dev19
 
 - Fix Instagram Reel and gallery completeness when gallery-dl counts optional standalone audio that is not saved. Count the source photos/videos before downloading, and still reject missing source media or incomplete downloaded sets.
+- Run the real Instagram extractor regression cases in CI, and find Node.js on PATH for the offline DOM test on both Linux and macOS.
 
 ## 0.2.1.dev17
 
