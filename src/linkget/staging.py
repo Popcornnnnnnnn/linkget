@@ -49,6 +49,8 @@ def remember(path, expected_identity=None):
     journal, index = current
     row = journal.data["items"][index - 1]
     key = str(Path(path).resolve())
+    if not isinstance(row.get("stage_snapshots", {}), dict):
+        raise ValueError("The temporary cleanup record is invalid")
     snapshots = dict(row.get("stage_snapshots", {}))
     if key in snapshots:
         return
@@ -110,6 +112,9 @@ def cleanup(status, folder=None):
         status("Files kept", "Could not check other task receipts before cleanup", "33")
         return
     removed = 0
+    if not isinstance(row.get("stage_snapshots", {}), dict):
+        status("Files kept", "The temporary cleanup record is invalid", "33")
+        return
     snapshots = dict(row.get("stage_snapshots", {}))
     for path in paths:
         if not Path(path).exists() and not Path(path).is_symlink():
@@ -120,11 +125,20 @@ def cleanup(status, folder=None):
             if any(target == root or root in target.parents for target in protected):
                 raise ValueError("The temporary folder contains a save destination or another task's files")
             record = snapshots.get(str(root))
-            if record is None or identity(root) != record["identity"]:
+            if (not isinstance(record, dict) or identity(root) != record.get("identity")
+                    or not isinstance(record.get("files"), dict) or not isinstance(record.get("directories"), list)):
                 raise ValueError("The temporary folder has no matching ownership record")
             files, directories = _inventory(root)
+            allowed_directories = set(record["directories"])
+            # Recovery can create new paired exports. Their checked media are
+            # removed before this call, leaving known empty output directories.
+            for pair in (row.get("ready") or {}).get("prepared", []):
+                for item in pair:
+                    target = Path(item["path"]).resolve()
+                    if root in target.parents:
+                        allowed_directories.update(str(parent) for parent in target.relative_to(root).parents if str(parent) != ".")
             if (any(record["files"].get(name) != checksum for name, checksum in files.items())
-                    or any(name not in record["directories"] for name in directories)):
+                    or any(name not in allowed_directories for name in directories)):
                 raise ValueError("The temporary folder contains changed or newly added files")
             if identity(root) != record["identity"]:
                 raise ValueError("The temporary folder was replaced")
