@@ -108,6 +108,34 @@ class ReadingFeatures(unittest.TestCase):
         model.write_bytes(b'new model')
         self.assertNotEqual(key, read_store.cache_key('source?p=1', 'en', model, 'auto', False))
 
+    def test_small_chunk_boundary_overrun_is_recorded_clipped_and_reusable(self):
+        video=self.root/'boundary.mp4';video.write_bytes(b'input');model=self.root/'model.bin';model.write_bytes(b'model')
+        folder=self.root/'boundary';folder.mkdir();calls=[]
+        def run(argv,**kwargs):
+            if argv[0]=='ffprobe':return subprocess.CompletedProcess(argv,0,json.dumps({'format':{'duration':'1200'},'streams':[{'codec_type':'audio'}]}))
+            if argv[0]=='whisper-cli':
+                calls.append(argv);base=Path(argv[argv.index('-of')+1])
+                base.with_suffix('.json').write_text(json.dumps({'transcription':[{'text':'Boundary speech','offsets':{'from':599040,'to':601040}}]}))
+            return subprocess.CompletedProcess(argv,0)
+        with patch.object(read_asr.shutil,'which',side_effect=lambda n:n),patch.object(read_asr.subprocess,'run',side_effect=run):
+            result=read_asr.transcribe(video,folder,model)
+            self.assertEqual([s['end'] for s in result['segments']],[600,1200])
+            self.assertEqual([a['raw_end'] for a in result['timestamp_adjustments']],[601.04,1201.04])
+            again=read_asr.transcribe(video,folder,model)
+            self.assertEqual(again['timestamp_adjustments'],result['timestamp_adjustments']);self.assertEqual(len(calls),2)
+
+    def test_negative_past_boundary_and_large_timestamp_errors_still_fail(self):
+        video=self.root/'bad.mp4';video.write_bytes(b'input');model=self.root/'model.bin';model.write_bytes(b'model')
+        for index,(start,end) in enumerate([(-1,1000),(600000,601000),(599000,602010)]):
+            folder=self.root/f'bad-{index}';folder.mkdir()
+            def run(argv,**kwargs):
+                if argv[0]=='ffprobe':return subprocess.CompletedProcess(argv,0,json.dumps({'format':{'duration':'600'},'streams':[{'codec_type':'audio'}]}))
+                if argv[0]=='whisper-cli':
+                    base=Path(argv[argv.index('-of')+1]);base.with_suffix('.json').write_text(json.dumps({'transcription':[{'text':'Speech','offsets':{'from':start,'to':end}}]}))
+                return subprocess.CompletedProcess(argv,0)
+            with patch.object(read_asr.shutil,'which',side_effect=lambda n:n),patch.object(read_asr.subprocess,'run',side_effect=run):
+                with self.assertRaisesRegex(RuntimeError,'invalid text/timestamps'):read_asr.transcribe(video,folder,model)
+
     def test_exports_preserve_independent_video_timelines_and_refuse_symlinks(self):
         folder = self.root / 'output'
         folder.mkdir()

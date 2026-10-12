@@ -227,9 +227,29 @@ def merge_tracks(streams,folder,expected_duration):
             **({'transfers':transfers} if all(isinstance(t,dict) for t in transfers.values()) else {})}
 
 
-def read(url, folder, page=None, model=None, keep_media=False, language='zh'):
+def prepare_checkpoint_resume(folder):
+    """Validate the entire generated checkpoint tree before cleaning failed ASR work."""
+    if folder.is_symlink() or not folder.is_dir():raise ValueError('A real checkpoint folder is required.')
+    working=[]
+    for child in folder.iterdir():
+        if child.is_symlink() or not child.is_dir():raise ValueError('Unknown incomplete content evidence; refusing checkpoint resume.')
+        if child.name=='chunks':
+            if any(p.is_symlink() or not p.is_file() or not re.fullmatch(r'[0-9a-f]{64}\.json',p.name) for p in child.iterdir()):
+                raise ValueError('Unknown checkpoint evidence; refusing resume.')
+        elif re.fullmatch(r'chunk-\d{4}',child.name):
+            files=list(child.iterdir())
+            if any(p.is_symlink() or not p.is_file() or p.name not in ('audio.wav','transcript.json','transcript.txt') for p in files):
+                raise ValueError('Unknown ASR work evidence; refusing resume.')
+            working.append((child,files))
+        else:raise ValueError('Unknown incomplete content evidence; refusing checkpoint resume.')
+    for child,files in working:
+        for p in files:p.unlink()
+        child.rmdir()
+
+
+def read(url, folder, page=None, model=None, keep_media=False, language='zh',resume_checkpoints=False):
     url = canonical(url)
-    if folder.exists():
+    if folder.exists() and not resume_checkpoints:
         raise ValueError('The content folder already exists; choose a new folder to preserve prior evidence.')
     if page is not None:
         item = validate_page(url, page)
@@ -239,7 +259,8 @@ def read(url, folder, page=None, model=None, keep_media=False, language='zh'):
         raise ValueError('Videos need --transcribe --whisper-model; title-only content is not summary-ready.')
     if item['kind'] == 'video' and (not model.is_file() or not all(shutil.which(t) for t in ('ffmpeg', 'ffprobe', 'whisper-cli'))):
         raise RuntimeError('Check the existing whisper model and transcription tools before fetching media.')
-    folder.mkdir(parents=True, mode=0o700)
+    if folder.exists():prepare_checkpoint_resume(folder)
+    else:folder.mkdir(parents=True, mode=0o700)
     item['send_enabled'] = False
     output = folder / 'content.json'
     try:

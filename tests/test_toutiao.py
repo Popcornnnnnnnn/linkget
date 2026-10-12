@@ -228,6 +228,19 @@ class ToutiaoTests(unittest.TestCase):
             with self.assertRaises(ValueError):toutiao.cleanup_media(root)
             self.assertEqual((root / 'model.bin').read_text(), 'evidence')
 
+    def test_checkpoint_resume_keeps_checked_json_and_cleans_only_known_failed_work(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);chunks=root/'chunks';chunks.mkdir();checkpoint=chunks/('a'*64+'.json');checkpoint.write_text('{}')
+            working=root/'chunk-0001';working.mkdir()
+            for name in ('audio.wav','transcript.json','transcript.txt'):(working/name).write_text('generated')
+            unknown=root/'unknown.txt';unknown.write_text('keep')
+            with self.assertRaises(ValueError):toutiao.prepare_checkpoint_resume(root)
+            self.assertTrue((working/'audio.wav').exists());self.assertTrue(unknown.exists())
+            unknown.unlink();toutiao.prepare_checkpoint_resume(root)
+            self.assertFalse(working.exists());self.assertEqual(checkpoint.read_text(),'{}')
+            checkpoint.unlink();checkpoint.symlink_to(root.parent/'outside.json')
+            with self.assertRaises(ValueError):toutiao.prepare_checkpoint_resume(root)
+
     def test_completed_content_removes_duplicate_checkpoints_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);chunks=root/'chunks';chunks.mkdir()
