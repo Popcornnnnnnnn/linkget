@@ -18,6 +18,24 @@ from urllib.request import Request, urlopen
 
 HOSTS = {'toutiao.com', 'www.toutiao.com', 'm.toutiao.com'}
 INTERMEDIATES = ('source.mp4', 'source-video.mp4', 'source-audio.m4a', 'audio.wav', 'transcript.txt', 'transcript.json')
+MAX_MEDIA_BYTES = 512 * 1024 * 1024
+MIN_TRANSFER_SECONDS = 60
+MAX_TRANSFER_SECONDS = 600
+TRANSFER_BYTES_PER_SECOND = 1024 * 1024
+
+
+class MediaTransferLimit(RuntimeError):
+    def __init__(self, reason, downloaded, expected, elapsed, budget):
+        self.diagnostic = {'reason':reason,'downloaded_bytes':downloaded,
+            'declared_bytes':expected,'elapsed_seconds':round(elapsed,3),
+            'size_limit_bytes':MAX_MEDIA_BYTES,'time_budget_seconds':budget}
+        super().__init__('Toutiao media transfer limit: '+json.dumps(self.diagnostic,sort_keys=True))
+
+
+def transfer_budget(expected):
+    if expected is None:return MAX_TRANSFER_SECONDS
+    return min(MAX_TRANSFER_SECONDS,max(MIN_TRANSFER_SECONDS,
+        math.ceil(expected / TRANSFER_BYTES_PER_SECOND) + 30))
 
 
 def cleanup_media(folder):
@@ -142,24 +160,35 @@ def read_browser(url):
 def download_video(url, path):
     url = media_url(url)
     request = Request(url, headers={'Referer': 'https://www.toutiao.com/', 'User-Agent': 'Mozilla/5.0'})
-    limit, count, start = 200 * 1024 * 1024, 0, time.monotonic()
+    count, start = 0, time.monotonic()
     with urlopen(request, timeout=8) as response:
         media_url(response.geturl())
         if response.status != 200 or response.headers.get('Content-Range'):
             raise RuntimeError('A complete HTTP media response is required; byte ranges are not full content.')
         expected = response.headers.get('Content-Length')
         expected = int(expected) if expected is not None else None
+        if expected is not None and expected < 0:raise RuntimeError('Invalid declared media size.')
+        budget=transfer_budget(expected)
+        if expected is not None and expected > MAX_MEDIA_BYTES:
+            raise MediaTransferLimit('declared_size',count,expected,time.monotonic()-start,budget)
         with path.open('xb') as output:
             path.chmod(0o600)
-            while chunk := response.read(256 * 1024):
+            while True:
+                elapsed=time.monotonic()-start
+                if elapsed > budget:raise MediaTransferLimit('time',count,expected,elapsed,budget)
+                chunk=response.read(256 * 1024)
+                elapsed=time.monotonic()-start
+                if elapsed > budget:raise MediaTransferLimit('time',count,expected,elapsed,budget)
+                if not chunk:break
                 count += len(chunk)
-                if count > limit or time.monotonic() - start > 60:
-                    raise RuntimeError('Toutiao sample exceeds the transfer size or time bound.')
+                if count > MAX_MEDIA_BYTES:raise MediaTransferLimit('streamed_size',count,expected,elapsed,budget)
                 output.write(chunk)
     if expected is not None and count != expected:
         raise RuntimeError('The media response ended before its complete declared size.')
     if count == 0:
         raise RuntimeError('The player returned an empty video.')
+    return {'size_bytes':count,'declared_bytes':expected,'elapsed_seconds':round(time.monotonic()-start,3),
+        'time_budget_seconds':budget,'complete_http_response':True}
 
 
 
@@ -174,9 +203,9 @@ def transcribe(video, folder, model, duration=None, language='zh', **options):
 def merge_tracks(streams,folder,expected_duration):
     streams=media_pair(streams)
     paths={'video':folder/'source-video.mp4','audio':folder/'source-audio.m4a'}
-    durations={};starts={}
+    durations={};starts={};transfers={}
     for role,path in paths.items():
-        download_video(streams[role],path)
+        transfers[role]=download_video(streams[role],path)
         data=json.loads(subprocess.run([shutil.which('ffprobe'),'-v','error','-show_streams','-show_format','-of','json',str(path)],
             check=True,capture_output=True,text=True,timeout=20).stdout)
         if [s.get('codec_type') for s in data.get('streams',[])]!=[role]:
@@ -189,12 +218,13 @@ def merge_tracks(streams,folder,expected_duration):
         raise RuntimeError('Audio/video timing does not match; never transcribe an incomplete pair.')
     if expected_duration is not None and abs(duration-expected_duration)>max(1,expected_duration*.02):
         raise RuntimeError('Separate tracks do not cover the player duration.')
-    if sum(p.stat().st_size for p in paths.values())>200*1024*1024:raise RuntimeError('Combined media exceeds transfer bound.')
+    if sum(p.stat().st_size for p in paths.values())>MAX_MEDIA_BYTES:raise RuntimeError('Combined media exceeds transfer bound.')
     subprocess.run([shutil.which('ffmpeg'),'-nostdin','-hide_banner','-loglevel','error',
         '-i',str(paths['video']),'-i',str(paths['audio']),'-map','0:v:0','-map','1:a:0','-c','copy',
         '-movflags','+faststart',str(folder/'source.mp4')],check=True,capture_output=True,timeout=60)
     return {'video_duration':durations['video'],'audio_duration':durations['audio'],
-            'same_request_batch':True,'timing_matched':True,'duration':duration}
+            'same_request_batch':True,'timing_matched':True,'duration':duration,
+            **({'transfers':transfers} if all(isinstance(t,dict) for t in transfers.values()) else {})}
 
 
 def read(url, folder, page=None, model=None, keep_media=False, language='zh'):
@@ -218,7 +248,9 @@ def read(url, folder, page=None, model=None, keep_media=False, language='zh'):
                 evidence=merge_tracks(item.pop('media_streams'),folder,item['duration'])
                 item['paired_media_evidence']=evidence
                 if item['duration'] is None:item.update(duration=evidence['duration'],duration_basis='complete_paired_download_ffprobe')
-            else:download_video(item.pop('media_url'), folder / 'source.mp4')
+            else:
+                transfer=download_video(item.pop('media_url'), folder / 'source.mp4')
+                if isinstance(transfer,dict):item['transfer_evidence']=transfer
             if item['duration'] is None:
                 if __package__:from .read_asr import probe
                 else:from read_asr import probe
