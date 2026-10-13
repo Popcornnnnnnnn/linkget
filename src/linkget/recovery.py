@@ -8,11 +8,13 @@ if __package__:
     from .photos import originals_directory, verify_library_copies, digest
     from .media import inspect_files
     from .live import prepare_pairs, save_pairs
+    from .output import saving_activity, batch_media
 else:
     import jobs, staging
     from photos import originals_directory, verify_library_copies, digest
     from media import inspect_files
     from live import prepare_pairs, save_pairs
+    from output import saving_activity, batch_media
 
 
 def listing(status):
@@ -106,6 +108,7 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                             raise ValueError("The recorded staging folder is unavailable; use retry --redownload.")
                         files = jobs.verified_files(ready["files"], stage)
                         inspected = inspect_files(files)
+                        batch_media(files)
                         if any(record.get("probe_ok") is False for record in inspected):
                             raise RuntimeError("Retained media failed format validation; files have been kept.")
                         pairs = []
@@ -122,14 +125,15 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                                 pairs = prepare_pairs(files, ready["live_pairs"], directory)
                                 ready["prepared"] = [jobs.snapshot(pair) for pair in pairs]
                                 jobs.record(ready=ready)
-                        if args.folder is not None:
-                            saved, skipped = save_folder(files, args.folder)
-                            if pairs:
-                                save_pairs(pairs, args.folder / "Live Photos")
-                        elif pairs:
-                            saved, skipped = import_photos(files, args.date_now, dict(zip(map(tuple, ready["live_pairs"]), pairs)))
-                        else:
-                            saved, skipped = import_photos(files, args.date_now)
+                        with saving_activity("Saving" if args.folder is not None else "Importing"):
+                            if args.folder is not None:
+                                saved, skipped = save_folder(files, args.folder)
+                                if pairs:
+                                    save_pairs(pairs, args.folder / "Live Photos")
+                            elif pairs:
+                                saved, skipped = import_photos(files, args.date_now, dict(zip(map(tuple, ready["live_pairs"]), pairs)))
+                            else:
+                                saved, skipped = import_photos(files, args.date_now)
                         # All output saves passed; remove only the exact checked downloads.
                         if not staging.contains(stage, args.folder):
                             remove_verified(ready["files"], stage)

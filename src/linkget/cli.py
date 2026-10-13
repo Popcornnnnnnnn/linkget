@@ -16,7 +16,7 @@ import time
 if __package__:
     from . import accounts, jobs, destinations, preflight, recovery, staging
     from .runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
-    from .output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description
+    from .output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity
     from .batch import run_batch
     from .engines import route, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login
     from .photos import originals_directory, retain_originals, verify_library_copies
@@ -35,7 +35,7 @@ if __package__:
 else:  # Homebrew launches this file directly.
     import accounts, jobs, destinations, preflight, recovery, staging
     from runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
-    from output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description
+    from output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity
     from batch import run_batch
     from engines import route, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login
     from photos import originals_directory, retain_originals, verify_library_copies
@@ -771,6 +771,8 @@ def download(args, setup_results, records=None, media_consumer=None):
                         info_path = stage / "video-info.json"
                         with activity("Preparing"):
                             command = prepare_video(command, info_path, log, domain)
+                        if getattr(_batch, "state", {}).get("panel"):
+                            batch_media([], json.loads(info_path.read_text()))
                         reader = getattr(args, 'read_metadata_consumer', None)
                         if reader and reader(json.loads(info_path.read_text()), url, site):
                             evidence.update(status='completed')
@@ -905,7 +907,9 @@ def download(args, setup_results, records=None, media_consumer=None):
                     cookie_path = candidate
                     continue
                 raise LoginRequired(reason) from None
-        media_records = inspect_files(files, download_info.variants)
+        batch_media(files, download_info.metadata)
+        with activity("Checking") if getattr(_batch, "state", None) else nullcontext():
+            media_records = inspect_files(files, download_info.variants)
         evidence.update(files=media_records, expected_count=download_info.expected_count,
                         missing_motion=download_info.missing_motion, live_pairs=download_info.live_pairs,
                         highest_quality="not_verified", watermark="not_verified")
@@ -935,7 +939,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                 status("Live Photos", f"{len(prepared)} source pairs recognized by macOS")
             else:
                 status("Live Photos", f"{len(download_info.live_pairs)} pairs saved separately · use --live-photos to pair")
-        with batch_lock("saving"), activity("Saving" if folder else "Importing"):
+        with saving_activity("Saving" if folder else "Importing"):
             if folder:
                 saved, skipped = save_folder(files, folder)
                 if prepared:

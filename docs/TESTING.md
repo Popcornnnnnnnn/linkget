@@ -19,6 +19,7 @@ Covered behaviors include:
 - staged Photos originals, content-based filenames, repeated content, same-name different content, verified-copy cleanup, referenced/mismatched/symlink copy rejection, and import/copy failures;
 - folder collisions and duplicate handling, progress cleanup, bare `--folder`, and invalid command guidance;
 - batch input numbering, simultaneous download start for every link, independent failure continuation, partial-file preservation, invalid input, multiline sharing text, one-time setup, duplicate handling, cancellation, serialized Photos saves and login prompts on the calling thread without browser reads;
+- compact batch terminal rows in original order, Chinese title clipping by display width, width/height limits, resize cleanup, queued/cancelled items, serialized-import waiting, prompt suspension, full failure/recovery notices, retry numbering, `NO_COLOR` and plain `TERM=dumb`/redirected output;
 - exposed gallery-count completeness, exact per-item Live Photo pairs, missing motion, invalid format refusal, opt-in token-free reports and inconclusive quality comparisons;
 - Live Photo shared collision suffixes, repeated-export deduplication, partial-copy cleanup, retained-component races/content mismatches, persistent raw/paired resources and Photos file-count bookkeeping without accessing Photos;
 - saved destinations, dynamic current-directory defaults, fixed relative-path resolution, per-run overrides, and retaining account settings;
@@ -27,6 +28,12 @@ Covered behaviors include:
 The current [13-channel media corpus and acceptance protocol](MEDIA_VALIDATION.md) separates anonymous availability, quality references and visual watermark findings. Historical [eight-channel watermark findings](WATERMARKS.md) include authenticated samples and do not prove anonymous access. These checks are samples, not a guarantee for every post or network. On 2026-09-29, opt-in live checks verified eight sites with an authorized Chrome session; an invalid Weibo cookie was rejected. This does not verify other browsers or all account configurations. Ordinary automated tests do not read personal browser sessions.
 
 ## Manual acceptance needed
+
+### Compact batch terminal panel (2026-10-13)
+
+Source/Python 3.13 ran 313 tests successfully with five optional tests skipped. The locally patched Homebrew installation passed all 72 batch, terminal-panel, CLI, recovery and runtime tests. A real PTY smoke check using the Homebrew Python 3.14 runtime saved 41 generated JPEGs from four simulated posts through real ffprobe and folder-copy verification; every saved file matched its source bytes. Panel tests cover Chinese titles, terminal width/height limits and resize cleanup, serialized-import waiting, failures, queued-item cancellation, coordinator Ctrl-C, prompt suspension and original retry numbers. Evidence and the four previous installed modules are under `.local/media-validation/compact-panel/`.
+
+The local command remains version `0.2.1.dev20` with this presentation patch; no release was published. Applying the full source test suite to the installed package also found seven pre-existing reading-module errors. The same seven errors reproduced in 41 reading tests against the pre-patch installed baseline; `read_asr.py` and `toutiao.py` were not changed in this round. Follow-up is tracked in [Issue #6](https://github.com/Popcornnnnnnnn/linkget/issues/6). Ghostty screenshot inspection was unavailable through the UI tool. Actual website transfers and real Photos import were not run for this presentation change.
 
 ### Task recovery and Live Photo follow-up (2026-10-07)
 
