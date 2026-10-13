@@ -114,6 +114,7 @@ class BatchPanel:
         self.stream = stream if stream is not None else sys.stdout
         self.destination = destination
         self.started = time.monotonic()
+        self.finished = None
         self.suspended = False
         self.drawn = 0
         self.line_widths = []
@@ -126,11 +127,14 @@ class BatchPanel:
             except ValueError:
                 parsed = None
             name = ((parsed.hostname or "Post") + " · " + (parsed.path.rstrip("/").rsplit("/", 1)[-1] or "Post")) if parsed else "Invalid link"
-            self.rows[index] = {"name": name, "phase": "Queued", "started": self.started,
+            self.rows[index] = {"name": name, "phase": "Queued", "started": None, "finished": None,
                                 "directory": None, "summary": "", "media": "", "warning": "", "error": ""}
 
     def phase(self, index, label, directory=None):
-        self.rows[index].update(phase=label, started=time.monotonic(), directory=directory)
+        row = self.rows[index]
+        if row["started"] is None:
+            row["started"] = time.monotonic()
+        row.update(phase=label, directory=directory)
 
     def capture(self, index, label, value, color, stream):
         if self.suspended:
@@ -140,11 +144,15 @@ class BatchPanel:
         if label == "Source" and "Fallback" not in value:
             row["name"] = value + " · " + row["name"].split(" · ", 1)[-1] if not row.get("title") else row["name"]
         elif label in {"Done", "Recovered"}:
+            # Single-download logs carry their own elapsed time. The panel
+            # keeps one item clock across phases, retries and recovery saves.
+            value = re.sub(r" · \d+(?:\.\d+)?s$", "", value)
+            self.complete(index, 0)
             row.update(phase="Done", summary=re.sub(r"^Item \d+ · ", "", value).replace(" saved", ""), directory=None)
         elif label == "Skipped":
             row["summary"] += " · " + value
         elif label == "Cancelled":
-            row.update(phase="Cancelled", directory=None)
+            self.complete(index, 130)
         elif color == "31" or label == "Stopped":
             row["error"] = cell_text(value)
         elif label not in {"Destination", "Quality", "Media count", "Cleanup", "Progress"} and value != "Working...":
@@ -165,9 +173,12 @@ class BatchPanel:
 
     def complete(self, index, result):
         row = self.rows[index]
+        if row["finished"] is None:
+            row["finished"] = time.monotonic()
         row.update(phase="Done" if result == 0 else "Cancelled" if result == 130 else "Failed", directory=None)
 
     def lines(self, columns, height):
+        now = time.monotonic()
         width = max(1, columns - 1)  # Leave the last cell unused: no autowrap.
         done = sum(row["phase"] == "Done" for row in self.rows.values())
         failed = sum(row["phase"] == "Failed" for row in self.rows.values())
@@ -182,7 +193,8 @@ class BatchPanel:
         if cancelled:
             heading += f" · {cancelled} cancelled"
         destination = "Photos" if self.destination == "Photos" else (Path(self.destination).name or self.destination) + "/"
-        heading += f" · {time.monotonic() - self.started:.0f}s → {destination}"
+        batch_end = self.finished if self.finished is not None else now
+        heading += f" · {batch_end - self.started:.1f}s → {destination}"
         lines = [fit_cell(heading, width)]
         number_width = max(2, len(str(max(self.rows))))
         # Drop the title column first in narrow terminals; keep stage and result.
@@ -200,15 +212,21 @@ class BatchPanel:
                         detail = format_size(downloaded_bytes(row["directory"]))
                     except OSError:
                         pass
-                detail += (" · " if detail else "") + f"{time.monotonic() - row['started']:.0f}s"
             if row["warning"]:
                 detail += (" · " if detail else "") + "! " + row["warning"]
-            marker = "✓" if phase == "Done" else "!" if phase == "Failed" else "·" if phase in {"Queued", "Waiting", "Cancelled"} else "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[int(time.monotonic() * 5) % 10]
+            marker = "✓" if phase == "Done" else "!" if phase == "Failed" else "·" if phase in {"Queued", "Waiting", "Cancelled"} else "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[int(now * 5) % 10]
             prefix = f"  {index:>{number_width}}  "
             if name_width:
                 prefix += fit_cell(row["name"], name_width, pad=True) + "  "
             prefix += fit_cell(marker + " " + phase, phase_width, pad=True) + " "
-            line = fit_cell(prefix + detail, width)
+            elapsed = ""
+            if row["started"] is not None:
+                end = row["finished"] if row["finished"] is not None else now
+                elapsed = f"{end - row['started']:.1f}s"
+            if elapsed and len(elapsed) < width:
+                line = fit_cell(prefix + detail, width - len(elapsed) - 1, pad=True) + " " + elapsed
+            else:
+                line = fit_cell(prefix + detail, width)
             if terminal_styles(self.stream):
                 color = "32" if phase == "Done" else "31" if phase == "Failed" else "33" if phase in {"Waiting", "Cancelled"} or row["warning"] else "0"
                 line = f"\033[{color}m{line}\033[0m"
@@ -249,6 +267,8 @@ class BatchPanel:
             self.render()
 
     def finish(self):
+        if self.finished is None:
+            self.finished = time.monotonic()
         self.render()
         self.drawn = 0  # Leave the final rows in scrollback.
         for index, label, value, color, stream in self.notices:

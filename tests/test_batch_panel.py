@@ -62,6 +62,91 @@ class PanelTests(unittest.TestCase):
         last_frame = stream.getvalue().split("\x1b[J")[-1].splitlines()
         self.assertTrue(all(output.cell_width(line) < 40 for line in last_frame))
 
+    def test_elapsed_is_continuous_across_stages_and_fixed_after_completion(self):
+        with patch.dict(os.environ, {"NO_COLOR": "1"}), patch.object(output.time, "monotonic") as clock:
+            clock.return_value = 100
+            panel = self.panel()
+            panel.phase(1, "Preparing")
+            clock.return_value = 120
+            panel.phase(1, "Downloading")
+            self.assertTrue(panel.lines(100, 24)[1].endswith("20.0s"))
+            panel.phase(1, "Waiting")
+            self.assertTrue(panel.lines(100, 24)[1].endswith("20.0s"))
+            clock.return_value = 125.5
+            panel.phase(1, "Importing")
+            self.assertTrue(panel.lines(100, 24)[1].endswith("25.5s"))
+            clock.return_value = 130
+            panel.capture(1, "Done", "1 photo saved · 1 KB · 999.0s", "32", panel.stream)
+            clock.return_value = 135  # Receipt bookkeeping happens after Done.
+            panel.complete(1, 0)
+            panel.capture(1, "Skipped", "2 duplicates", "0", panel.stream)
+            clock.return_value = 200
+            row = panel.lines(100, 24)[1]
+            self.assertTrue(row.endswith("30.0s"))
+            self.assertIn("2 duplicates", row)
+            self.assertNotIn("999.0s", row)
+            self.assertEqual(len(re.findall(r"\d+\.\d+s", row)), 1)
+
+    def test_queue_time_is_excluded_and_subsecond_time_does_not_round_to_a_second(self):
+        with patch.dict(os.environ, {"NO_COLOR": "1"}), patch.object(output.time, "monotonic") as clock:
+            clock.return_value = 100
+            panel = self.panel()
+            clock.return_value = 150
+            self.assertNotRegex(panel.lines(100, 24)[2], r"\d+(?:\.\d+)?s$")
+            panel.phase(2, "Preparing")
+            clock.return_value = 150.6
+            self.assertTrue(panel.lines(100, 24)[2].endswith("0.6s"))
+            panel.phase(2, "Saving")
+            self.assertTrue(panel.lines(100, 24)[2].endswith("0.6s"))
+
+    def test_failed_and_cancelled_items_freeze_only_time_actually_processed(self):
+        with patch.dict(os.environ, {"NO_COLOR": "1"}), patch.object(output.time, "monotonic") as clock:
+            clock.return_value = 100
+            panel = self.panel()
+            panel.phase(1, "Downloading")
+            clock.return_value = 105
+            panel.complete(1, 1)
+            panel.complete(2, 130)  # Cancelled in the queue: never started.
+            clock.return_value = 120
+            panel.complete(1, 1)  # A repeated final update must not extend time.
+            self.assertTrue(panel.lines(100, 24)[1].endswith("5.0s"))
+            self.assertNotRegex(panel.lines(100, 24)[2], r"\d+(?:\.\d+)?s$")
+            panel = self.panel()
+            panel.phase(1, "Downloading")
+            clock.return_value = 123
+            panel.capture(1, "Cancelled", "Download stopped", "33", panel.stream)
+            clock.return_value = 126
+            panel.complete(1, 130)
+            clock.return_value = 150
+            self.assertTrue(panel.lines(100, 24)[1].endswith("3.0s"))
+
+    def test_recovered_result_retains_elapsed_column_even_with_long_details(self):
+        with patch.dict(os.environ, {"NO_COLOR": "1"}), patch.object(output.time, "monotonic") as clock:
+            clock.return_value = 10
+            panel = self.panel()
+            panel.phase(2, "Preparing")
+            clock.return_value = 12
+            panel.phase(2, "Importing")
+            clock.return_value = 16
+            panel.capture(2, "Recovered", "Item 2 · 10 saved · 5 duplicates", "0", panel.stream)
+            panel.capture(2, "Files kept", "Long diagnostic " * 30, "33", panel.stream)
+            panel.complete(2, 0)
+            for width in (20, 40, 65, 100):
+                row = panel.lines(width, 24)[2]
+                self.assertTrue(row.endswith("6.0s"))
+                self.assertLess(output.cell_width(row), width)
+
+    def test_batch_timer_freezes_after_finish(self):
+        with patch.dict(os.environ, {"NO_COLOR": "1"}), patch.object(output.time, "monotonic") as clock:
+            clock.return_value = 10
+            panel = self.panel()
+            clock.return_value = 20
+            panel.finish()
+            heading = panel.lines(100, 24)[0]
+            self.assertIn("10.0s", heading)
+            clock.return_value = 90
+            self.assertEqual(panel.lines(100, 24)[0], heading)
+
 
 class TerminalBatchTests(unittest.TestCase):
     setUp = test_batch.BatchTests.setUp
