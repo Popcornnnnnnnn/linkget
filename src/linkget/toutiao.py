@@ -104,6 +104,8 @@ def validate_page(url, page):
     expected = canonical(url)
     if not isinstance(page, dict) or canonical(page.get('url', '')) != expected:
         raise ValueError('Rendered page must match the requested Toutiao post.')
+    if 'final_url' in page and canonical(page['final_url']) != expected:
+        raise ValueError('The rendered final URL must match the requested post.')
     kind = expected.split('/')[3]
     title = page.get('title')
     if not isinstance(title, str) or not title.strip() or len(title) > 4000 or page.get('kind') != kind:
@@ -111,11 +113,33 @@ def validate_page(url, page):
     # Select only known content fields; never persist the browser's full state.
     result = {'url': expected, 'title': title.strip(), 'kind': kind,
               'acquisition': 'chrome_rendered_page'}
+    if __package__:
+        from .rendered_proof import browser_metadata
+    else:
+        from rendered_proof import browser_metadata
+    metadata = browser_metadata(page)
+    if metadata:
+        result.update(**metadata, acquisition='browseros_neo_rendered_page')
     if kind == 'article':
         body = page.get('text')
         if not isinstance(body, str) or len(body.strip()) < 100 or len(body) > 200000 or page.get('content_complete') is not True:
             raise ValueError('Complete article text is unavailable; a title is not sufficient.')
         result.update(text=body.strip(), content_complete=True, content_basis='rendered_article')
+        proof = page.get('article_dom_proof')
+        if proof is not None:
+            if (not isinstance(proof, dict) or proof.get('basis') != 'stable_rendered_article_range' or
+                    proof.get('document_state') != 'interactive' or type(proof.get('stable_ms')) is not int or
+                    proof['stable_ms'] != 1500 or type(proof.get('paragraph_count')) is not int or
+                    not 2 <= proof['paragraph_count'] <= 10000 or type(proof.get('paragraph_chars')) is not int or
+                    not 100 <= proof['paragraph_chars'] <= 200000 or
+                    any(type(proof.get(key)) is not int or proof[key] != 0 for key in
+                        ('pending_images', 'visible_loaders', 'visible_expand_controls')) or
+                    proof.get('clipped_article') is not False or not isinstance(proof.get('end_excerpt'), str) or
+                    not 1 <= len(proof['end_excerpt']) <= 512 or not body.strip().endswith(proof['end_excerpt'])):
+                raise ValueError('A complete, stable article range and matching tail are required.')
+            result['article_dom_proof'] = {key: proof[key] for key in
+                ('basis', 'document_state', 'stable_ms', 'paragraph_count', 'paragraph_chars',
+                 'pending_images', 'visible_loaders', 'visible_expand_controls', 'clipped_article', 'end_excerpt')}
     else:
         duration = page.get('duration')
         paired=page.get('media_binding')=='paired_page_vod_resources'
@@ -125,7 +149,27 @@ def validate_page(url, page):
         media={'media_streams':media_pair(page.get('media_streams'))} if paired else {'media_url':media_url(page.get('media_url', ''))}
         result.update(**media,duration=duration,
                       description=title.strip(), captions=[], content_complete=False, content_basis='description_only')
-        if pending:result['duration_basis']='pending_download_probe'
+        # Keep the validated acquisition binding through read_browser -> read.
+        # Pending and split sources are validated again before full downloads.
+        if page.get('media_binding') in ('player_current_src','single_page_vod_resource','paired_page_vod_resources'):
+            result['media_binding']=page['media_binding']
+        if pending:
+            result['duration_basis']='pending_download_probe'
+            result['duration_pending']=True
+        selection = page.get('media_selection')
+        if selection is not None:
+            if (not paired or not isinstance(selection, dict) or
+                    selection.get('strategy') != 'latest_observed_video_variant' or
+                    type(selection.get('video_variant_count')) is not int or
+                    not 1 <= selection['video_variant_count'] <= 4 or
+                    type(selection.get('audio_resource_count')) is not int or selection['audio_resource_count'] != 1 or
+                    type(selection.get('selected_video_resource_index')) is not int or
+                    not 0 <= selection['selected_video_resource_index'] < 256 or
+                    selection.get('same_request_batch') is not True):
+                raise ValueError('Adaptive media selection requires one exact observed request batch.')
+            result['media_selection'] = {key: selection[key] for key in
+                ('strategy', 'video_variant_count', 'audio_resource_count',
+                 'selected_video_resource_index', 'same_request_batch')}
         for cue in page.get('captions', []):
             if (not isinstance(cue, dict) or not isinstance(cue.get('text'), str) or
                     len(cue['text']) > 4000 or type(cue.get('start')) not in (int, float) or
@@ -135,26 +179,14 @@ def validate_page(url, page):
     return result
 
 
-def read_browser(url):
-    url = canonical(url)
-    script = Path(__file__).with_name('douyin_browser.applescript')
-    javascript = Path(__file__).with_name('toutiao_browser.js').read_text()
-    # The existing controller reuses a matching tab, restores a temporary tab,
-    # and never enables Chrome's scripting permission itself.
-    expression = '(' + javascript + ')()'
-    expression = 'JSON.stringify(' + expression + ')'
-    try:
-        process = subprocess.run(['/usr/bin/osascript', str(script), url, expression],
-                                 capture_output=True, text=True, timeout=45)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError('Toutiao browser read timed out; check this page in daily Chrome.') from None
-    if process.returncode:
-        raise RuntimeError('Chrome could not read this Toutiao page. Use an authorized browser connector '
-                           'with --page-data, or check existing Chrome scripting permission; no permissions were changed.')
-    try:
-        return validate_page(url, json.loads(process.stdout))
-    except (ValueError, TypeError):
-        raise RuntimeError('Chrome did not expose complete content for the requested Toutiao post.') from None
+def read_browser(url, *, backend=None):
+    # Douyin keeps its existing controller. This helper owns one temporary tab,
+    # bounds page reads, and cleans it without exporting credentials.
+    if __package__:
+        from .rendered_page import read_page
+    else:
+        from rendered_page import read_page
+    return read_page(canonical(url), backend=backend)
 
 
 def download_video(url, path):

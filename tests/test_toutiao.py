@@ -203,6 +203,7 @@ class ToutiaoTests(unittest.TestCase):
             with patch.object(toutiao.shutil, 'which', return_value='tool'), \
                     patch.object(toutiao, 'download_video', side_effect=download), \
                     patch.object(toutiao, 'transcribe', side_effect=recognized), \
+                    patch('linkget.read_asr.probe', return_value=(38.4, True)), \
                     patch.object(cli, 'inspect_files', return_value=[{'duration': 38.4, 'audio': True, 'probe_ok': True}]), \
                     patch.object(cli, 'first_run') as setup, patch.object(cli, 'prepare_session') as credentials, \
                     patch.object(cli, 'import_photos') as photos, contextlib.redirect_stdout(io.StringIO()):
@@ -280,7 +281,7 @@ class ToutiaoTests(unittest.TestCase):
         script = (Path(toutiao.__file__).parent / 'toutiao_browser.js').read_text()
         cases = [('video', 'https://v9-web.toutiaovod.com/video.mp4', 38.4), ('video', '', 38.4)]
         for kind, src, duration in cases:
-            code = 'const location={hostname:"www.toutiao.com",pathname:"/video/123/"};\n'
+            code = 'const location={href:"https://www.toutiao.com/video/123/",hostname:"www.toutiao.com",pathname:"/video/123/"};\n'
             code += 'const document={querySelector:s=>s==="h1"?{innerText:"展开\\nTitle"}:s==="video"?'
             code += json.dumps({'currentSrc': src, 'duration': duration, 'textTracks': []}) + ':null};\n'
             code += 'process.stdout.write(JSON.stringify((' + script + ')()));'
