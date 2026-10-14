@@ -8,15 +8,18 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 import concurrent.futures
+import hashlib
+import time
+import uuid
 
 if __package__:
     from .links import MOBILE_UA
     from .runtime import cancellation_check
-    from .media import DownloadResult
+    from .media import DownloadResult, reference
 else:
     from links import MOBILE_UA
     from runtime import cancellation_check
-    from media import DownloadResult
+    from media import DownloadResult, reference
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36"
 
@@ -197,6 +200,8 @@ def download(url, directory, cookie_path=None):
             item_indexes.extend([item_index] * len(added))
         if not media:
             raise RuntimeError("Xiaohongshu returned no media.")
+        batch_id = uuid.uuid4().hex
+        acquired_at = time.time()
 
         def _download_one(index, kind, target, used_original):
             check_cancelled()
@@ -211,33 +216,54 @@ def download(url, directory, cookie_path=None):
                 if fallback == target:
                     raise
                 response = request(fallback)
+                target = fallback
                 used_original = False
             with response:
+                response_status = getattr(response, 'status', getattr(response, 'code', None))
+                final_url = response.geturl() if hasattr(response, 'geturl') else None
+                # Keep signed URLs out of result files. Only a real response URL
+                # inside the existing media allowlist can establish provenance.
+                final_host = None
+                if final_url and urlsplit(final_url).scheme == 'https':
+                    media_url(final_url)
+                    final_host = urlsplit(final_url).hostname
+                range_present = bool(response.headers.get('Content-Range'))
                 head = response.read(64)
                 suffix = extension(head, kind)
                 variant = "original" if used_original else "display"
                 path = directory / f"xiaohongshu_{note_id}_{index:03d}_{variant}{suffix}"
                 partial = path.with_suffix(suffix + ".part")
                 count = len(head)
+                checksum = hashlib.sha256(head)
                 with partial.open("xb") as output:
                     output.write(head)
                     while chunk := response.read(1024 * 1024):
                         check_cancelled()
                         count += len(chunk)
+                        checksum.update(chunk)
                         output.write(chunk)
                 expected = response.headers.get("Content-Length")
                 if expected and count != int(expected):
                     raise RuntimeError("Xiaohongshu download was incomplete; partial files have been kept.")
                 partial.rename(path)
-            return index, path.name, not used_original
+            transport = {'index': index, 'kind': kind, 'file': path.name,
+                         'note_id': note.get('noteId'), 'batch_id': batch_id,
+                         'media_url_sha256': hashlib.sha256(target.encode()).hexdigest(),
+                         'final_url_sha256': hashlib.sha256(final_url.encode()).hexdigest() if final_url else None,
+                         'final_host': final_host, 'http_status': response_status,
+                         'range_present': range_present, 'expected_bytes': int(expected) if expected else None,
+                         'actual_bytes': count, 'sha256': checksum.hexdigest(), 'variant': variant}
+            return index, path.name, not used_original, transport
 
         retained = 0
         outputs = {}
+        transfers = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             futures = [executor.submit(_download_one, index, kind, target, originals[index - 1]) for index, (kind, target) in enumerate(media, 1)]
             for future in concurrent.futures.as_completed(futures):
-                index, name, fallback = future.result()
+                index, name, fallback, transport = future.result()
                 outputs[index] = name
+                transfers[name] = transport
                 if fallback:
                     retained += 1
         variants = {name: "fallback" if "_display." in name else
@@ -254,8 +280,13 @@ def download(url, directory, cookie_path=None):
         notes = ([f"Xiaohongshu: original unavailable for {retained} item(s); kept best exposed display sources, which may contain watermarks."] if retained else [])
         if missing:
             notes.append(f"Xiaohongshu: {missing} Live Photo motion track(s) were not exposed; still pictures were retained.")
+        source_transport = {'schema': 'linkget.xiaohongshu.transport.v1',
+                            'note_id': note.get('noteId'), 'requested_note_id': note_id,
+                            'source_reference': reference(url), 'batch_id': batch_id,
+                            'acquired_at': acquired_at, 'expected_count': len(media),
+                            'files': {outputs[index]: transfers[outputs[index]] for index in sorted(outputs)}}
         return DownloadResult(notes, len(media), variants, pairs, missing,
-                              {'title': note.get('title', ''), 'description': note.get('desc', '')})
+                              {'title': note.get('title', ''), 'description': note.get('desc', '')}, source_transport)
     except HTTPError as error:
         error.close()
         raise RuntimeError(f"Xiaohongshu request failed (HTTP {error.code}). Open a fresh share link in your browser and check access or verification.") from None

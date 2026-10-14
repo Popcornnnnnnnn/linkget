@@ -21,6 +21,8 @@ class DownloadResult:
     live_pairs: list = field(default_factory=list)
     missing_motion: int = 0
     metadata: dict = field(default_factory=dict)
+    # Optional downloader-produced provenance; generic/local reads never invent it.
+    source_transport: dict = field(default_factory=dict)
 
 
 AUDIO = {'.m4a', '.mp3', '.aac', '.opus', '.ogg', '.wav', '.flac', '.webm'}

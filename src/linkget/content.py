@@ -243,7 +243,8 @@ def read_videos(args):
                 read_store.write_json(inputs_path, {'audio': entries, 'images': image_entries,
                                                     'metadata': content_metadata(metadata),
                                                     'duration': metadata.get('duration'), 'motion_count': len(motion),
-                                                    'image_count': len(image_files), 'expected_count': evidence.expected_count})
+                                                    'image_count': len(image_files), 'expected_count': evidence.expected_count,
+                                                    'source_transport': evidence.source_transport})
             items = []
             for index, (path, record) in enumerate(audio_files, 1):
                 working = media_root / f'video-{index:03d}'
@@ -258,9 +259,37 @@ def read_videos(args):
                     asr_options['chunk_seconds'] = chunk_seconds
                 if vad_model:
                     asr_options['vad_model'] = vad_model
-                recognized = toutiao.transcribe(video, working, model, expected, **asr_options)
+                recognized = {**toutiao.transcribe(video, working, model, expected, **asr_options)}
                 stored = read_store.read_json(inputs_path)
-                original_name = stored['audio'][index - 1]['original_name']
+                retained = stored['audio'][index - 1]
+                original_name = retained['original_name']
+                transport = stored.get('source_transport') or {}
+                if transport:
+                    transfer = transport.get('files', {}).get(original_name)
+                    actual_sha = read_store.digest(video)
+                    actual_size = video.stat().st_size
+                    if (transport.get('schema') != 'linkget.xiaohongshu.transport.v1' or
+                            not isinstance(transfer, dict) or transfer.get('file') != original_name or
+                            transfer.get('batch_id') != transport.get('batch_id') or
+                            transfer.get('note_id') != transport.get('note_id') or
+                            transfer.get('sha256') != actual_sha or
+                            transfer.get('actual_bytes') != actual_size or retained['sha256'] != actual_sha or
+                            record.get('sha256') != actual_sha or record.get('bytes') != actual_size):
+                        raise ValueError('Downloaded source transport does not match the recognized file.')
+                    duration = float(record['duration'])
+                    source_bound = (transport.get('note_id') == transport.get('requested_note_id') and
+                                    bool(transfer.get('final_host')) and bool(transfer.get('final_url_sha256')))
+                    complete = (type(transfer.get('expected_bytes')) is int and
+                                transfer['expected_bytes'] == actual_size and actual_size > 0 and
+                                transfer.get('http_status') == 200 and transfer.get('range_present') is False)
+                    recognized['media_evidence'] = {**recognized.get('media_evidence', {}),
+                        'transfer': transfer, 'full_video_download': complete,
+                        'source_binding_verified': source_bound,
+                        'probe_evidence': {'duration': duration, 'audio': record['audio'],
+                                           'probe_ok': record['probe_ok'], 'sha256': actual_sha,
+                                           'bytes': actual_size}}
+                    recognized.update(source_file_sha256=actual_sha, source_file_bytes=actual_size,
+                                      download_batch_id=transport['batch_id'])
                 items.append({'index': index, 'source_file': original_name, **recognized})
             image_text = []
             if image_files and (ocr or not audio_files):
@@ -271,6 +300,8 @@ def read_videos(args):
             stored = read_store.read_json(inputs_path)
             result.update(ignored_image_count=stored['image_count'] if audio_files and not ocr else 0,
                           ignored_motion_count=stored['motion_count'])
+            if stored.get('source_transport'):
+                result['source_transport'] = stored['source_transport']
             finish(result)
 
         try:
@@ -292,7 +323,8 @@ def read_videos(args):
                 meta = inputs['metadata']
                 if inputs.get('duration') is not None:
                     meta['duration'] = inputs['duration']
-                evidence = DownloadResult(expected_count=inputs.get('expected_count'))
+                evidence = DownloadResult(expected_count=inputs.get('expected_count'),
+                                          source_transport=inputs.get('source_transport') or {})
                 consume(files, records, evidence, url, site, meta)
                 return 0
             if local:

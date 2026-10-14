@@ -1,5 +1,6 @@
 """Read routes reuse downloads and commit only complete speech results."""
 import contextlib
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -52,7 +53,8 @@ class ContentTests(unittest.TestCase):
 
     def inspect(self, files, variants=None):
         return [{'file': p.name, 'kind': 'video' if p.suffix in cli.VIDEO else 'image',
-                 'probe_ok': True, 'audio': True, 'duration': '3', 'source': 'engine_selected'} for p in files]
+                 'probe_ok': True, 'audio': True, 'duration': '3', 'source': 'engine_selected',
+                 'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in files]
 
     def run_read(self, url, folder='out', extra=(), recognized=None):
         with patch.object(cli, 'download_douyin', side_effect=self.download), \
@@ -114,6 +116,47 @@ class ContentTests(unittest.TestCase):
         self.assertEqual(asr.call_count, 2)
         self.assertEqual(asr.call_args.kwargs['language'], 'en')
         self.assertTrue((self.root / 'out/media/video-002/source.mp4').exists())
+
+    def xhs_proof(self):
+        note='a'*24;name=f'xiaohongshu_{note}_001_original.mp4';digest=hashlib.sha256(b'fixture').hexdigest()
+        transfer={'file':name,'index':1,'kind':'video','note_id':note,'batch_id':'b'*32,'variant':'original',
+                  'http_status':200,'range_present':False,'actual_bytes':7,'expected_bytes':7,'sha256':digest,
+                  'media_url_sha256':'c'*64,'final_url_sha256':'d'*64,'final_host':'sns-video-bd.xhscdn.com'}
+        self.names=[name]
+        self.evidence=DownloadResult(expected_count=1,source_transport={
+            'schema':'linkget.xiaohongshu.transport.v1','note_id':note,'requested_note_id':note,
+            'source_reference':'www.xiaohongshu.com/explore/'+note,'batch_id':'b'*32,
+            'acquired_at':1000.0,'expected_count':1,'files':{name:transfer}})
+        self.recognized['media_evidence']['full_audio_processed']=True
+        return 'https://www.xiaohongshu.com/explore/'+note
+
+    def test_xhs_transport_and_probed_file_are_preserved_after_media_cleanup(self):
+        url=self.xhs_proof();code,_=self.run_read(url,extra=['--refresh'])
+        self.assertEqual(code,0)
+        value=json.loads((self.root/'out/content.json').read_text());item=value['videos'][0]
+        self.assertEqual(value['source_transport'],self.evidence.source_transport)
+        self.assertTrue(item['media_evidence']['full_video_download'])
+        self.assertTrue(item['media_evidence']['source_binding_verified'])
+        self.assertEqual(item['source_file_sha256'],hashlib.sha256(b'fixture').hexdigest())
+        self.assertEqual(item['source_file_bytes'],7)
+        self.assertEqual(item['media_evidence']['probe_evidence']['sha256'],item['source_file_sha256'])
+        self.assertEqual(item['media_evidence']['probe_evidence']['duration'],3)
+        self.assertFalse((self.root/'out/media').exists())
+        self.assertTrue(all(not stage.exists() for stage in self.stages))
+
+    def test_xhs_forged_download_digest_never_commits_a_transcript(self):
+        url=self.xhs_proof()
+        next(iter(self.evidence.source_transport['files'].values()))['sha256']='e'*64
+        code,_=self.run_read(url,extra=['--refresh'])
+        self.assertEqual(code,1);self.assertFalse((self.root/'out/content.json').exists())
+
+    def test_xhs_missing_length_stays_unverified_even_with_complete_asr(self):
+        url=self.xhs_proof()
+        next(iter(self.evidence.source_transport['files'].values()))['expected_bytes']=None
+        code,_=self.run_read(url,extra=['--refresh'])
+        self.assertEqual(code,0)
+        value=json.loads((self.root/'out/content.json').read_text())
+        self.assertFalse(value['videos'][0]['media_evidence']['full_video_download'])
 
     def test_failed_second_video_never_commits_partial_content(self):
         self.names = ['001.mp4', '002.mp4']
