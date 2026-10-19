@@ -226,7 +226,7 @@ class ReadDomTests(unittest.TestCase):
         self.assertEqual(names, ['name_session', 'tabs', 'tabs', 'run', 'evaluate', 'run'])
         code = client.calls[3][1]['code']
         self.assertNotIn('browser.open(', code)
-        self.assertEqual(code.count('browser.page(confirmedId)'), 1)
+        self.assertEqual(code.count('browser.page(initial.pageId)'), 1)
         self.assertNotIn('.goto(', code)
         self.assertTrue(client.calls[2][1]['url'].startswith(URL + '#linkget-neo-'))
         self.assertEqual(sum(name == 'tabs' and args.get('action') == 'new' for name, args, _ in client.calls), 1)
@@ -240,6 +240,30 @@ class ReadDomTests(unittest.TestCase):
     def test_user_navigation_is_preserved(self):
         output, _ = self.read([run_result({'ok': True, 'dom': DOM}), run_result({'cleanup': 'preserved_navigated_tab'})])
         self.assertEqual(output['browser_controller']['temporary_tab_cleanup'], 'preserved_navigated_tab')
+
+    def test_physical_receipt_survives_extraction_session_loss(self):
+        identity = dict(pageId=18, tabId=101, targetId='target-101', groupId='group-101', ownerAgentId='reader-101')
+        client = FakeClient(neo.DEFAULT_ENDPOINT, time.monotonic() + 45)
+        client.results = [run_result({'ok': True, 'identity': identity}), run_result({'cleanup': 'closed'})]
+        client.evaluate_reply = neo._SessionLost('reader session expired')
+        with patch.object(neo, '_RPCClient', return_value=client), self.assertRaisesRegex(neo.NeoBrowserError, 'Cleanup result: closed'):
+            neo.read_dom(URL, EXTRACTOR)
+        evaluation = next(args for name, args, _ in client.calls if name == 'evaluate')
+        self.assertEqual(evaluation['page'], 18)
+        cleanup = client.calls[-1][1]['code']
+        self.assertIn('confirmedId = null', cleanup)
+        self.assertIn('"targetId": "target-101"', cleanup)
+        self.assertIn('"ownerAgentId": "reader-101"', cleanup)
+        self.assertEqual(client.initializations, 2)
+
+    def test_closing_alias_gets_one_refresh_and_physical_verification_without_reclosing(self):
+        for verified in ('closed', 'unknown_cleanup'):
+            client = FakeClient(neo.DEFAULT_ENDPOINT, time.monotonic() + 45)
+            client.results = [run_result({'cleanup': 'closing', 'identity': {'tabId': 101, 'targetId': 'target-101'}}),
+                              run_result({'cleanup': verified})]
+            self.assertEqual(neo._recover_cleanup(client, 'fixture-token', URL, 17), verified)
+            self.assertEqual([name for name, _, _ in client.calls], ['run', 'tabs', 'run'])
+            self.assertNotIn('.close()', client.calls[-1][1]['code'])
 
     def test_known_read_run_timeout_uses_confirmed_id_without_reopening(self):
         client = FakeClient(neo.DEFAULT_ENDPOINT, time.monotonic() + 45)
@@ -346,7 +370,7 @@ class RunLifecycleTests(unittest.TestCase):
     def run_code(self, code, behavior):
         harness = r'''
 const code=process.argv[1], behavior=JSON.parse(process.argv[2]);
-let opened=0, closed=false, current=behavior.initialUrl||'https://www.toutiao.com/article/123/#linkget-neo-fixture-token', navigated=false;
+let opened=0, closed=false, closeIds=[], listCalls=0, current=behavior.initialUrl||'https://www.toutiao.com/article/123/#linkget-neo-fixture-token', navigated=false;
 const listeners=new Map();
 global.location={href:current};
 global.history={state:{keep:true},replaceState:(state,title,url)=>{current=url;location.href=url;}};
@@ -362,9 +386,14 @@ const page={id:17,goto:async url=>{current=url;if(behavior.gotoError)throw Error
    const value=behavior.executeDom?await new AsyncFunction(source)():behavior.missingValue?undefined:{owned:true};
    if(behavior.navigated){current='https://user.example/work';navigated=true;}return {page:behavior.evaluatedPage||17,value};},
  close:async()=>{closed=true;}};
-const browser={open:async url=>{opened++;throw Error('run must not create a page');},page:id=>page,
- pages:{list:async()=>closed?[]:[{pageId:17,url:current,ownership:behavior.taken?'user':'mine'}]}};
-new AsyncFunction('browser','console',code)(browser,{log:()=>{}}).then(value=>process.stdout.write(JSON.stringify({value,opened,closed,navigated}))).catch(error=>{console.error(error.message);process.exit(1);});
+const browser={open:async url=>{opened++;throw Error('run must not create a page');},
+ page:id=>({...page,id,close:async()=>{closed=true;closeIds.push(id);}}),
+ pages:{list:async()=>{
+   if(closed)return behavior.afterClosePages||[];
+   if(behavior.pageLists)return behavior.pageLists[Math.min(listCalls++,behavior.pageLists.length-1)];
+   return behavior.pages||[{pageId:17,tabId:101,targetId:'target-101',groupId:'group-101',ownerAgentId:'reader-101',url:current,ownership:behavior.taken?'user':'mine'}];
+ }}};
+new AsyncFunction('browser','console',code)(browser,{log:()=>{}}).then(value=>process.stdout.write(JSON.stringify({value,opened,closed,navigated,closeIds}))).catch(error=>{console.error(error.message);process.exit(1);});
 '''
         output = subprocess.run([shutil.which('node'), '-e', harness, code, json.dumps(behavior)],
                                 check=True, capture_output=True, text=True, timeout=5)
@@ -429,6 +458,68 @@ new AsyncFunction('browser','console',code)(browser,{log:()=>{}}).then(value=>pr
         proven = self.run_code(code, {'initialUrl': URL, 'executeDom': True, 'ownerToken': 'fixture-token'})
         self.assertEqual(proven['value']['cleanup'], 'closed')
         self.assertTrue(proven['closed'])
+
+    def tab(self, **changes):
+        return {**dict(pageId=17, tabId=101, targetId='target-101', groupId='group-101',
+                       ownerAgentId='reader-101', ownership='mine', url=URL), **changes}
+
+    def test_redirected_homepage_is_cleaned_only_for_confirmed_creation(self):
+        home = self.tab(url='https://www.toutiao.com/')
+        cleaned = self.run_code(neo._cleanup_script('fixture-token', URL, 17), {'pages': [home]})
+        self.assertEqual(cleaned['value']['cleanup'], 'closed')
+        unknown = self.run_code(neo._cleanup_script('fixture-token', URL), {'pages': [home]})
+        self.assertEqual(unknown['value']['cleanup'], 'unknown_cleanup')
+        self.assertFalse(unknown['closed'])
+
+    def test_duplicate_page_records_resolve_to_owned_physical_tab(self):
+        records = [self.tab(ownership='user', ownerAgentId=None),
+                   self.tab(pageId=18, url='https://www.toutiao.com/')]
+        result = self.run_code(neo._cleanup_script('fixture-token', URL, 17), {'pages': records})
+        self.assertEqual(result['value']['cleanup'], 'closed')
+        self.assertEqual(result['closeIds'], [18])
+        read = self.run_code(neo._read_script(URL, EXTRACTOR, 'fixture-token', 100, 17),
+            {'pages': [records[0], self.tab(pageId=18, url=URL + '#linkget-neo-fixture-token')], 'evaluatedPage': 18})
+        self.assertTrue(read['value']['ok'])
+        self.assertEqual(read['value']['identity']['tabId'], 101)
+        self.assertEqual(read['value']['identity']['pageId'], 18)
+
+    def test_closure_checks_physical_alias_not_only_removed_page_id(self):
+        result = self.run_code(neo._cleanup_script('fixture-token', URL, 17),
+            {'pages': [self.tab()], 'afterClosePages': [self.tab(pageId=18)]})
+        self.assertEqual(result['value']['cleanup'], 'closing')
+        self.assertEqual(result['value']['identity'], {'tabId': 101, 'targetId': 'target-101'})
+
+    def test_reconnection_uses_physical_receipt_and_rejects_changed_owner_or_target(self):
+        receipt = {k: v for k, v in self.tab().items() if k not in ('ownership', 'url')}
+        code = neo._cleanup_script('fixture-token', URL, identity=receipt)
+        alias = self.tab(pageId=18, ownership='other-agent', url='https://www.toutiao.com/')
+        result = self.run_code(code, {'pages': [alias]})
+        self.assertEqual(result['value']['cleanup'], 'closed')
+        for changed in (self.tab(ownership='user'), self.tab(ownerAgentId='another-reader'),
+                        self.tab(groupId='another-group'), self.tab(targetId='reused-target')):
+            with self.subTest(changed=changed):
+                result = self.run_code(code, {'pages': [changed]})
+                self.assertFalse(result['closed'])
+                self.assertEqual(result['value']['cleanup'], 'unknown_cleanup')
+        gone = self.run_code(code, {'pages': []})
+        self.assertEqual(gone['value']['cleanup'], 'closed')
+
+    def test_receipt_survives_alias_with_missing_group_metadata(self):
+        receipt = {k: v for k, v in self.tab().items() if k not in ('ownership', 'url')}
+        code = neo._cleanup_script('fixture-token', URL, identity=receipt)
+        result = self.run_code(code, {'pages': [self.tab(ownership='user', ownerAgentId=None),
+            self.tab(pageId=18, groupId=None, ownership='other-agent')]})
+        self.assertEqual(result['value']['cleanup'], 'closed')
+        self.assertEqual(result['closeIds'], [18])
+
+    def test_stale_alias_cannot_hide_user_navigation_or_group_change(self):
+        code = neo._cleanup_script('fixture-token', URL, 17)
+        for alias in (self.tab(pageId=18, ownership='user', url='https://user.example/work'),
+                      self.tab(pageId=18, ownership='user', groupId='user-group')):
+            result = self.run_code(code, {'pages': [self.tab(), alias]})
+            self.assertFalse(result['closed'])
+        missing = self.run_code(code, {'pages': [self.tab(pageId=18)]})
+        self.assertEqual(missing['value']['cleanup'], 'unknown_cleanup')
 
     def test_direct_creation_mark_is_removed_only_after_exact_fragment_match(self):
         code = neo._read_script(URL, EXTRACTOR, 'fixture-token', 100, 17)

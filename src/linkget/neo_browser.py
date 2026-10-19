@@ -361,11 +361,18 @@ def _read_script(url, javascript, token, wait_ms, page_id):
                   'return {owned:location.href===' + json.dumps(url) +
                   '&&document.documentElement.dataset.linkgetNeoReadOwner===' + json.dumps(token) + '};')
     return '''const expected = URL_VALUE, marker = MARKER_VALUE, confirmedId = PAGE_ID;
-let page, evaluated = null, failure = null, stage = 'opening';
+let page, identity = null, evaluated = null, failure = null, stage = 'opening';
 try {
-  const initial = (await browser.pages.list()).find(item => item.pageId === confirmedId);
-  if (!initial || initial.ownership !== 'mine' || initial.url !== marker) throw new Error('Owned creation identity was not confirmed.');
-  page = browser.page(confirmedId);
+  const pages = await browser.pages.list();
+  const created = pages.find(item => item.pageId === confirmedId);
+  const initial = created && pages.find(item => item.ownership === 'mine' &&
+    (item.pageId === created.pageId || (item.tabId === created.tabId && item.targetId === created.targetId &&
+      Number.isSafeInteger(item.tabId) && typeof item.targetId === 'string')));
+  if (!initial) throw new Error('Owned creation identity was not confirmed.');
+  identity = {pageId:initial.pageId,tabId:initial.tabId,targetId:initial.targetId,
+    groupId:initial.groupId || created.groupId,ownerAgentId:initial.ownerAgentId};
+  if (initial.url !== marker) throw new Error('Created page navigated before extraction.');
+  page = browser.page(initial.pageId);
   // tabs new already requested this exact marked URL. Waiting for goto's full
   // load event can hang on Toutiao's long-lived requests, so never navigate it
   // again or replay an uncertain creation.
@@ -383,7 +390,7 @@ try {
   }
 } catch (_) { failure = stage; }
 console.log('linkget_stage: ' + (failure || 'ready'));
-return {ok: !failure, error: failure, stage: failure || 'ready',
+return {ok: !failure, error: failure, stage: failure || 'ready', identity,
   diagnostics: {confirmed_page:confirmedId, handle_page:page?.id ?? null, evaluated_page:evaluated?.page ?? null,
     has_dom:typeof evaluated?.value === 'object' && evaluated.value !== null}};'''.replace(
         'URL_VALUE', json.dumps(url)).replace('MARKER_VALUE', json.dumps(marker)).replace(
@@ -428,14 +435,31 @@ def _run_value(result):
     return structured['value']
 
 
-def _cleanup_script(token, url, page_id=None):
-    return '''const token = TOKEN_VALUE, expected = URL_VALUE, marker = MARKER_VALUE, confirmedId = PAGE_ID;
+def _cleanup_script(token, url, page_id=None, identity=None):
+    return '''const token = TOKEN_VALUE, expected = URL_VALUE, marker = MARKER_VALUE, confirmedId = PAGE_ID, receipt = IDENTITY_VALUE;
+const physical = (a,b) => Number.isSafeInteger(a?.tabId) && typeof a?.targetId === 'string' &&
+  a.targetId.length > 0 && a.tabId === b?.tabId && a.targetId === b?.targetId;
 const pages = await browser.pages.list();
-let candidate, tokenProven = false;
-if (confirmedId !== null) {
-  candidate = pages.find(item => item.pageId === confirmedId);
-  if (!candidate) return {cleanup:'closed'};
-  if (candidate.ownership !== 'mine') return {cleanup:'unknown_cleanup'};
+let candidate, groupId, tokenProven = false, creationProven = false;
+if (receipt && physical(receipt,receipt)) {
+  const aliases = pages.filter(item => physical(item,receipt));
+  if (!aliases.length) {
+    // A reused tab ID with a different target is not proof of closure.
+    return {cleanup:pages.some(item => item.tabId === receipt.tabId || item.targetId === receipt.targetId) ? 'unknown_cleanup' : 'closed'};
+  }
+  candidate = aliases.find(item => item.ownership !== 'user' && item.ownerAgentId === receipt.ownerAgentId &&
+    (item.groupId === receipt.groupId || (!item.groupId && aliases.some(alias => alias.groupId === receipt.groupId))));
+  if (!candidate) return {cleanup:'unknown_cleanup'};
+  groupId = receipt.groupId;
+  creationProven = true;
+} else if (confirmedId !== null) {
+  const created = pages.find(item => item.pageId === confirmedId);
+  if (!created) return {cleanup:'unknown_cleanup'};
+  candidate = pages.find(item => item.ownership === 'mine' &&
+    (item.pageId === created.pageId || physical(item,created)));
+  if (!candidate) return {cleanup:'unknown_cleanup'};
+  groupId = candidate.groupId || created.groupId;
+  creationProven = true;
 } else {
   const markers = pages.filter(item => item.ownership !== 'user' && item.url === marker);
   if (markers.length > 1) return {cleanup:'unknown_cleanup'};
@@ -452,36 +476,68 @@ if (confirmedId !== null) {
     candidate = matches[0]; tokenProven = true;
   }
 }
-if (candidate.url !== expected && candidate.url !== marker) return {cleanup:'preserved_navigated_tab'};
-const current = (await browser.pages.list()).find(item => item.pageId === candidate.pageId);
-if (!current) return {cleanup:'closed'};
-if (current.ownership === 'user' || (!tokenProven && current.ownership !== 'mine')) return {cleanup:'unknown_cleanup'};
-if (current.url !== expected && current.url !== marker) return {cleanup:'preserved_navigated_tab'};
+// Toutiao returns unavailable content to its homepage. Only a creation-bound
+// tab may be cleaned there; arbitrary navigation and taken-over tabs survive.
+const allowed = item => item.url === expected || item.url === marker ||
+  (creationProven && expected.startsWith('https://www.toutiao.com/') && item.url === 'https://www.toutiao.com/');
+if (!allowed(candidate)) return {cleanup:'preserved_navigated_tab'};
+if (!physical(candidate,candidate)) return {cleanup:'unknown_cleanup'};
+const currentPages = await browser.pages.list();
+const current = currentPages.find(item => item.pageId === candidate.pageId &&
+  (!physical(candidate,candidate) || physical(item,candidate)));
+if (!current) return {cleanup:currentPages.some(item => physical(item,candidate)) ? 'unknown_cleanup' : 'closed'};
+if (current.ownership === 'user' || (!tokenProven && !receipt && current.ownership !== 'mine')) return {cleanup:'unknown_cleanup'};
+if (current.ownerAgentId !== candidate.ownerAgentId || current.groupId !== candidate.groupId) return {cleanup:'unknown_cleanup'};
+if (!allowed(current)) return {cleanup:'preserved_navigated_tab'};
+const aliases = currentPages.filter(item => physical(item,current));
+if (aliases.some(item => !allowed(item))) return {cleanup:'preserved_navigated_tab'};
+if (aliases.some(item => (item.groupId && item.groupId !== (groupId || current.groupId)) ||
+    (item.ownership !== 'user' && item.ownerAgentId !== current.ownerAgentId))) return {cleanup:'unknown_cleanup'};
 await browser.page(current.pageId).close();
-return {cleanup:(await browser.pages.list()).some(page => page.pageId === current.pageId) ? 'unknown_cleanup' : 'closed'};'''.replace(
+return {cleanup:(await browser.pages.list()).some(page => page.pageId === current.pageId || physical(page,current)) ? 'closing' : 'closed',
+  identity:{tabId:current.tabId,targetId:current.targetId}};'''.replace(
         'TOKEN_VALUE', json.dumps(token)).replace('URL_VALUE', json.dumps(url)).replace(
-        'MARKER_VALUE', json.dumps(url + '#linkget-neo-' + token)).replace('PAGE_ID', 'null' if page_id is None else str(page_id))
+        'MARKER_VALUE', json.dumps(url + '#linkget-neo-' + token)).replace('PAGE_ID', 'null' if page_id is None else str(page_id)).replace(
+        'IDENTITY_VALUE', json.dumps(identity))
 
 
-def _recover_cleanup(client, token, url, page_id=None, reconnect=False):
+def _confirmed_cleanup(client, result):
+    value = _run_value(result)
+    if value.get('cleanup') != 'closing':
+        return value.get('cleanup', 'unknown_cleanup')
+    identity = value.get('identity')
+    if (not isinstance(identity, dict) or type(identity.get('tabId')) is not int or
+            not _opaque(identity.get('targetId'))):
+        return 'unknown_cleanup'
+    # Neo may return a stale page alias immediately after close. Refresh once,
+    # then verify the physical tab in a separate RPC; never repeat the close.
+    client.call('tabs', {'action': 'list'}, timeout=2)
+    code = '''const identity = IDENTITY;
+return {cleanup:(await browser.pages.list()).some(page =>
+  page.tabId === identity.tabId || page.targetId === identity.targetId) ? 'unknown_cleanup' : 'closed'};'''.replace(
+        'IDENTITY', json.dumps({'tabId': identity['tabId'], 'targetId': identity['targetId']}))
+    return _run_value(client.call('run', {'code': code, 'timeout': 2000}, timeout=3)).get('cleanup', 'unknown_cleanup')
+
+
+def _recover_cleanup(client, token, url, page_id=None, reconnect=False, identity=None):
     """Query one token-bound page after an unknown run; never open another."""
     # Recovery is independently bounded. The failed run is never resubmitted.
-    client.deadline = time.monotonic() + 8
+    client.deadline = time.monotonic() + 12
     try:
         try:
             if reconnect:
                 raise _SessionLost('The previous session cannot identify a current page ID.')
-            code = _cleanup_script(token, url, page_id)
-            return _run_value(client.call('run', {'code': code, 'timeout': 5000}, timeout=6)).get('cleanup', 'unknown_cleanup')
+            code = _cleanup_script(token, url, page_id, identity)
+            return _confirmed_cleanup(client, client.call('run', {'code': code, 'timeout': 5000}, timeout=6))
         except _SessionLost:
-            # Page IDs are discarded after reconnection. Only the exact marker
-            # or a DOM nonce set by this read can identify the prior tab.
+            # Discard page IDs after reconnection. A recorded physical identity
+            # with matching owner/group, exact marker or DOM nonce is required.
             client.initialize()
             client.call('name_session', {'name': 'read ' + token, 'category': 'testing-and-qa',
                 'summary': 'Recover only the known temporary content-read tab.'})
             client.call('tabs', {'action': 'list'})
-            code = _cleanup_script(token, url)
-            return _run_value(client.call('run', {'code': code, 'timeout': 3000}, timeout=4)).get('cleanup', 'unknown_cleanup')
+            code = _cleanup_script(token, url, identity=identity)
+            return _confirmed_cleanup(client, client.call('run', {'code': code, 'timeout': 3000}, timeout=4))
     except NeoBrowserError:
         return 'unknown_cleanup'
 
@@ -500,7 +556,7 @@ def read_dom(url, javascript, timeout=45):
     client = _RPCClient(os.environ.get('LINKGET_NEO_MCP_ENDPOINT', DEFAULT_ENDPOINT), time.monotonic() + timeout)
     token = uuid.uuid4().hex
     _prepare(client, token)
-    confirmed_cleanup, page_id = None, None
+    confirmed_cleanup, page_id, identity = None, None, None
     try:
         # Creation is a separate one-shot RPC. A run never opens another tab.
         created = client.call('tabs', {'action': 'new', 'url': url + '#linkget-neo-' + token})
@@ -511,6 +567,12 @@ def read_dom(url, javascript, timeout=45):
         wait_ms = min(MAX_WAIT_MS, max(100, run_ms - 7000))
         value = _run_value(client.call('run', {'code': _read_script(url, javascript, token, wait_ms, page_id),
                                              'timeout': run_ms}, timeout=run_ms / 1000 + 1))
+        raw_identity = value.get('identity')
+        if isinstance(raw_identity, dict):
+            # Identity comes from the browser inventory, never from page DOM.
+            if (type(raw_identity.get('pageId')) is int and type(raw_identity.get('tabId')) is int and
+                    all(_opaque(raw_identity.get(key)) for key in ('targetId', 'groupId', 'ownerAgentId'))):
+                identity = {key: raw_identity[key] for key in ('pageId', 'tabId', 'targetId', 'groupId', 'ownerAgentId')}
         if value.get('ok') is not True:
             stage = value.get('stage', value.get('error'))
             if not isinstance(stage, str) or stage not in FAILURE_STAGES:
@@ -529,7 +591,7 @@ def read_dom(url, javascript, timeout=45):
             raise NeoBrowserError('Not enough bounded time remains to extract and clean the Neo content page.')
         wait_ms = min(MAX_WAIT_MS, max(100, evaluate_ms - 1000))
         extracted = _evaluate_value(client.call('evaluate', {
-            'page': page_id, 'code': _page_script(url, javascript, token, wait_ms),
+            'page': identity['pageId'] if identity else page_id, 'code': _page_script(url, javascript, token, wait_ms),
             'maxChars': 200000, 'timeout': evaluate_ms}, timeout=evaluate_ms / 1000 + 1))
         if extracted.get('owner') is not True or extracted.get('url') != url:
             raise NeoBrowserError('Neo content read failed at stage: dom_identity_mismatch.')
@@ -546,13 +608,13 @@ def read_dom(url, javascript, timeout=45):
             raise NeoBrowserError('Neo returned invalid article/player DOM data.') from None
         if size > MAX_DOM_BYTES:
             raise NeoBrowserError('Neo DOM content exceeded its byte limit.')
-        cleanup = _recover_cleanup(client, token, url, page_id)
+        cleanup = _recover_cleanup(client, token, url, page_id, identity=identity)
         if cleanup not in ('closed', 'preserved_navigated_tab'):
             raise NeoBrowserError('Neo content read failed at stage: cleanup_unconfirmed.')
         confirmed_cleanup = cleanup
     except NeoBrowserError as error:
         cleanup = confirmed_cleanup or _recover_cleanup(client, token, url, page_id,
-                                                        reconnect=isinstance(error, _SessionLost))
+                                                        reconnect=isinstance(error, _SessionLost), identity=identity)
         raise NeoBrowserError(str(error) + ' Cleanup result: ' + cleanup + '; tab creation and the read run were not retried.') from None
     return {**dom, 'browser_controller': {'kind': 'browseros_neo_mcp', 'reader_revision': 1,
         'temporary_tab_cleanup': cleanup, 'credentials_exported': False, 'server_version': client.server_version}}
