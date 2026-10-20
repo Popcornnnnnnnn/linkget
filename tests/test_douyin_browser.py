@@ -11,10 +11,12 @@ import unittest
 class DouyinBrowserTests(unittest.TestCase):
     def snapshot(self, *, sources=("https://cdn.example/one.jpg",), counter="",
                  slides=1, complete=True, width=690, track_children=1,
-                 panel_children=1, panel_class="focusPanel", video=False, motion=None):
+                 panel_children=1, panel_class="focusPanel", video=False, motion=None,
+                 metadata=None, metadata_post_id="123"):
         fixture = dict(sources=sources, counter=counter, slides=slides,
                        complete=complete, width=width, track_children=track_children,
-                       panel_children=panel_children, panel_class=panel_class, video=video, motion=motion or [])
+                       panel_children=panel_children, panel_class=panel_class, video=video, motion=motion or [],
+                       metadata=metadata, metadata_post_id=metadata_post_id)
         script = (Path(__file__).resolve().parents[1] / "src/linkget/douyin_browser.js").read_text()
         harness = r"""
 const fixture = JSON.parse(process.argv[1]);
@@ -39,6 +41,12 @@ const player = {innerText: fixture.counter, querySelectorAll: selector => {
   return [];
 }};
 global.document = {querySelector: () => player};
+global.location = {pathname: '/note/123'};
+const metadata = fixture.metadata === null
+  ? [...new Set(fixture.sources)].map(src => ({urlList: [src], video: null}))
+  : fixture.metadata;
+if (metadata !== false) player.__reactFiber$fixture = {memoizedProps: {
+  awemeInfo: {awemeId: fixture.metadata_post_id, images: metadata}}};
 """
         result = subprocess.run([shutil.which("node"), "-e",
                                  harness + "\nconsole.log(JSON.stringify((" + script + ")()));",
@@ -71,29 +79,45 @@ global.document = {querySelector: () => player};
                                        track_children=2, panel_children=3),
                          {"images": [{"url_list": [url], "live_photo_type": 0} for url in urls]})
 
-    def test_single_image_preserves_decoded_motion_but_not_background_music(self):
-        result = self.snapshot(motion=[dict(src="https://cdn.example/motion.mp4"),
-                                       dict(src="https://cdn.example/music.mp3", width=0, height=0)])
+    def test_single_image_preserves_motion_before_video_mounts(self):
+        metadata = [{"urlList": ["https://cdn.example/one.jpg"], "livePhotoType": 1,
+                     "video": {"width": 720, "height": 1280,
+                               "playAddr": [{"src": "https://cdn.example/motion.mp4"}]}}]
+        result = self.snapshot(metadata=metadata)
         self.assertEqual(result["images"][0], {
             "url_list": ["https://cdn.example/one.jpg"], "live_photo_type": 1,
             "video": {"play_addr": {"url_list": ["https://cdn.example/motion.mp4"]},
                       "width": 720, "height": 1280}})
 
-    def test_gallery_motion_is_associated_with_its_slide(self):
+    def test_lazy_gallery_motion_is_associated_by_source_metadata(self):
+        metadata = [{"urlList": ["https://cdn.example/one.jpg"], "video": None},
+                    {"urlList": ["https://cdn.example/two.jpg"], "livePhotoType": 1,
+                     "video": {"width": 720, "height": 1280,
+                               "playAddr": [{"src": "https://cdn.example/motion.mp4"}]}}]
         result = self.snapshot(sources=["https://cdn.example/one.jpg", "https://cdn.example/two.jpg"],
-                               counter="1/2", slides=2, motion=[dict(src="https://cdn.example/motion.mp4", image=1)])
+                               counter="1/2", slides=2, metadata=metadata)
         self.assertEqual([item["live_photo_type"] for item in result["images"]], [0, 1])
 
-    def test_ambiguous_or_unloaded_motion_is_not_accepted_as_still_only(self):
-        for motion in ([dict(src="https://cdn.example/motion.mp4", width=0)],
-                       [dict(src="https://cdn.example/motion.mp4", readyState=1)],
-                       [dict(src="", image=0, width=0)],
-                       [dict(src="blob:unsupported")],
-                       [dict(src="https://cdn.example/one.mp4"), dict(src="https://cdn.example/two.mp4")]):
-            with self.subTest(motion=motion):
-                self.assertIsNone(self.snapshot(motion=motion))
-        self.assertIsNone(self.snapshot(sources=["https://cdn.example/one.jpg", "https://cdn.example/two.jpg"],
-                                        counter="1/2", slides=2, motion=[dict(src="https://cdn.example/motion.mp4")]))
+    def test_unknown_or_incomplete_metadata_keeps_polling(self):
+        for metadata in (False, [], [{"urlList": ["https://cdn.example/one.jpg"]}],
+                         [{"urlList": ["https://cdn.example/one.jpg"], "livePhotoType": 1}],
+                         [{"urlList": ["https://cdn.example/one.jpg"], "video": {}}],
+                         [{"urlList": ["https://cdn.example/other.jpg"], "video": None}]):
+            with self.subTest(metadata=metadata):
+                self.assertIsNone(self.snapshot(metadata=metadata))
+        self.assertIsNone(self.snapshot(metadata_post_id="456"))
+
+    def test_background_audio_url_shape_does_not_determine_motion(self):
+        for source in ("https://cdn.example/music.mp3", "https://cdn.example/play?id=music", "blob:music"):
+            with self.subTest(source=source):
+                self.assertEqual(self.snapshot(motion=[dict(src=source, width=0, height=0)])["images"][0]["live_photo_type"], 0)
+
+    def test_motion_uses_highest_exposed_image_rendition(self):
+        metadata = [{"urlList": ["https://cdn.example/one.jpg"], "livePhotoType": 1,
+                     "video": {"width": 720, "height": 1280, "playAddr": [{"src": "https://cdn.example/720.mp4"}],
+                               "bitRateList": [{"width": 1080, "height": 1920,
+                                                "playAddr": [{"src": "https://cdn.example/1080.mp4"}]}]}}]
+        self.assertEqual(self.snapshot(metadata=metadata)["images"][0]["video"]["width"], 1080)
 
     def test_unknown_gallery_and_video_paths(self):
         self.assertIsNone(self.snapshot(sources=[]))

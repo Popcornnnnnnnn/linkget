@@ -23,25 +23,40 @@ function snapshot() {
     }
     const pictures = Array.from(player.querySelectorAll('.dySwiperSlide img'));
     if (pictures.some(image => !image.complete || !image.naturalWidth)) return null;
-    const items = images.map(url => ({url_list: [url], live_photo_type: 0}));
-    // Image-post players also use <video> for background music. A motion
-    // component must decode visual frames and belong to exactly one still.
-    const videos = Array.from(player.querySelectorAll('video')).filter(video =>
-      video.videoWidth || (video.currentSrc && !/\.(mp3|m4a|aac|ogg|opus)(?:[?#]|$)/i.test(video.currentSrc))
-      || video.closest('.dySwiperSlide'));
-    for (const video of videos) {
-      if (!video.videoWidth || !video.videoHeight || video.readyState < 2
-          || !/^https:/.test(video.currentSrc)) return null;
-      const slide = video.closest('.dySwiperSlide');
-      const sources = slide ? Array.from(slide.querySelectorAll('img'))
-        .map(image => image.currentSrc || image.src) : [];
-      const matches = images.map((url, index) => sources.includes(url) ? index : -1).filter(index => index >= 0);
-      const index = matches.length === 1 ? matches[0] : !slide && images.length === 1 ? 0 : -1;
-      if (index < 0) return null;
-      const item = items[index];
-      if (item.video && item.video.play_addr.url_list[0] !== video.currentSrc) return null;
-      item.live_photo_type = 1;
-      item.video = {play_addr: {url_list: [video.currentSrc]}, width: video.videoWidth, height: video.videoHeight};
+    // Absence of a rendered <video> does not prove a still is static: motion
+    // can mount later or on an inactive slide. Read only this post's image
+    // content model, never account/session props or top-level music media.
+    const fiberKey = Object.keys(player).find(key => key.startsWith('__reactFiber$'));
+    let fiber = player[fiberKey], metadata;
+    const postId = location.pathname.match(/\/(?:note|video)\/(\d+)\/?$/)?.[1];
+    for (let depth = 0; fiber && depth < 20; depth++, fiber = fiber.return) {
+      const info = fiber.memoizedProps?.awemeInfo;
+      if (postId && info?.awemeId === postId) { metadata = info.images; break; }
+    }
+    if (!Array.isArray(metadata) || metadata.length !== images.length) return null;
+    const used = new Set(), items = [];
+    for (const url of images) {
+      const matches = metadata.filter(image => image.urlList?.includes(url));
+      if (matches.length !== 1 || used.has(matches[0])) return null;
+      const source = matches[0];
+      used.add(source);
+      // The desktop model explicitly normalizes every image's video field
+      // (undefined for static images). Unknown shapes must keep polling.
+      if (!Object.prototype.hasOwnProperty.call(source, 'video') && source.livePhotoType == null) return null;
+      const item = {url_list: [url], live_photo_type: 0};
+      if (source.video || source.livePhotoType) {
+        const video = source.video;
+        if (!video) return null;
+        const variants = [...(video.bitRateList || []), video].filter(entry =>
+          entry.width > 0 && entry.height > 0 && entry.playAddr?.some(address => /^https:/.test(address.src)));
+        variants.sort((a, b) => b.width * b.height - a.width * a.height || (b.bitRate || 0) - (a.bitRate || 0));
+        if (!variants.length) return null;
+        const best = variants[0];
+        item.live_photo_type = 1;
+        item.video = {play_addr: {url_list: best.playAddr.map(address => address.src).filter(url => /^https:/.test(url))},
+                      width: best.width, height: best.height};
+      }
+      items.push(item);
     }
     return {images: items};
   }
