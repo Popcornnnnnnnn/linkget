@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1.dev21
+
+- Preserve explicit per-image motion in Douyin posts and pair each motion track with its still, including lazy-loaded galleries. Exclude post background music from motion pairs.
+- Refuse Photos imports and Live Photo packaging when public image metadata cannot establish motion completeness. Ordinary folder downloads retain an explicit incomplete-motion warning.
+- Accept a content-only Douyin snapshot from an authorized browser connector with `--page-data FILE --browser none`. Check the exact post identity before downloading; preserve that input path for retry.
+
 ## 0.2.1.dev20
 
 - After a same-item retry/recovery has saved and verified complete media, remove its unchanged tracked earlier staging directories, including partial downloads, metadata and logs. Keep files on failure/cancellation, content changes, symbolic links, destination overlap or uncertain ownership.

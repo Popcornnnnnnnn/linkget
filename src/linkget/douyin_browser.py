@@ -5,6 +5,25 @@ import re
 import subprocess
 
 
+def load_item(path, url):
+    """Accept a connector's content-only snapshot without reading a browser."""
+    path = Path(path).expanduser()
+    if path.stat().st_size > 8_000_000:
+        raise ValueError("Douyin page data exceeds the 8 MB limit.")
+    item = json.loads(path.read_text())
+    post_id = url.rstrip('/').rsplit('/', 1)[-1]
+    if (not isinstance(item, dict) or str(item.get('aweme_id')) != post_id
+            or set(item) - {'aweme_id', 'images', 'video', 'desc'}
+            or not (item.get('images') or item.get('video'))):
+        raise ValueError("Expected content-only page data for this exact Douyin post.")
+    if item.get('images') and (not isinstance(item['images'], list)
+                              or any(not isinstance(image, dict) for image in item['images'])):
+        raise ValueError("Douyin page data contains invalid images.")
+    if item.get('video') and not isinstance(item['video'], dict):
+        raise ValueError("Douyin page data contains an invalid video.")
+    return item
+
+
 def read_item(url):
     script = Path(__file__).with_suffix(".applescript")
     javascript = Path(__file__).with_suffix(".js").read_text()

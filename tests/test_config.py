@@ -30,7 +30,7 @@ class DestinationTests(unittest.TestCase):
         return out.getvalue()
 
     def download(self, *options):
-        def media(url, folder, cookies):
+        def media(url, folder, cookies, **kwargs):
             (folder / "sample.jpg").write_bytes(b"image")
         with patch.object(cli, "download_douyin", side_effect=media):
             return self.command("https://www.douyin.com/note/123", "--browser", "none", *options)

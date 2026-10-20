@@ -24,7 +24,7 @@ if __package__:
     from .session import LOGIN_URLS, prepare_session
     from .links import normalize_link
     from .douyin import download as download_douyin, MediaUnavailable as DouyinMediaUnavailable
-    from .douyin_browser import read_item as read_douyin_browser
+    from .douyin_browser import read_item as read_douyin_browser, load_item as load_douyin_page
     from .douyin import DownloadInterrupted as DouyinDownloadInterrupted
     from .xiaohongshu import download as download_xiaohongshu, BrowserRequired
     from .kuaishou import download as download_kuaishou, BrowserRequired as KuaishouBrowserRequired
@@ -43,7 +43,7 @@ else:  # Homebrew launches this file directly.
     from session import LOGIN_URLS, prepare_session
     from links import normalize_link
     from douyin import download as download_douyin, MediaUnavailable as DouyinMediaUnavailable
-    from douyin_browser import read_item as read_douyin_browser
+    from douyin_browser import read_item as read_douyin_browser, load_item as load_douyin_page
     from douyin import DownloadInterrupted as DouyinDownloadInterrupted
     from xiaohongshu import download as download_xiaohongshu, BrowserRequired
     from kuaishou import download as download_kuaishou, BrowserRequired as KuaishouBrowserRequired
@@ -483,6 +483,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     parser.add_argument("--date-now", action="store_true", help="set the date of newly imported Photos items to now")
     parser.add_argument("--report", type=Path, help="write download evidence to a new JSON file for comparison")
     parser.add_argument("--live-photos", action="store_true", help="package exposed Live Photo pairs on macOS; original downloads are preserved")
+    parser.add_argument("--page-data", type=Path, help="Douyin only: content-only JSON for one post from a browser connector; requires --browser none")
     parser.add_argument("--jobs", type=int, metavar="N", help="limit simultaneous batch downloads; default: all links")
     parser.add_argument("--verify", action="store_true", help="recover: verify existing Photos originals before cleaning staged copies")
     parser.add_argument("--item", type=int, metavar="N", help="recover: save or verify only one unfinished item")
@@ -493,6 +494,14 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         if tokens[index] == "--folder" and tokens[index + 1].startswith(("http://", "https://")):
             tokens.insert(index + 1, ".")
     args = parser.parse_intermixed_args(tokens)
+    if args.page_data:
+        args.page_data = args.page_data.expanduser().resolve()
+        if args.browser != "none" or len(args.link) not in {1, 2}:
+            parser.error("--page-data requires one Douyin post (or retry TASK) and --browser none.")
+        if args.link[0] == "retry":
+            pass
+        elif len(args.link) != 1 or not args.link[0].startswith(('http://', 'https://')):
+            parser.error("--page-data applies to a single Douyin post, not other commands or batches.")
     if args.jobs is not None and args.jobs < 1:
         parser.error("--jobs must be a positive integer.")
     if args.item is not None and args.item < 1:
@@ -512,6 +521,8 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 return recovery.listing(status)
             journal = jobs.select(identifiers[0] if identifiers else None)
             restore_options(args, journal, tokens)
+            if getattr(args, 'page_data', None) and len(journal.data['items']) != 1:
+                raise ValueError("--page-data cannot be used with a multi-post task.")
             preflight.destination(args, find_tool)
             if command == "recover":
                 return recovery.restore(journal, args, status, save_folder, import_photos)
@@ -653,6 +664,10 @@ def restore_options(args, journal, tokens):
             args.profile = None
     if args.profile and args.browser in {"auto", "none"}:
         raise ValueError("--profile requires an explicit browser.")
+    if getattr(args, 'page_data', None) and args.browser != 'none':
+        raise ValueError("--page-data requires --browser none, including on retry.")
+    if getattr(args, 'page_data', None):
+        args.page_data = Path(args.page_data).expanduser().resolve()
     if args.report and (args.report.expanduser().exists() or not args.report.expanduser().parent.is_dir()):
         raise ValueError("Choose a new report path in an existing folder.")
 
@@ -700,6 +715,10 @@ def download(args, setup_results, records=None, media_consumer=None):
             url = normalize_link(url)
         site, engine, domain = route(url)
         evidence.update(reference=reference(url), site=site)
+        page_data = getattr(args, 'page_data', None)
+        if page_data and (engine != 'douyin' or args.browser != 'none'):
+            raise ValueError("--page-data supports only Douyin with --browser none.")
+        provided_item = load_douyin_page(page_data, url) if page_data else None
         if not args.folder and sys.platform != "darwin":
             raise ValueError("Photos is available on macOS only. Use --folder to choose a destination.")
         required = ([] if engine in {"douyin", "xiaohongshu", "kuaishou", "pixiv"} else [engine]) + (["ffmpeg", "ffprobe"] if engine == "yt-dlp" else [])
@@ -750,7 +769,7 @@ def download(args, setup_results, records=None, media_consumer=None):
         jobs.record(stage=str(stage.resolve()), stage_identity=staging.identity(stage))
         tried_saved = cookie_path is not None
         tried_browser = used_browser or domain in setup_results
-        browser_item = None
+        browser_item = provided_item
         tried_douyin_page = False
         attempt = 0
         while True:
@@ -789,9 +808,13 @@ def download(args, setup_results, records=None, media_consumer=None):
                                     downloader = download_pixiv
                                 else:
                                     downloader = download_kuaishou
-                                notes = (downloader(url, media_dir, browser_item=browser_item)
-                                         if engine == "douyin" and browser_item is not None
-                                         else downloader(url, media_dir, cookie_path))
+                                if engine == "douyin" and (args.live_photos or not args.folder):
+                                    notes = downloader(url, media_dir, cookie_path,
+                                                       browser_item=browser_item, require_motion=True)
+                                else:
+                                    notes = (downloader(url, media_dir, browser_item=browser_item)
+                                             if engine == "douyin" and browser_item is not None
+                                             else downloader(url, media_dir, cookie_path))
                                 if isinstance(notes, DownloadResult):
                                     download_info = notes
                                     source_notes.extend(notes.notes)
@@ -909,6 +932,8 @@ def download(args, setup_results, records=None, media_consumer=None):
         evidence.update(files=media_records, expected_count=download_info.expected_count,
                         missing_motion=download_info.missing_motion, live_pairs=download_info.live_pairs,
                         highest_quality="not_verified", watermark="not_verified")
+        if 'motion_metadata_complete' in download_info.metadata:
+            evidence['motion_metadata_complete'] = download_info.metadata['motion_metadata_complete']
         if any(record.get('probe_ok') is False for record in media_records):
             raise RuntimeError("The downloaded media did not pass format validation. Files have been kept; nothing was saved or imported.")
         status("Quality", quality_summary(media_records))

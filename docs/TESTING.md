@@ -16,6 +16,7 @@ Covered behaviors include:
 - Weibo mixed media, YouTube video/Shorts routing, runtime guidance, quality display and playlist/live rejection;
 - new-site session classification, alternate YouTube login cookies and excluding Google account cookies;
 - Douyin share-page initialization when the requested post's SSR shell precedes its anonymous visitor cookie; bounded failure for persistent shells, website checks and another post;
+- Douyin image-scoped motion downloads and explicit still/video pairs, exclusion of image-post background music, actual fallback filenames, interrupted or missing motion, and refusal of stripped public metadata in `--live-photos` mode; browser fixtures cover current-post metadata, lazy motion, missing or ambiguous metadata, and extensionless/blob background audio;
 - staged Photos originals, content-based filenames, repeated content, same-name different content, verified-copy cleanup, referenced/mismatched/symlink copy rejection, and import/copy failures;
 - folder collisions and duplicate handling, progress cleanup, bare `--folder`, and invalid command guidance;
 - batch input numbering, simultaneous download start for every link, independent failure continuation, partial-file preservation, invalid input, multiline sharing text, one-time setup, duplicate handling, cancellation, serialized Photos saves and login prompts on the calling thread without browser reads;
