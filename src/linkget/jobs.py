@@ -21,7 +21,7 @@ else:
     from hashing import digest_session
 
 _context = threading.local()
-OPTIONS = ("folder", "date_now", "live_photos", "browser", "profile", "jobs")
+OPTIONS = ("folder", "date_now", "live_photos", "browser", "profile", "jobs", "page_data")
 INCOMPLETE = {"pending", "running", "failed", "cancelled"}
 
 

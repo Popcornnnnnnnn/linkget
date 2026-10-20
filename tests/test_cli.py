@@ -1,6 +1,7 @@
 """Behavior checks run only against temporary files; Photos is never invoked."""
 import contextlib
 import io
+import json
 import os
 import sys
 from pathlib import Path
@@ -23,6 +24,61 @@ class CommandTests(unittest.TestCase):
         probe = patch.object(cli, "inspect_files", side_effect=uninspected)
         probe.start()
         self.addCleanup(probe.stop)
+
+    def test_douyin_connector_data_reaches_downloader_without_browser_access(self):
+        from linkget.media import DownloadResult
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            page = root / 'page.json'
+            item = {'aweme_id': '123', 'images': [{'url_list': ['https://cdn.example/still.jpg'],
+                                                 'live_photo_type': 0}]}
+            page.write_text(json.dumps(item))
+            def download(url, output, *, browser_item):
+                self.assertEqual(browser_item, item)
+                (output / 'still.jpg').write_bytes(b'image')
+                return DownloadResult(expected_count=1, metadata={'motion_metadata_complete': True})
+            with patch.object(cli, 'download_douyin', side_effect=download) as downloader, \
+                    patch.object(cli, 'read_douyin_browser') as browser, \
+                    patch.object(cli, 'prepare_session') as session, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                code = cli.main(['https://www.douyin.com/note/123', '--folder', str(root/'output'),
+                                 '--browser', 'none', '--page-data', str(page)])
+            self.assertEqual(code, 0)
+            self.assertTrue((root/'output/still.jpg').exists())
+            downloader.assert_called_once()
+            browser.assert_not_called()
+            session.assert_not_called()
+
+    def test_douyin_photos_requires_complete_motion_even_without_pairing_flag(self):
+        with patch.object(cli.sys, 'platform', 'darwin'), \
+                patch.object(cli, 'download_douyin', side_effect=cli.DouyinMediaUnavailable('motion unknown')) as download, \
+                patch.object(cli, 'import_photos') as importer, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code = cli.main(['https://www.douyin.com/note/123', '--photos', '--browser', 'none'])
+        self.assertEqual(code, 1)
+        self.assertIs(download.call_args.kwargs['require_motion'], True)
+        importer.assert_not_called()
+
+    def test_douyin_page_data_wrong_post_stops_before_transfer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            page = Path(directory)/'page.json'
+            page.write_text(json.dumps({'aweme_id': '456', 'video': {'play_addr': {'url_list': ['https://cdn.example/video.mp4']}}}))
+            with patch.object(cli, 'download_douyin') as download, \
+                    patch.object(cli, 'import_photos') as importer, \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                code = cli.main(['https://www.douyin.com/note/123', '--folder', str(Path(directory)/'out'),
+                                 '--browser', 'none', '--page-data', str(page)])
+            self.assertEqual(code, 1)
+            download.assert_not_called()
+            importer.assert_not_called()
+
+    def test_page_data_rejects_batch_and_implicit_browser(self):
+        for args in (['https://www.douyin.com/note/123'],
+                     ['batch', 'https://www.douyin.com/note/123', '--browser', 'none']):
+            with patch.object(cli, 'first_run') as setup, contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    cli.main([*args, '--page-data', 'page.json'])
+                setup.assert_not_called()
 
     def test_bare_folder_before_url_uses_current_directory(self):
         from subprocess import CompletedProcess

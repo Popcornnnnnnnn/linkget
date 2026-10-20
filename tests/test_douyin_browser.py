@@ -4,7 +4,24 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import unittest
+
+from linkget.douyin_browser import load_item
+
+
+class ConnectorDataTests(unittest.TestCase):
+    def test_only_exact_post_content_is_accepted(self):
+        valid = {'aweme_id': '123', 'images': [{'live_photo_type': 0, 'url_list': ['https://cdn.example/still.jpg']}]}
+        with tempfile.TemporaryDirectory() as directory:
+            page = Path(directory)/'page.json'
+            page.write_text(json.dumps(valid))
+            self.assertEqual(load_item(page, 'https://www.douyin.com/note/123'), valid)
+            for item in ({**valid, 'aweme_id': '456'}, {**valid, 'cookies': []},
+                         {**valid, 'images': ['not an image']}, {'aweme_id': '123', 'video': 'not a video'}):
+                page.write_text(json.dumps(item))
+                with self.subTest(item=item), self.assertRaises(ValueError):
+                    load_item(page, 'https://www.douyin.com/note/123')
 
 
 @unittest.skipUnless(shutil.which("node"), "Node.js is needed for browser-script tests")

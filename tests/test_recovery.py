@@ -64,6 +64,27 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(jobs.Journal.load(task.identifier).incomplete(), [])
         self.assertEqual(len(list((self.root / "out").iterdir())), 2)
 
+    def test_retry_keeps_connector_input_without_reading_a_browser(self):
+        from linkget.media import DownloadResult
+        page = self.root/'page.json'
+        item = {'aweme_id': '123', 'images': [{'url_list': ['https://cdn.example/still.jpg'], 'live_photo_type': 0}]}
+        page.write_text(json.dumps(item))
+        with patch.object(cli, 'download_douyin', side_effect=RuntimeError('transfer failed')):
+            self.assertEqual(self.run_cli('https://www.douyin.com/note/123', '--page-data', str(page),
+                                         '--browser', 'none', '--folder', str(self.root/'out'))[0], 1)
+        task = self.task()
+        self.assertEqual(task.data['options']['page_data'], str(page.resolve()))
+        def transfer(url, folder, *, browser_item):
+            self.assertEqual(browser_item, item)
+            (folder/'still.jpg').write_bytes(b'image')
+            return DownloadResult(expected_count=1)
+        with patch.object(cli, 'download_douyin', side_effect=transfer) as download, \
+                patch.object(cli, 'read_douyin_browser') as browser:
+            self.assertEqual(self.run_cli('retry', task.identifier)[0], 0)
+        download.assert_called_once()
+        browser.assert_not_called()
+        self.assertEqual(jobs.Journal.load(task.identifier).incomplete(), [])
+
     def test_retry_latest_uses_saved_destination_and_browser_none(self):
         with patch.object(cli, "download_pixiv", side_effect=RuntimeError("timeout")):
             self.run_cli(URL + "2", "--folder", str(self.root / "out"), "--browser", "none")

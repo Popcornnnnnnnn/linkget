@@ -109,7 +109,7 @@ linkget compare public.json connected.json
 
 Reports include post references, filenames, hashes, file properties, source counts, fallback choices, exposed Live Photo pairs and failure categories. They exclude share query tokens, cookies and raw request logs. They are saved only when requested and never overwrite an existing report. They still contain post references and should be reviewed before sharing. Matching bytes establish identical downloads; equal dimensions or different encodings do not establish the uploader's highest quality or absence of watermarks.
 
-On macOS, `--live-photos` packages explicit picture/motion pairs exposed by Xiaohongshu, Weibo and Bilibili. It needs ExifTool and Apple's command-line developer tools (`brew install exiftool`; `xcode-select --install` if missing). Without this option the picture and video stay separate.
+On macOS, `--live-photos` packages explicit picture/motion pairs exposed by Xiaohongshu, Weibo, Bilibili and Douyin. It needs ExifTool and Apple's command-line developer tools (`brew install exiftool`; `xcode-select --install` if missing). Without this option the picture and video stay separate.
 
 ```sh
 linkget 'URL' --folder ~/Downloads --live-photos
@@ -117,6 +117,14 @@ linkget 'URL' --photos --live-photos
 ```
 
 Folder mode saves unchanged downloaded originals and puts paired copies in `Live Photos/`. Photos mode stages both original downloads and paired copies, submits the paired resources together, and removes those staged files after verifying identical managed originals for the saved Photos item IDs. Picture pixels and encoded video/audio streams are preserved; only pairing/container metadata is changed on copies. Packaging dates are normalized for repeat-export deduplication. The still-frame marker is placed at the start; the source camera's original key-frame timing is not recovered. A social-network motion track may have lower resolution than its still picture. Missing exposed motion is reported. macOS offline pair recognition is checked before saving, but actual Photos library pairing/playback needs manual acceptance; it remains unverified for this development version.
+
+Douyin's public share response can omit per-image motion information. Photos imports and `--live-photos` stop when that information is incomplete; ordinary folder downloads report `motion_metadata_complete=false` and a warning. A browser connector such as BrowserOS neo can run the packaged `douyin_browser.js` on the exact post and save a content-only JSON object containing `aweme_id` plus its `images` or `video`. Pass that snapshot to the normal download pipeline:
+
+```sh
+linkget 'https://www.douyin.com/note/POST_ID' --page-data post.json --browser none --folder ~/Downloads/check --live-photos
+```
+
+The page-data input checks the exact post ID and requires `--browser none`; it never opens Chrome or reads browser credentials. It accepts one post per command, retains the input path for retry, and rejects unrelated/raw browser state. Refresh expired media URLs through the same connector. Keep snapshots private because media URLs can be signed. Folder mode performs download and native pair checks without importing into Photos.
 
 ## Default save destination
 
