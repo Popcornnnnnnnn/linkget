@@ -111,9 +111,11 @@ class DouyinMotionTests(unittest.TestCase):
             "play_addr": {"url_list": ["https://cdn.example/music.mp3"]}}}
         content = ("window._ROUTER_DATA = " + json.dumps({"loaderData": {
             "page": {"videoInfoRes": {"item_list": [item]}}}})).encode()
-        with tempfile.TemporaryDirectory() as temporary, patch.object(accounts, "directory", return_value=Path(temporary) / "sessions"), patch.object(douyin, "build_opener") as network, patch.object(cli, "read_douyin_browser") as browser, patch.object(cli, "import_photos") as photos, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
+        # Native prerequisites are outside this portable parser/CLI test.
+        with tempfile.TemporaryDirectory() as temporary, patch.object(accounts, "directory", return_value=Path(temporary) / "sessions"), patch.object(cli.preflight, "destination"), patch.object(douyin, "build_opener") as network, patch.object(cli, "read_douyin_browser") as browser, patch.object(cli, "import_photos") as photos, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
             network.return_value.open.side_effect = lambda *args, **kwargs: Response(content)
-            code = cli.main(["https://www.douyin.com/note/123", "--photos", "--live-photos", "--browser", "none"])
+            code = cli.main(["https://www.douyin.com/note/123", "--folder", str(Path(temporary) / "out"),
+                             "--live-photos", "--browser", "none"])
         self.assertEqual(code, 1)
         self.assertIn("does not establish motion completeness", errors.getvalue())
         self.assertEqual(network.return_value.open.call_count, 1)
@@ -125,7 +127,7 @@ class DouyinMotionTests(unittest.TestCase):
         public_still = {"url_list": image(1)["url_list"]}
         public = ("window._ROUTER_DATA = " + json.dumps({"loaderData": {"page": {
             "videoInfoRes": {"item_list": [{"aweme_id": "123", "images": [public_still]}]}}}})).encode()
-        with tempfile.TemporaryDirectory() as temporary, patch.object(accounts, "directory", return_value=Path(temporary) / "sessions"), patch.object(douyin, "build_opener") as network, patch.object(cli, "read_douyin_browser", return_value=item) as browser, patch.object(cli, "prepare_pairs", side_effect=lambda files, pairs, folder: [(files[0], files[1])]) as package, patch.object(cli, "inspect_files", side_effect=uninspected), patch.object(cli, "import_photos") as photos, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(accounts, "directory", return_value=Path(temporary) / "sessions"), patch.object(cli.preflight, "destination"), patch.object(douyin, "build_opener") as network, patch.object(cli, "read_douyin_browser", return_value=item) as browser, patch.object(cli, "prepare_pairs", side_effect=lambda files, pairs, folder: [(files[0], files[1])]) as package, patch.object(cli, "inspect_files", side_effect=uninspected), patch.object(cli, "import_photos") as photos, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             def respond(request, **kwargs):
                 if "iesdouyin.com" in request.full_url:
                     return Response(public)
