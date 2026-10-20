@@ -21,7 +21,29 @@ function snapshot() {
       if (!pictures.length || pictures.some(image => !image.complete || !image.naturalWidth
           || !/^https:/.test(image.currentSrc || image.src))) return null;
     }
-    return {images: images.map(url => ({url_list: [url]}))};
+    const pictures = Array.from(player.querySelectorAll('.dySwiperSlide img'));
+    if (pictures.some(image => !image.complete || !image.naturalWidth)) return null;
+    const items = images.map(url => ({url_list: [url], live_photo_type: 0}));
+    // Image-post players also use <video> for background music. A motion
+    // component must decode visual frames and belong to exactly one still.
+    const videos = Array.from(player.querySelectorAll('video')).filter(video =>
+      video.videoWidth || (video.currentSrc && !/\.(mp3|m4a|aac|ogg|opus)(?:[?#]|$)/i.test(video.currentSrc))
+      || video.closest('.dySwiperSlide'));
+    for (const video of videos) {
+      if (!video.videoWidth || !video.videoHeight || video.readyState < 2
+          || !/^https:/.test(video.currentSrc)) return null;
+      const slide = video.closest('.dySwiperSlide');
+      const sources = slide ? Array.from(slide.querySelectorAll('img'))
+        .map(image => image.currentSrc || image.src) : [];
+      const matches = images.map((url, index) => sources.includes(url) ? index : -1).filter(index => index >= 0);
+      const index = matches.length === 1 ? matches[0] : !slide && images.length === 1 ? 0 : -1;
+      if (index < 0) return null;
+      const item = items[index];
+      if (item.video && item.video.play_addr.url_list[0] !== video.currentSrc) return null;
+      item.live_photo_type = 1;
+      item.video = {play_addr: {url_list: [video.currentSrc]}, width: video.videoWidth, height: video.videoHeight};
+    }
+    return {images: items};
   }
   const video = Array.from(player.querySelectorAll('video')).find(v => v.videoWidth && /^https:/.test(v.currentSrc));
   if (!video) return null;

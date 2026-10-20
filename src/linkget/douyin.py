@@ -152,6 +152,12 @@ def media_urls(item, prefer_clean=True):
                     raise RuntimeError("No verified watermark-free Douyin image source. Refusing watermarked or unknown variants; nothing has been imported.")
                 clean = urls[0]
             media.append(("image", clean))
+        # The top-level video of an image post can be its background music.
+        # Only image-scoped videos establish a still/motion association.
+        for image in images:
+            motion = image_motion(image)
+            if motion is not None:
+                media.extend(media_urls({"video": motion}, prefer_clean))
         return media
     urls = video_urls(item, prefer_clean)
     if not urls:
@@ -160,6 +166,20 @@ def media_urls(item, prefer_clean=True):
     if prefer_clean and not known_playback(url) and (item.get("video") or {}).get("has_watermark") is not False:
         raise RuntimeError("No verified watermark-free Douyin video source. Refusing watermarked or unknown variants; nothing has been imported.")
     return [("video", url)]
+
+
+def image_motion(image):
+    video = image.get("video")
+    if not video and not image.get("live_photo_type"):
+        return None
+    if (not isinstance(video, dict) or not video.get("width") or not video.get("height")
+            or not video_urls({"video": video}, prefer_clean=False)):
+        raise MediaUnavailable("Douyin did not expose a complete image motion component; nothing has been imported.")
+    return video
+
+
+def motion_metadata_complete(images):
+    return all("live_photo_type" in image or image.get("video") for image in images)
 
 
 def media_extension(head, kind):
@@ -175,7 +195,7 @@ def media_extension(head, kind):
     raise RuntimeError("Douyin returned an unsupported media format or a verification page; nothing has been imported.")
 
 
-def download(url, directory, cookie_path=None, *, browser_item=None):
+def download(url, directory, cookie_path=None, *, browser_item=None, require_motion=False):
     check_cancelled = cancellation_check()
     check_cancelled()
     post_id = urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1]
@@ -228,6 +248,11 @@ def download(url, directory, cookie_path=None, *, browser_item=None):
         if item is None:
             raise MediaUnavailable("Douyin did not expose this post's media. Open the post in the selected browser, complete any verification, then retry. The post may also be unavailable; this does not prove your login expired.")
 
+        images = item.get("images") or (item.get("image_post_info") or {}).get("images") or []
+        motion_complete = motion_metadata_complete(images)
+        if require_motion and not motion_complete:
+            raise MediaUnavailable("Douyin's public image metadata does not establish motion completeness. "
+                                   "Live Photos require a complete browser media set; nothing has been imported.")
         fallback_used = False
         try:
             media = media_urls(item)
@@ -277,17 +302,30 @@ def download(url, directory, cookie_path=None, *, browser_item=None):
                 partial.rename(path)
             return path.name, local_fallback or initial_fallback
 
-        variants = {}
+        variants, filenames = {}, {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             futures = [executor.submit(_download_one, index, kind, media_url) for index, (kind, media_url) in enumerate(media, 1)]
+            indexes = {future: index for index, future in enumerate(futures, 1)}
             for future in concurrent.futures.as_completed(futures):
                 name, fallback = future.result()
+                filenames[indexes[future]] = name
                 variants[name] = "fallback" if fallback else "preferred_source"
                 if fallback:
                     fallback_used = True
 
-        return DownloadResult(["Douyin: clean source unavailable; kept the exposed media, which may contain watermarks."] if fallback_used else [], len(media), variants,
-                              metadata={'description': item.get('desc', '')})
+        pairs = []
+        motion_index = len(images) + 1
+        for index, image in enumerate(images, 1):
+            if image_motion(image) is not None:
+                pairs.append((filenames[index], filenames[motion_index]))
+                motion_index += 1
+        notes = (["Douyin: clean source unavailable; kept the exposed media, which may contain watermarks."] if fallback_used else [])
+        if not motion_complete:
+            notes.append("Douyin: public image metadata does not verify motion completeness; "
+                         "use --live-photos with a complete browser media set to preserve motion.")
+        return DownloadResult(notes, len(media), variants, pairs,
+                              metadata={'description': item.get('desc', ''),
+                                        'motion_metadata_complete': motion_complete})
     except HTTPError as error:
         raise RuntimeError(f"Douyin request failed (HTTP {error.code}). Open the post in your browser and check access or verification, then retry.") from None
     except (URLError, OSError, HTTPException) as error:

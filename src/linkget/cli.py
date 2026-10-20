@@ -789,9 +789,13 @@ def download(args, setup_results, records=None, media_consumer=None):
                                     downloader = download_pixiv
                                 else:
                                     downloader = download_kuaishou
-                                notes = (downloader(url, media_dir, browser_item=browser_item)
-                                         if engine == "douyin" and browser_item is not None
-                                         else downloader(url, media_dir, cookie_path))
+                                if engine == "douyin" and args.live_photos:
+                                    notes = downloader(url, media_dir, cookie_path,
+                                                       browser_item=browser_item, require_motion=True)
+                                else:
+                                    notes = (downloader(url, media_dir, browser_item=browser_item)
+                                             if engine == "douyin" and browser_item is not None
+                                             else downloader(url, media_dir, cookie_path))
                                 if isinstance(notes, DownloadResult):
                                     download_info = notes
                                     source_notes.extend(notes.notes)
@@ -909,6 +913,8 @@ def download(args, setup_results, records=None, media_consumer=None):
         evidence.update(files=media_records, expected_count=download_info.expected_count,
                         missing_motion=download_info.missing_motion, live_pairs=download_info.live_pairs,
                         highest_quality="not_verified", watermark="not_verified")
+        if 'motion_metadata_complete' in download_info.metadata:
+            evidence['motion_metadata_complete'] = download_info.metadata['motion_metadata_complete']
         if any(record.get('probe_ok') is False for record in media_records):
             raise RuntimeError("The downloaded media did not pass format validation. Files have been kept; nothing was saved or imported.")
         status("Quality", quality_summary(media_records))

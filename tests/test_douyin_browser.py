@@ -11,10 +11,10 @@ import unittest
 class DouyinBrowserTests(unittest.TestCase):
     def snapshot(self, *, sources=("https://cdn.example/one.jpg",), counter="",
                  slides=1, complete=True, width=690, track_children=1,
-                 panel_children=1, panel_class="focusPanel", video=False):
+                 panel_children=1, panel_class="focusPanel", video=False, motion=None):
         fixture = dict(sources=sources, counter=counter, slides=slides,
                        complete=complete, width=width, track_children=track_children,
-                       panel_children=panel_children, panel_class=panel_class, video=video)
+                       panel_children=panel_children, panel_class=panel_class, video=video, motion=motion or [])
         script = (Path(__file__).resolve().parents[1] / "src/linkget/douyin_browser.js").read_text()
         harness = r"""
 const fixture = JSON.parse(process.argv[1]);
@@ -25,11 +25,17 @@ const panel = {children: Array(fixture.panel_children),
 const track = {children: Array(fixture.track_children), parentElement: panel};
 const slides = Array.from({length: fixture.slides}, () => ({parentElement: track,
   querySelectorAll: selector => selector === 'img' ? pictures : []}));
+const motion = fixture.motion.map(item => ({currentSrc: item.src,
+  videoWidth: item.width ?? 720, videoHeight: item.height ?? 1280,
+  readyState: item.readyState ?? 4,
+  closest: () => item.image === undefined ? null : {
+    querySelectorAll: () => [pictures[item.image]]}}));
 const player = {innerText: fixture.counter, querySelectorAll: selector => {
   if (selector === '.dySwiperSlide img') return pictures;
   if (selector === '.dySwiperSlide') return slides;
   if (selector === 'video' && fixture.video) return [{videoWidth: 1920,
     videoHeight: 1080, readyState: 4, currentSrc: 'https://cdn.example/video.mp4'}];
+  if (selector === 'video') return motion;
   return [];
 }};
 global.document = {querySelector: () => player};
@@ -41,7 +47,7 @@ global.document = {querySelector: () => player};
 
     def test_reported_single_slide_with_duplicate_rendered_image(self):
         result = self.snapshot(sources=["https://cdn.example/one.jpg"] * 2)
-        self.assertEqual(result, {"images": [{"url_list": ["https://cdn.example/one.jpg"]}]})
+        self.assertEqual(result, {"images": [{"url_list": ["https://cdn.example/one.jpg"], "live_photo_type": 0}]})
 
     def test_single_picture_without_counter(self):
         self.assertEqual(len(self.snapshot()["images"]), 1)
@@ -63,7 +69,31 @@ global.document = {querySelector: () => player};
         urls = ["https://cdn.example/two.jpg", "https://cdn.example/one.jpg"]
         self.assertEqual(self.snapshot(sources=urls, counter="1/2", slides=2,
                                        track_children=2, panel_children=3),
-                         {"images": [{"url_list": [url]} for url in urls]})
+                         {"images": [{"url_list": [url], "live_photo_type": 0} for url in urls]})
+
+    def test_single_image_preserves_decoded_motion_but_not_background_music(self):
+        result = self.snapshot(motion=[dict(src="https://cdn.example/motion.mp4"),
+                                       dict(src="https://cdn.example/music.mp3", width=0, height=0)])
+        self.assertEqual(result["images"][0], {
+            "url_list": ["https://cdn.example/one.jpg"], "live_photo_type": 1,
+            "video": {"play_addr": {"url_list": ["https://cdn.example/motion.mp4"]},
+                      "width": 720, "height": 1280}})
+
+    def test_gallery_motion_is_associated_with_its_slide(self):
+        result = self.snapshot(sources=["https://cdn.example/one.jpg", "https://cdn.example/two.jpg"],
+                               counter="1/2", slides=2, motion=[dict(src="https://cdn.example/motion.mp4", image=1)])
+        self.assertEqual([item["live_photo_type"] for item in result["images"]], [0, 1])
+
+    def test_ambiguous_or_unloaded_motion_is_not_accepted_as_still_only(self):
+        for motion in ([dict(src="https://cdn.example/motion.mp4", width=0)],
+                       [dict(src="https://cdn.example/motion.mp4", readyState=1)],
+                       [dict(src="", image=0, width=0)],
+                       [dict(src="blob:unsupported")],
+                       [dict(src="https://cdn.example/one.mp4"), dict(src="https://cdn.example/two.mp4")]):
+            with self.subTest(motion=motion):
+                self.assertIsNone(self.snapshot(motion=motion))
+        self.assertIsNone(self.snapshot(sources=["https://cdn.example/one.jpg", "https://cdn.example/two.jpg"],
+                                        counter="1/2", slides=2, motion=[dict(src="https://cdn.example/motion.mp4")]))
 
     def test_unknown_gallery_and_video_paths(self):
         self.assertIsNone(self.snapshot(sources=[]))
