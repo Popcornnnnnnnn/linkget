@@ -120,6 +120,33 @@ class RecoveryTests(unittest.TestCase):
         self.assertTrue((self.root / "out/1.jpg").exists())
         self.assertFalse(stage.exists())
 
+    def test_incomplete_douyin_ready_sets_cannot_override_destination_to_photos(self):
+        for command in ('retry', 'recover'):
+            for completeness in (False, None):
+                with self.subTest(command=command, completeness=completeness):
+                    task = self.failed_save()
+                    row = task.data['items'][0]
+                    source = Path(row['ready']['files'][0]['path'])
+                    row['ready']['evidence'].update(site='Douyin', reference='www.douyin.com/note/123')
+                    if completeness is not None:
+                        row['ready']['evidence']['motion_metadata_complete'] = completeness
+                    task.write()
+                    with patch.object(cli.preflight, 'destination'), patch.object(cli, 'import_photos') as importer:
+                        code, out, _ = self.run_cli(command, task.identifier, '--photos')
+                    self.assertEqual(code, 1)
+                    self.assertIn('motion completeness is unknown', out)
+                    importer.assert_not_called()
+                    self.assertTrue(source.exists())
+
+    def test_complete_douyin_ready_set_can_be_restored_to_photos(self):
+        task = self.failed_save()
+        task.data['items'][0]['ready']['evidence'].update(site='Douyin', motion_metadata_complete=True)
+        task.write()
+        with patch.object(cli.preflight, 'destination'), \
+                patch.object(cli, 'import_photos', side_effect=lambda files, date: (files, 0)) as importer:
+            self.assertEqual(self.run_cli('recover', task.identifier, '--photos')[0], 0)
+        importer.assert_called_once()
+
     def partial_task(self):
         def partial(url, folder, cookies):
             (folder / "1.jpg.part").write_bytes(b"partial")

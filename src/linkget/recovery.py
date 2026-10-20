@@ -2,6 +2,7 @@
 from pathlib import Path
 from contextlib import nullcontext
 import subprocess
+from urllib.parse import urlsplit
 
 if __package__:
     from . import jobs, staging
@@ -101,6 +102,18 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                         ready = row.get("ready")
                         if not ready:
                             raise ValueError("The download was incomplete; use linkget retry " + journal.identifier)
+                        evidence = ready.get('evidence', {})
+                        reference = evidence.get('reference', row.get('input', ''))
+                        source = urlsplit(reference if '://' in reference else 'https://' + reference)
+                        douyin = (evidence.get('site') == 'Douyin'
+                                  or source.hostname in {'douyin.com', 'www.douyin.com', 'v.douyin.com'})
+                        media = evidence.get('files', [])
+                        ordinary_video = bool(media) and all(record.get('kind') == 'video' for record in media)
+                        if (douyin and not ordinary_video and (args.folder is None or args.live_photos)
+                                and evidence.get('motion_metadata_complete') is not True):
+                            raise ValueError("Retained Douyin motion completeness is unknown. Refresh connector page data "
+                                             "and retry --redownload before Photos import or Live Photo packaging; "
+                                             "separate files can still be recovered with --folder.")
                         stage = Path(row.get("stage", ""))
                         if not stage.name.startswith("linkget-") or stage.is_symlink() or not stage.is_dir():
                             raise ValueError("The recorded staging folder is unavailable; use retry --redownload.")

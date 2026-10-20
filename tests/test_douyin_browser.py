@@ -72,7 +72,11 @@ if (metadata !== false) player.__reactFiber$fixture = {memoizedProps: {
 
     def test_reported_single_slide_with_duplicate_rendered_image(self):
         result = self.snapshot(sources=["https://cdn.example/one.jpg"] * 2)
-        self.assertEqual(result, {"images": [{"url_list": ["https://cdn.example/one.jpg"], "live_photo_type": 0}]})
+        self.assertEqual(result, {"aweme_id": "123", "images": [{"url_list": ["https://cdn.example/one.jpg"], "live_photo_type": 0}]})
+        with tempfile.TemporaryDirectory() as directory:
+            page = Path(directory)/'snapshot.json'
+            page.write_text(json.dumps(result))
+            self.assertEqual(load_item(page, 'https://www.douyin.com/note/123'), result)
 
     def test_single_picture_without_counter(self):
         self.assertEqual(len(self.snapshot()["images"]), 1)
@@ -94,7 +98,7 @@ if (metadata !== false) player.__reactFiber$fixture = {memoizedProps: {
         urls = ["https://cdn.example/two.jpg", "https://cdn.example/one.jpg"]
         self.assertEqual(self.snapshot(sources=urls, counter="1/2", slides=2,
                                        track_children=2, panel_children=3),
-                         {"images": [{"url_list": [url], "live_photo_type": 0} for url in urls]})
+                         {"aweme_id": "123", "images": [{"url_list": [url], "live_photo_type": 0} for url in urls]})
 
     def test_single_image_preserves_motion_before_video_mounts(self):
         metadata = [{"urlList": ["https://cdn.example/one.jpg"], "livePhotoType": 1,
@@ -138,7 +142,7 @@ if (metadata !== false) player.__reactFiber$fixture = {memoizedProps: {
 
     def test_unknown_gallery_and_video_paths(self):
         self.assertIsNone(self.snapshot(sources=[]))
-        self.assertEqual(self.snapshot(sources=[], video=True), {"video": {"play_addr": {
+        self.assertEqual(self.snapshot(sources=[], video=True), {"aweme_id": "123", "video": {"play_addr": {
             "url_list": ["https://cdn.example/video.mp4"], "width": 1920, "height": 1080}}})
 
 
