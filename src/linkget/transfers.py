@@ -2,6 +2,8 @@
 import copy
 import hashlib
 import os
+import stat
+from contextlib import contextmanager
 from pathlib import Path
 import re
 import shutil
@@ -42,6 +44,12 @@ class TransferSet:
             if row.get('state') != 'complete':
                 row = dict(key=key, index=index, kind=kind, state='pending')
             rows.append(row)
+        if set(previous) - {row['key'] for row in rows}:
+            # Metadata refresh is not proof that omitted resources disappeared.
+            protected = [row['stage'] for row in previous.values() if row.get('stage')]
+            protect(protected)
+            raise ValueError('The refreshed media plan omits known resources; the previous plan and files were kept. '
+                             'Retry later, or use retry --redownload to explicitly accept a new plan.')
         self.data = dict(schema=1, scope=scope, planned=len(rows), source_total=None, items=rows)
         self.persist()
 
@@ -101,7 +109,7 @@ class TransferSet:
             if (not source.is_absolute() or not source.resolve().is_relative_to(root)
                     or any(p.is_symlink() for p in (source, *source.parents) if p == root or root in p.parents)):
                 raise ValueError('Retained media path is unsafe; files were kept. Use retry --redownload.')
-            if not source.is_file() or jobs.digest(source, fresh=True) != row['sha256']:
+            if not row.get('file_identity') or not matches(source, row['file_identity'], row['sha256']):
                 # An edited/missing file is not reusable, and is never removed.
                 row.update(state='pending')
                 self.persist()
@@ -114,36 +122,39 @@ class TransferSet:
                     created_identity = (info.st_dev, info.st_ino)
                     with source.open('rb') as original:
                         shutil.copyfileobj(original, output)
+                verified_identity = file_identity(target)
+                if verified_identity[:2] != list(created_identity):
+                    raise RuntimeError('Retained media copy was replaced; files were kept.')
                 if (jobs.digest(target, fresh=True) != row['sha256']
                         or jobs.digest(source, fresh=True) != row['sha256']):
                     raise RuntimeError('Retained media copy changed; source files were kept.')
+                self.complete(index, target, row['fallback'], row['sha256'], verified_identity)
             except BaseException:
-                if created_identity is not None:
-                    try:
-                        info = target.lstat()
-                        if (info.st_dev, info.st_ino) == created_identity:
-                            target.unlink()
-                        else:
-                            protected = task.get('protected_stages', [])
-                            if not isinstance(protected, list) or any(not isinstance(value, str) for value in protected):
-                                protected = []
-                            journal.update(number, protected_stages=list(dict.fromkeys(protected + [str(self.directory.parent.resolve())])))
-                    except FileNotFoundError:
-                        pass
+                # Keep the whole attempt, including a target that already
+                # existed before our exclusive open or a concurrent replacement.
+                protect([self.directory.parent], self.current)
                 raise
-            self.complete(index, target, row['fallback'])
             return target.name, row['fallback']
 
-    def complete(self, index, path, fallback=False):
+    def complete(self, index, path, fallback=False, expected_hash=None, expected_identity=None):
         if not self.current:
             return
         with self.lock:
             stage = self.directory.parent
             row = self.data['items'][index - 1]
-            row.update(state='complete', path=str(Path(path).resolve()), stage=str(stage.resolve()),
-                       stage_identity=staging.identity(stage), sha256=jobs.digest(path, fresh=True), fallback=bool(fallback))
+            expected_identity = expected_identity or file_identity(path)
+            expected_hash = expected_hash or jobs.digest(path, fresh=True)
+            if not matches(path, expected_identity, expected_hash):
+                protect([stage], self.current)
+                raise RuntimeError('A verified media file was replaced or changed; files were kept.')
+            row.update(state='complete', path=str(Path(path).parent.resolve() / Path(path).name), stage=str(stage.resolve()),
+                       stage_identity=staging.identity(stage), sha256=expected_hash,
+                       file_identity=expected_identity, fallback=bool(fallback))
             row.pop('error_type', None)
             self.persist()
+            if not matches(path, expected_identity, expected_hash):
+                protect([stage], self.current)
+                raise RuntimeError('A verified media file changed during completion; files were kept.')
 
     def failed(self, index, error):
         if not self.current:
@@ -180,3 +191,65 @@ def invalidate(files):
         if row.get('path') in rejected:
             row.update(state='failed', error_type='FormatValidationError')
     journal.update(index, media_progress=data)
+
+
+def file_identity(path):
+    info = Path(path).lstat()
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError('Media is no longer a regular file; files were kept.')
+    return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+
+
+def matches(path, expected, checksum):
+    try:
+        return (file_identity(path) == expected and jobs.digest(path, fresh=True) == checksum
+                and file_identity(path) == expected)
+    except (OSError, ValueError):
+        return False
+
+
+def protect(roots, current=None):
+    current = current or jobs.current()
+    if current:
+        journal, index = current
+        row = journal.data['items'][index - 1]
+        old = row.get('protected_stages', [])
+        if not isinstance(old, list) or any(not isinstance(value, str) for value in old):
+            old = []
+        journal.update(index, protected_stages=list(dict.fromkeys(old + [str(Path(p).resolve()) for p in roots])))
+
+
+def record_for(path):
+    current = jobs.current()
+    if current:
+        journal, index = current
+        data = journal.data['items'][index - 1].get('media_progress')
+        if data:
+            TransferSet.validate(data)
+            for row in data['items']:
+                if row.get('path') == str(Path(path).parent.resolve() / Path(path).name):
+                    return row
+
+
+def verify(files):
+    for path in files:
+        row = record_for(path)
+        if row and (not row.get('file_identity') or not matches(path, row['file_identity'], row['sha256'])):
+            protect([row['stage']])
+            raise RuntimeError('A verified media file was replaced or changed; files were kept.')
+
+
+@contextmanager
+def open_verified(path):
+    """Pin the checked inode while copying; never adopt a replacement hash."""
+    verify([path])
+    row = record_for(path)
+    with Path(path).open('rb') as stream:
+        if row:
+            info = os.fstat(stream.fileno())
+            actual = [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+            if actual != row['file_identity']:
+                protect([row['stage']])
+                raise RuntimeError('Media changed before copying; files were kept.')
+        yield stream
+        verify([path])

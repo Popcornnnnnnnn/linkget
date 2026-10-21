@@ -20,6 +20,8 @@ PYTHONPATH=src /opt/homebrew/opt/gallery-dl/libexec/bin/python \
   scripts/check_compatibility.py --require-extractor
 ```
 
+Extractor coverage has an explicit identity contract: the five existing `InstagramExtractorTests` cases for a missing downloaded resource, mixed gallery order/count, Reel music exclusion, missing source media, and story music exclusion must each be collected once and actually succeed. The report's `extractor.coverage` lists required, collected, executed, successful, skipped, missing and duplicate identities. Zero tests, a command-only suite, renamed/missing cases, duplicate cases or collected-but-unexecuted cases are `failed` with `coverage_drift`; they are not reported as an absent optional dependency. Skipped cases never satisfy the contract, and `--require-extractor` exits nonzero until all named extractor cases pass. When deliberately replacing or renaming these fixtures, review and update the contract together with their equivalent behavioral coverage.
+
 To record executable versions, explicitly select the local probe. Use it only for already installed, trusted programs on PATH:
 
 ```sh

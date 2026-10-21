@@ -145,13 +145,18 @@ class CommandTests(unittest.TestCase):
 
     def test_photos_reports_which_files_were_added(self):
         from subprocess import CompletedProcess
-        files = [Path("existing.jpg"), Path("new.mp4")]
-        with patch.object(cli, "retain_originals", side_effect=lambda files: files), patch.object(cli, "verify_library_copies"), patch.object(Path, "unlink"), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, "1:1:2\n", "")):
-            self.assertEqual(cli.import_photos(files, False), ([files[1]], 1))
-        for response in ("1:1:3", "2:0:1:1", "1:1", "invalid"):
-            with patch.object(cli, "retain_originals", side_effect=lambda files: files), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, response, "")):
-                with self.assertRaises(RuntimeError):
-                    cli.import_photos(files, False)
+        with tempfile.TemporaryDirectory() as temporary:
+            files = [Path(temporary)/'existing.jpg', Path(temporary)/'new.mp4']
+            for path in files:
+                path.write_bytes(b'generated count-contract fixture')
+            with patch.object(cli, "retain_originals", side_effect=lambda files: files), patch.object(cli, "verify_library_copies"), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, "1:1:2\n", "")):
+                self.assertEqual(cli.import_photos(files, False), ([files[1]], 1))
+            for response in ("1:1:3", "2:0:1:1", "1:1", "invalid"):
+                for path in files:
+                    path.write_bytes(b'generated count-contract fixture')
+                with patch.object(cli, "retain_originals", side_effect=lambda files: files), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, response, "")):
+                    with self.assertRaises(RuntimeError):
+                        cli.import_photos(files, False)
 
     def test_animation_stops_and_clears_on_failure_and_cancel(self):
         class Terminal(io.StringIO):
@@ -258,9 +263,12 @@ class CommandTests(unittest.TestCase):
 
     def test_photos_bad_count_prevents_success(self):
         from subprocess import CompletedProcess
-        with patch.object(cli, "retain_originals", side_effect=lambda files: files), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, "0:0\n", "")):
-            with self.assertRaises(RuntimeError):
-                cli.import_photos([Path("fake.jpg")], False)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)/'fake.jpg'
+            path.write_bytes(b'generated count-contract fixture')
+            with patch.object(cli, "retain_originals", side_effect=lambda files: files), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, "0:0\n", "")):
+                with self.assertRaises(RuntimeError):
+                    cli.import_photos([path], False)
 
     def test_prompt_preserves_full_unquoted_share_link(self):
         from subprocess import CompletedProcess

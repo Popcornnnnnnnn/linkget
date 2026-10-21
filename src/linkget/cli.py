@@ -915,6 +915,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                     continue
                 raise LoginRequired(reason) from None
         media_records = inspect_files(files, download_info.variants)
+        transfers.verify(files)
         evidence.update(files=media_records, expected_count=download_info.expected_count,
                         missing_motion=download_info.missing_motion, live_pairs=download_info.live_pairs,
                         highest_quality="not_verified", watermark="not_verified")
@@ -949,6 +950,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                 status("Live Photos", f"{len(prepared)} source pairs recognized by macOS")
             else:
                 status("Live Photos", f"{len(download_info.live_pairs)} pairs saved separately · use --live-photos to pair")
+        transfers.verify(files)
         phase = 'save' if folder else 'import'
         with batch_lock("saving"), activity("Saving" if folder else "Importing"):
             if folder:
@@ -962,6 +964,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                     saved, skipped = import_photos(files, args.date_now, dict(zip(download_info.live_pairs, prepared)))
                 else:
                     saved, skipped = import_photos(files, args.date_now)
+            transfers.verify(files)
             if saved:
                 summary = f"{saved_description(saved)} · {format_size(sum(path.stat().st_size for path in saved))}"
             else:

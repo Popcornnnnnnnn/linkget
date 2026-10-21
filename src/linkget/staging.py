@@ -1,6 +1,7 @@
 """Remove only unchanged, item-owned temporary trees after a verified save."""
 from pathlib import Path
-import shutil
+import os
+import secrets
 import tempfile
 
 if __package__:
@@ -28,7 +29,11 @@ def _root(path):
 
 
 def _inventory(root):
-    files, directories = {}, []
+    if __package__:
+        from .transfers import file_identity
+    else:
+        from transfers import file_identity
+    files, directories, identities = {}, [], {}
     for path in root.rglob("*"):
         name = str(path.relative_to(root))
         if path.is_symlink():
@@ -36,10 +41,14 @@ def _inventory(root):
         if path.is_dir():
             directories.append(name)
         elif path.is_file():
+            before = file_identity(path)
             files[name] = jobs.digest(path, fresh=True)
+            if file_identity(path) != before:
+                raise ValueError('The temporary file changed during its content check')
+            identities[name] = before
         else:
             raise ValueError("The temporary folder contains an unrecognized file")
-    return files, sorted(directories)
+    return files, sorted(directories), identities
 
 
 def remember(path, expected_identity=None):
@@ -63,10 +72,16 @@ def remember(path, expected_identity=None):
     # A complete set must still match the media hashes recorded before saving.
     if row.get("ready") and row.get("stage") == key:
         jobs.verified_files(row["ready"]["files"], root)
-    files, directories = _inventory(root)
+    if __package__:
+        from . import transfers
+    else:
+        import transfers
+    transfers.verify([Path(item['path']) for item in (row.get('media_progress') or {}).get('items', [])
+                      if item.get('path') and contains(root, item['path'])])
+    files, directories, identities = _inventory(root)
     if identity(root) != before:
         raise ValueError("The temporary folder changed during its content check")
-    snapshots[key] = {"identity": before, "files": files, "directories": directories}
+    snapshots[key] = {"identity": before, "files": files, "directories": directories, "file_identities": identities}
     jobs.record(stage_snapshots=snapshots)
 
 
@@ -140,7 +155,7 @@ def cleanup(status, folder=None):
             if (not isinstance(record, dict) or identity(root) != record.get("identity")
                     or not isinstance(record.get("files"), dict) or not isinstance(record.get("directories"), list)):
                 raise ValueError("The temporary folder has no matching ownership record")
-            files, directories = _inventory(root)
+            files, directories, identities = _inventory(root)
             allowed_directories = set(record["directories"])
             # Recovery can create new paired exports. Their checked media are
             # removed before this call, leaving known empty output directories.
@@ -149,12 +164,22 @@ def cleanup(status, folder=None):
                     target = Path(item["path"]).resolve()
                     if root in target.parents:
                         allowed_directories.update(str(parent) for parent in target.relative_to(root).parents if str(parent) != ".")
-            if (any(record["files"].get(name) != checksum for name, checksum in files.items())
+            recorded_ids = record.get('file_identities')
+            if not isinstance(recorded_ids, dict):
+                raise ValueError('The temporary folder has no file identity record; files are kept')
+            if (any(recorded_ids.get(name) != value for name, value in identities.items())
+                    or any(record["files"].get(name) != checksum for name, checksum in files.items())
                     or any(name not in allowed_directories for name in directories)):
                 raise ValueError("The temporary folder contains changed or newly added files")
             if identity(root) != record["identity"]:
                 raise ValueError("The temporary folder was replaced")
-            shutil.rmtree(root)
+            # Claim each checked inode before deleting it. Never recursively
+            # delete the original tree: a concurrent replacement must survive.
+            for name, checksum in files.items():
+                remove_owned(root / name, checksum, recorded_ids[name])
+            for name in sorted(directories, key=lambda value: len(Path(value).parts), reverse=True):
+                (root / name).rmdir()
+            root.rmdir()
             snapshots.pop(str(root), None)
             removed += 1
         except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
@@ -163,3 +188,40 @@ def cleanup(status, folder=None):
     jobs.record(previous_stages=remaining, stage_snapshots=snapshots)
     if removed and (len(stage_paths) > 1 or row.get("ready")):
         status("Cleanup", f"{removed} temporary folder{'s' if removed != 1 else ''} removed")
+
+
+def remove_owned(path, checksum, expected):
+    """Atomically claim a checked file; restore and retain external replacements."""
+    if __package__:
+        from .transfers import file_identity, matches
+    else:
+        from transfers import file_identity, matches
+    path = Path(path)
+    if not matches(path, expected, checksum):
+        raise RuntimeError('A temporary file was replaced or changed; files are kept')
+    quarantine = path.parent / ('.linkget-cleanup-' + secrets.token_hex(16))
+    quarantine.mkdir(mode=0o700)
+    claimed = quarantine / 'claimed'
+    try:
+        os.rename(path, claimed)
+        actual = file_identity(claimed)
+        # rename changes ctime, but not inode, size or modification time.
+        if (actual[:4] != expected[:4] or jobs.digest(claimed, fresh=True) != checksum
+                or file_identity(claimed) != actual):
+            raise RuntimeError('A temporary file changed while being claimed; files are kept')
+        claimed.unlink()
+    except BaseException:
+        if claimed.exists():
+            try:
+                os.link(claimed, path, follow_symlinks=False)
+            except OSError:
+                # Original pathname occupied: retain the claimed file as well.
+                pass
+            else:
+                claimed.unlink()
+        raise
+    finally:
+        try:
+            quarantine.rmdir()
+        except OSError:
+            pass

@@ -1,5 +1,6 @@
 """Offline engine-boundary checks. No website requests, cookies or Photos access."""
 import argparse
+from collections import Counter
 from contextlib import redirect_stderr, redirect_stdout
 from importlib import metadata, util
 import io
@@ -24,6 +25,40 @@ FIXTURES = ROOT / "tests/fixtures/compatibility/cases.json"
 ENGINES = {"gallery-dl": ["--config-ignore", "--version"],
            "yt-dlp": ["--ignore-config", "--version"],
            "ffmpeg": ["-version"], "ffprobe": ["-version"]}
+EXTRACTOR_MODULE = "compat_instagram_fixture"
+REQUIRED_EXTRACTOR_TESTS = frozenset(
+    EXTRACTOR_MODULE + ".InstagramExtractorTests." + name for name in (
+        "test_missing_downloaded_photo_or_video_is_still_rejected",
+        "test_mixed_gallery_music_keeps_visual_order_and_count",
+        "test_single_reel_music_does_not_require_an_extra_file",
+        "test_source_media_silently_skipped_by_upstream_is_rejected",
+        "test_story_music_with_a_shared_number_is_excluded",
+    )
+)
+
+
+class CoverageResult(unittest.TextTestResult):
+    """Record actual executions/successes, not merely the loader's test count."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.executed_ids = []
+        self.successful_ids = []
+
+    def startTest(self, test):
+        self.executed_ids.append(test.id())
+        super().startTest(test)
+
+    def addSuccess(self, test):
+        self.successful_ids.append(test.id())
+        super().addSuccess(test)
+
+
+def collected_ids(suite):
+    for case in suite:
+        if isinstance(case, unittest.TestSuite):
+            yield from collected_ids(case)
+        else:
+            yield case.id()
 
 
 def safe_version(value):
@@ -108,7 +143,7 @@ def fixture_checks(path=FIXTURES):
 
 def extractor_checks():
     """Reuse the existing synthetic gallery-dl extension suite, not its network routes."""
-    spec = util.spec_from_file_location("compat_instagram_fixture", ROOT / "tests/test_instagram.py")
+    spec = util.spec_from_file_location(EXTRACTOR_MODULE, ROOT / "tests/test_instagram.py")
     module = util.module_from_spec(spec)
     output = io.StringIO()
     # Upstream initialization may change. Enforce the offline boundary even
@@ -121,14 +156,35 @@ def extractor_checks():
             patch("subprocess.Popen", side_effect=denied):
         spec.loader.exec_module(module)
         suite = unittest.defaultTestLoader.loadTestsFromModule(module)
-        result = unittest.TextTestRunner(stream=output).run(suite)
+        collected = list(collected_ids(suite))
+        result = unittest.TextTestRunner(stream=output, resultclass=CoverageResult).run(suite)
+    required = REQUIRED_EXTRACTOR_TESTS
+    counts = Counter(collected)
+    missing = sorted(required - set(collected))
+    unexecuted = sorted(required - set(result.executed_ids))
+    duplicate = sorted(identifier for identifier, count in counts.items() if identifier in required and count != 1)
+    skipped = sorted(case.id() for case, _ in result.skipped if case.id() in required)
+    successful = sorted(required & set(result.successful_ids))
+    drift = bool(missing or unexecuted or duplicate)
     package_available = util.find_spec("gallery_dl") is not None
-    skip_reason = ("extractor_import_failed" if package_available else "gallery_dl_python_package_unavailable") if result.skipped else None
-    return {"status": "failed" if not result.wasSuccessful() or skip_reason == "extractor_import_failed"
+    # Discovery drift is not an absent optional dependency: report the exact
+    # coverage gap before considering the known extractor-import skip.
+    skip_reason = None
+    if result.skipped and not drift:
+        skip_reason = ("gallery_dl_python_package_unavailable" if not package_available else
+                       "extractor_import_failed" if module.LinkgetInstagramPostExtractor is None else "extractor_cases_skipped")
+    unsuccessful_required = required - set(successful) - set(skipped)
+    return {"status": "failed" if drift or unsuccessful_required or not result.wasSuccessful() or skip_reason == "extractor_import_failed"
                       else "partial" if result.skipped else "passed",
-            "tests_run": result.testsRun, "passed": result.testsRun - len(result.skipped) - len(result.failures) - len(result.errors),
+            "tests_run": result.testsRun, "passed": len(result.successful_ids),
             "skipped": len(result.skipped),
             "skip_reason": skip_reason,
+            "coverage": {"contract": 1, "required_test_ids": sorted(required),
+                         "collected_test_ids": sorted(collected), "executed_test_ids": sorted(result.executed_ids),
+                         "successful_required_test_ids": successful, "skipped_required_test_ids": skipped,
+                         "missing_required_test_ids": missing, "unexecuted_required_test_ids": unexecuted,
+                         "duplicate_required_test_ids": duplicate,
+                         "problem": "coverage_drift" if drift else "required_tests_not_successful" if unsuccessful_required else None},
             "failed_test_ids": [case.id() for case, _ in result.failures + result.errors],
             "layer": "gallery_dl_or_linkget_extension", "reused_suite": "tests/test_instagram.py"}
 
@@ -152,7 +208,7 @@ def main(argv=None):
     parser.add_argument("--probe-engines", action="store_true",
                         help="also run already-installed trusted engine version commands; no requests or installation")
     parser.add_argument("--require-extractor", action="store_true",
-                        help="exit nonzero if the existing gallery-dl Python extractor suite is unavailable")
+                        help="require every named extractor contract case to be collected and pass without skips")
     parser.add_argument("--output", type=Path, help="write a new JSON report; existing files are never overwritten")
     args = parser.parse_args(argv)
     try:

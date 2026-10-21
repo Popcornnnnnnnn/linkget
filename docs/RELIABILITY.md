@@ -47,12 +47,15 @@ It adds `media_progress` to the existing private task receipt, recording each
 exposed resource's transfer state, hash, staging ownership and source identity.
 Retry refreshes the post metadata and copies only matching, byte-checked complete
 resources into the new attempt; missing, cancelled, edited or probe-rejected
-resources are fetched again. Final save, deduplication, full-set checks and cleanup
-still use the original pipeline. Successful partial transfers remain in staging;
+resources are fetched again. Final save, deduplication and full-set checks remain in the existing pipeline;
+ownership checks also guard its save and cleanup boundaries. Successful partial transfers remain in staging;
 no incomplete set is imported into Photos by this feature.
 
 The source identity hashes the exact planned URL, media kind and position. A
-refreshed signed URL or changed order can therefore cause extra downloads. No
+refreshed signed URL or changed order can omit previously known identities. Such a
+refresh is refused without replacing the old plan. Retry later, or explicitly
+accept a new plan with `retry TASK --redownload`; old stages containing omitted
+resources remain protected even after that reset. No
 claim is made that different URLs identify the same original. Source URLs and raw
 error strings are not stored in the new per-media manifest. Existing task inputs
 still retain private share tokens needed for retries, as before.
@@ -61,7 +64,15 @@ Every reuse checks that the file belongs to this task's recorded staging tree,
 that the stage identity matches, that no path component is a symbolic link, and
 that the recorded content hash still matches. Invalid manifests fail safely;
 `retry TASK --redownload` bypasses reuse while keeping unverified old files.
-Changed/untracked files remain protected by existing cleanup ownership checks.
+Each completed native file also retains its inode, size and timestamp identity.
+Reuse cannot replace its recorded hash with a later pathname's hash. Saving pins
+checked source descriptors, checks created destination identities, and rechecks
+transfer evidence before completion or a Photos call. Cleanup records per-file
+identities, atomically claims each checked file, and removes only known empty
+directories. Concurrent replacements are restored or retained for review; cleanup
+does not recursively remove a tree that another writer can change.
+Older receipts without file identities cannot authorize reuse or cleanup; their
+files remain available for inspection or an explicit redownload.
 Manifest/disk-write failure may leave an unrecorded successful transfer; that file
 is retained but cannot be safely reused without a durable valid receipt.
 
@@ -112,16 +123,24 @@ command with `--require-extractor` to cover the optional five extractor cases.
 
 ## Local verification, 2026-10-21
 
-- Source/Python 3.14: 373 cases, 368 successful and five optional extractor skips.
-- Isolated installed wheel/Python 3.14 from `/tmp`: the same 373 cases,
-  368 successful and five skips. The user's installed command was not replaced.
-- The five skips are the existing Instagram extractor cases when the ordinary
-  interpreter cannot import gallery-dl. The existing Homebrew gallery-dl 1.32.15
-  Python environment separately passed all six reused tests (five extractors and
-  one command contract), plus all seven compatibility fixtures.
+- Source/Python 3.14 and an isolated installed wheel: 397 cases each, 389
+  successful, eight skipped. The user's installed command was not replaced.
+- Five skips are optional Instagram extractor cases: ordinary Python cannot
+  import gallery-dl. Three PhotosScriptTests are deliberately excluded by the
+  guarded acceptance runner to avoid any AppleScript execution. No actual Photos
+  acceptance is claimed. The existing Homebrew gallery-dl 1.32.15 interpreter
+  separately passes all six reused tests and the seven generated fixtures.
+- The compatibility report requires five named extractor tests to be collected,
+  executed and successful. Empty, command-only, skipped, duplicated or missing
+  execution cannot satisfy `--require-extractor`.
+- Sensitive diagnostics are parsed recursively (including arrays and multiline
+  credential values); unsafe malformed structures are omitted. Classification
+  distinguishes affirmative boolean response flags from false/configuration values.
 - Generated fixtures cover repeated partial failures, cancellation, disk-full
   copies, edited sources, rejected format probes, changed source identities,
-  damaged manifests, outside/symlink paths and concurrent target replacement.
+  damaged manifests, outside/symlink paths, shrinking plans and valid generated PNG
+  replacements after hashing/probing and during cleanup claims. Mock Photos
+  boundaries verify importer prevention and retained-copy preservation.
   Concurrently replaced temporary copies are preserved, and their stages are
   excluded from later automatic cleanup.
 - Offline sdist/wheel builds and modified-document link/fence checks passed.

@@ -1,5 +1,7 @@
 """Evidence and redaction boundaries; no network, credentials or Photos access."""
+import contextlib
 import errno
+import io
 import json
 import socket
 import subprocess
@@ -165,7 +167,7 @@ class FailureEvidenceTests(unittest.TestCase):
         for value in ('private-cookie', 'also-private', 'private-bearer', 'renewed', 'private-api',
                       'private-token', 'unquoted-secret', 'private-password', 'cHJpdmF0ZQ==', '\x1b', '\x00'):
             self.assertNotIn(value, safe)
-        self.assertIn('Error', safe)
+        self.assertIn('omitted', safe)
 
     def test_escaped_json_and_folded_cookie_headers_do_not_leak_values(self):
         cases = [
@@ -199,6 +201,132 @@ class FailureEvidenceTests(unittest.TestCase):
                               'caption': 'fixture caption', 'not_secret': 'ordinary text',
                               'metadataToken': 'business token label'})
         self.assertEqual(redact(message), message)
+
+    def test_structured_credentials_redact_whole_nested_values_in_native_wrappers(self):
+        structures = (
+            {'session': {'value': 'SYNTHETIC_SECRET', 'other': ['OTHER_SECRET']}},
+            {'access_token': ['SYNTHETIC_SECRET', 'OTHER_SECRET']},
+            {'credentials': [{'name': 'account', 'value': 'SYNTHETIC_SECRET'}, ['OTHER_SECRET']]},
+            {'error': {'message': 'request failed', 'context': {'session': {'value': 'SYNTHETIC_SECRET'}}}},
+            {'headers': {'Cookie': {'value': 'SYNTHETIC_SECRET'}, 'X-API-Key': ['OTHER_SECRET']}},
+        )
+        for data in structures:
+            for value in (data, json.dumps(data), str(data), URLError(json.dumps(data)),
+                          RuntimeError('native transfer failed: ' + str(URLError(json.dumps(data))))):
+                with self.subTest(data=data, kind=type(value).__name__):
+                    safe = redact(value)
+                    self.assertNotIn('SYNTHETIC_SECRET', safe)
+                    self.assertNotIn('OTHER_SECRET', safe)
+                    self.assertNotIn('SYNTHETIC_SECRET', classify(value).message)
+
+    def test_real_newlines_escaped_strings_and_later_array_items_do_not_leak(self):
+        diagnostics = (
+            '{"token": "LINE1\nLINE2_SECRET"}',
+            '{"token": ["SYNTHETIC_SECRET", "OTHER_SECRET", {"last": "LAST_SECRET"}]}',
+            '{"message": "{\\"session\\": {\\"value\\": \\"SYNTHETIC_SECRET\\"}}"}',
+            'token=LINE1\nLINE2_SECRET',
+            'Authorization: Bearer LINE1\nLINE2_SECRET',
+        )
+        for message in diagnostics:
+            with self.subTest(message=message):
+                safe = redact(URLError(message))
+                for secret in ('LINE2_SECRET', 'SYNTHETIC_SECRET', 'OTHER_SECRET', 'LAST_SECRET'):
+                    self.assertNotIn(secret, safe)
+
+    def test_unparseable_sensitive_diagnostics_fail_closed_instead_of_retaining_tail(self):
+        for message in ('{"session": {"value": "SYNTHETIC_SECRET"',
+                        '{"token": "LINE1\nLINE2_SECRET',
+                        'cookies: prefix {"value": "SYNTHETIC_SECRET"}',
+                        'access_token=["first", "OTHER_SECRET"',
+                        '{"\\u0074oken": "SYNTHETIC_SECRET"'):
+            with self.subTest(message=message):
+                safe = redact(message)
+                self.assertIn('omitted', safe)
+                for secret in ('SYNTHETIC_SECRET', 'OTHER_SECRET', 'LINE2_SECRET'):
+                    self.assertNotIn(secret, safe)
+
+    def test_classification_retains_only_clear_evidence_before_opaque_credentials(self):
+        for diagnostic in ('HTTP 403 https://example.test/post?token=hidden\nCookie: sensitive',
+                           'HTTP 403\nAuthorization: Bearer sensitive\nHTTP 429',
+                           'Connection reset by peer\nCookie: HTTP 404; login required'):
+            with self.subTest(diagnostic=diagnostic):
+                expected = 'network' if diagnostic.startswith('Connection') else 'access_refused'
+                result = classify(diagnostic)
+                self.assertEqual(result.category, expected)
+                self.assertNotIn('sensitive', result.message)
+        self.assertEqual(classify('Cookie: opaque\nHTTP 403').category, 'unknown')
+
+    def test_native_error_reporting_and_engine_auth_use_the_safe_shared_policy(self):
+        from linkget import cli, engines
+        reason = URLError('{"session": {"value": "SYNTHETIC_SECRET"}, "token": ["first", "OTHER_SECRET"]}')
+        outer = RuntimeError('Native transfer failed: ' + str(reason))
+        outer.__cause__ = reason
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            cli.report_failure(outer)
+        self.assertNotIn('SYNTHETIC_SECRET', output.getvalue())
+        self.assertNotIn('OTHER_SECRET', output.getvalue())
+        self.assertIn('Next', output.getvalue())
+        self.assertTrue(engines.needs_login('{"login_required": true, "rate_limit": false}'))
+        self.assertFalse(engines.needs_login('Client configured with ratelimit=10; Unable to extract JSON'))
+
+    def test_structured_redaction_preserves_safe_context_and_handles_cyclic_values(self):
+        data = {'post_id': '123', 'message': 'HTTP 403', 'resources': [{'kind': 'image', 'width': 16}],
+                'session': {'value': 'SYNTHETIC_SECRET'}}
+        safe = json.loads(redact(data))
+        self.assertEqual(safe['post_id'], '123')
+        self.assertEqual(safe['resources'], [{'kind': 'image', 'width': 16}])
+        self.assertEqual(safe['session'], '[redacted]')
+        cyclic = {}
+        cyclic['self'] = cyclic
+        self.assertIn('omitted', redact(cyclic))
+
+    def test_response_flags_keep_affirmative_auth_separate_from_false_rate_evidence(self):
+        for data in ({'login_required': True, 'rate_limit': False},
+                     {'rate_limit': False, 'login_required': True},
+                     {'error': {'login_required': True, 'rate_limited': False}},
+                     {'login_required': True, 'message': 'not rate limited'}):
+            for value in (data, json.dumps(data), str(data)):
+                with self.subTest(value=value):
+                    result = classify(value)
+                    self.assertEqual(result.category, 'login_required')
+                    self.assertIsNone(retry_delay(result, 1, operation='read'))
+        self.assertEqual(classify('rate_limit=false; login_required=true').category, 'login_required')
+        self.assertEqual(classify({'rate_limit': True, 'login_required': False}).category, 'rate_limit')
+
+    def test_false_structured_flags_never_override_a_separate_positive_failure(self):
+        for key in ('rate_limit', 'captcha', 'verification_required', 'unsupported', 'unavailable',
+                    'extractor_failed', 'network_error', 'access_refused'):
+            with self.subTest(key=key):
+                self.assertEqual(classify(json.dumps({key: False})).category, 'unknown')
+                self.assertEqual(classify(json.dumps({key: False, 'login_required': True})).category, 'login_required')
+        self.assertEqual(classify({'description': 'login required'}).category, 'unknown')
+
+    def test_configuration_values_are_not_observed_failures(self):
+        for text in ('ratelimit=10', 'rate_limit="10"', 'rate limit set to 10',
+                     'timeout=10', 'timeout setting 30', 'TLS=true', 'SSL=false',
+                     '{"config": {"rate_limit": true, "timeout": 30}}'):
+            with self.subTest(text=text):
+                self.assertEqual(classify(text).category, 'unknown')
+        result = classify('Client configured with ratelimit=10; Unable to extract JSON')
+        self.assertEqual(result.category, 'extractor_failure')
+        self.assertIsNone(retry_delay(result, 1, operation='read'))
+        self.assertEqual(classify('TLS handshake failed').category, 'network')
+
+    def test_negative_evidence_does_not_select_any_failure_category(self):
+        for text in ('not rate limited', 'no rate limit', 'rate_limit=false', 'captcha=false',
+                     'no CAPTCHA challenge', 'CAPTCHA disabled', 'verification_required=false',
+                     'not unsupported', 'unsupported=false', 'unavailable=false', 'not HTTP 404',
+                     'no network timeout', 'network_error=false', 'extractor_failed=false',
+                     'not unable to extract', 'not forbidden', 'access_refused=false'):
+            with self.subTest(text=text):
+                self.assertEqual(classify(text).category, 'unknown')
+        self.assertEqual(classify('not rate limited, login required').category, 'login_required')
+        self.assertEqual(classify('login not required but HTTP 429').category, 'rate_limit')
+        # A typed transport status is stronger evidence than a contradictory body flag.
+        error = HTTPError('https://example.test/post', 429, 'rate_limit=false', {}, None)
+        self.addCleanup(error.close)
+        self.assertEqual(classify(error).category, 'rate_limit')
 
     def test_redaction_bounds_large_unknown_diagnostics(self):
         result = classify('x'*5000 + ' token=private')

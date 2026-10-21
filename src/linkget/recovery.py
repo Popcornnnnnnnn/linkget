@@ -63,7 +63,11 @@ def remove_verified(records, root):
         if path.exists():
             if path.is_symlink() or digest(path) != record["sha256"]:
                 raise RuntimeError("A retained file changed; it was kept: " + str(path))
-            path.unlink()
+            row = transfers.record_for(path)
+            expected = row.get('file_identity') if row else transfers.file_identity(path)
+            if expected is None:
+                raise RuntimeError('Retained media has no file identity; files were kept.')
+            staging.remove_owned(path, record['sha256'], expected)
 
 
 def restore(journal, args, status, save_folder, import_photos, claimed=False, indices=None):
@@ -126,6 +130,7 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                         if not stage.name.startswith("linkget-") or stage.is_symlink() or not stage.is_dir():
                             raise ValueError("The recorded staging folder is unavailable; use retry --redownload.")
                         files = jobs.verified_files(ready["files"], stage)
+                        transfers.verify(files)
                         inspected = inspect_files(files)
                         if any(record.get("probe_ok") is False for record in inspected):
                             raise RuntimeError("Retained media failed format validation; files have been kept.")
@@ -151,6 +156,7 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                             saved, skipped = import_photos(files, args.date_now, dict(zip(map(tuple, ready["live_pairs"]), pairs)))
                         else:
                             saved, skipped = import_photos(files, args.date_now)
+                        transfers.verify(files)
                         # All output saves passed; remove only the exact checked downloads.
                         if not staging.contains(stage, args.folder):
                             remove_verified(ready["files"], stage)

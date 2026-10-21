@@ -19,6 +19,21 @@ spec.loader.exec_module(compatibility)
 
 
 class CompatibilityTests(unittest.TestCase):
+    def contract_suite(self, identifiers=None, skipped=()):
+        class ContractCase(unittest.TestCase):
+            def __init__(self, identifier):
+                super().__init__("runTest")
+                self.identifier = identifier
+
+            def id(self):
+                return self.identifier
+
+            def runTest(self):
+                if self.identifier in skipped:
+                    self.skipTest("Synthetic coverage skip")
+        return unittest.TestSuite(ContractCase(identifier) for identifier in
+                                  (sorted(compatibility.REQUIRED_EXTRACTOR_TESTS) if identifiers is None else identifiers))
+
     def test_default_checks_are_offline_and_report_platform_unchecked(self):
         with patch.object(compatibility.subprocess, "run", side_effect=AssertionError("process")), \
                 patch("socket.create_connection", side_effect=AssertionError("network")), \
@@ -95,16 +110,80 @@ class CompatibilityTests(unittest.TestCase):
         self.assertNotIn("must-not-resolve", json.dumps(report))
 
     def test_installed_but_unimportable_extractor_is_not_reported_as_missing_package(self):
-        @unittest.skip("Existing suite could not import its extractor")
-        class ImportFailure(unittest.TestCase):
-            def runTest(self):
-                pass
+        original_spec = compatibility.util.spec_from_file_location
+        def import_failed_spec(*args, **kwargs):
+            source = original_spec(*args, **kwargs)
+            original_exec = source.loader.exec_module
+            def execute(module):
+                original_exec(module)
+                module.LinkgetInstagramPostExtractor = None
+            source.loader.exec_module = execute
+            return source
         with patch.object(compatibility.unittest.defaultTestLoader, "loadTestsFromModule",
-                          return_value=unittest.TestSuite([ImportFailure()])), \
+                          return_value=self.contract_suite(skipped=compatibility.REQUIRED_EXTRACTOR_TESTS)), \
+                patch.object(compatibility.util, "spec_from_file_location", side_effect=import_failed_spec), \
                 patch.object(compatibility.util, "find_spec", return_value=object()):
             report = compatibility.extractor_checks()
         self.assertEqual(report["status"], "failed")
         self.assertEqual(report["skip_reason"], "extractor_import_failed")
+
+    def test_empty_command_only_and_partial_discovery_fail_require_extractor(self):
+        required = sorted(compatibility.REQUIRED_EXTRACTOR_TESTS)
+        command = "compat_instagram_fixture.InstagramCommandTests.test_external_extractor_is_scoped_to_instagram"
+        for identifiers in ([], [command], required[:-1], ["unexpected.case." + str(index) for index in range(6)]):
+            with self.subTest(identifiers=identifiers), \
+                    patch.object(compatibility.unittest.defaultTestLoader, "loadTestsFromModule",
+                                 side_effect=lambda module: self.contract_suite(identifiers)), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                code = compatibility.main(["--require-extractor"])
+            report = json.loads(output.getvalue())
+            extractor = report["extractor"]
+            self.assertEqual(code, 1)
+            self.assertEqual(report["status"], "failed")
+            self.assertEqual(extractor["status"], "failed")
+            self.assertEqual(extractor["coverage"]["problem"], "coverage_drift")
+            self.assertEqual(extractor["coverage"]["missing_required_test_ids"], sorted(set(required) - set(identifiers)))
+            self.assertIsNone(extractor["skip_reason"])
+            self.assertEqual(report["platform"]["status"], "not_checked")
+
+    def test_collected_but_unexecuted_and_duplicate_contracts_are_not_passes(self):
+        class SilentSuite(unittest.TestSuite):
+            def run(self, result, debug=False):
+                return result
+        suite = SilentSuite(self.contract_suite())
+        with patch.object(compatibility.unittest.defaultTestLoader, "loadTestsFromModule", return_value=suite):
+            report = compatibility.extractor_checks()
+        self.assertEqual(report["tests_run"], 0)
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["coverage"]["missing_required_test_ids"], [])
+        self.assertEqual(report["coverage"]["unexecuted_required_test_ids"], sorted(compatibility.REQUIRED_EXTRACTOR_TESTS))
+        required = sorted(compatibility.REQUIRED_EXTRACTOR_TESTS)
+        with patch.object(compatibility.unittest.defaultTestLoader, "loadTestsFromModule",
+                          return_value=self.contract_suite(required + required[:1])):
+            report = compatibility.extractor_checks()
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["coverage"]["duplicate_required_test_ids"], required[:1])
+
+    def test_required_case_skip_cannot_satisfy_extractor_contract(self):
+        skipped = sorted(compatibility.REQUIRED_EXTRACTOR_TESTS)[:1]
+        with patch.object(compatibility.unittest.defaultTestLoader, "loadTestsFromModule",
+                          side_effect=lambda module: self.contract_suite(skipped=skipped)), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            code = compatibility.main(["--require-extractor"])
+        report = json.loads(output.getvalue())["extractor"]
+        self.assertEqual(code, 1)
+        self.assertNotEqual(report["status"], "passed")
+        self.assertEqual(report["coverage"]["missing_required_test_ids"], [])
+        self.assertEqual(report["coverage"]["skipped_required_test_ids"], skipped)
+
+    def test_all_named_extractor_cases_must_actually_succeed(self):
+        with patch.object(compatibility.unittest.defaultTestLoader, "loadTestsFromModule",
+                          return_value=self.contract_suite()):
+            report = compatibility.extractor_checks()
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["passed"], 5)
+        self.assertEqual(report["coverage"]["successful_required_test_ids"], sorted(compatibility.REQUIRED_EXTRACTOR_TESTS))
+        self.assertEqual(report["coverage"]["missing_required_test_ids"], [])
 
     def test_require_extractor_rejects_skipped_contract_and_output_never_overwrites(self):
         report = {"status": "partial", "extractor": {"status": "partial"}}
