@@ -11,11 +11,13 @@ import concurrent.futures
 
 if __package__:
     from .transfers import TransferSet
+    from .ownership import Writer
     from .links import MOBILE_UA
     from .runtime import cancellation_check
     from .media import DownloadResult
 else:
     from transfers import TransferSet
+    from ownership import Writer
     from links import MOBILE_UA
     from runtime import cancellation_check
     from media import DownloadResult
@@ -221,17 +223,17 @@ def download(url, directory, cookie_path=None):
                 path = directory / f"xiaohongshu_{note_id}_{index:03d}_{variant}{suffix}"
                 partial = path.with_suffix(suffix + ".part")
                 count = len(head)
-                with partial.open("xb") as output:
+                with Writer(partial) as output:
                     output.write(head)
                     while chunk := response.read(1024 * 1024):
                         check_cancelled()
                         count += len(chunk)
                         output.write(chunk)
-                expected = response.headers.get("Content-Length")
-                if expected and count != int(expected):
-                    raise RuntimeError("Xiaohongshu download was incomplete; partial files have been kept.")
-                partial.rename(path)
-            return index, path.name, not used_original
+                    expected = response.headers.get("Content-Length")
+                    if expected and count != int(expected):
+                        raise RuntimeError("Xiaohongshu download was incomplete; partial files have been kept.")
+                    proof = output.publish(path)
+            return index, path.name, not used_original, proof
 
         checkpoint = TransferSet(directory, 'xiaohongshu', note_id, media)
         def transfer(index, kind, target, used_original):
@@ -239,8 +241,8 @@ def download(url, directory, cookie_path=None):
                 reused = checkpoint.reuse(index)
                 if reused is not None:
                     return index, *reused
-                number, name, fallback = _download_one(index, kind, target, used_original)
-                checkpoint.complete(index, directory / name, fallback)
+                number, name, fallback, proof = _download_one(index, kind, target, used_original)
+                checkpoint.complete(index, directory / name, fallback, proof=proof)
                 return number, name, fallback
             except BaseException as error:
                 checkpoint.failed(index, error)

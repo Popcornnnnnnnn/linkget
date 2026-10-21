@@ -328,6 +328,94 @@ class FailureEvidenceTests(unittest.TestCase):
         self.addCleanup(error.close)
         self.assertEqual(classify(error).category, 'rate_limit')
 
+    def encoded(self, text, levels):
+        for _ in range(levels):
+            text = json.dumps(text)[1:-1]
+        return text
+
+    def test_complete_serialization_layers_are_decoded_or_safely_omitted(self):
+        raw = json.dumps({'session': {'value': 'SYNTHETIC_SECRET'}})
+        for levels in range(9):
+            for text in (self.encoded(raw, levels), json.dumps(self.encoded(raw, levels))):
+                with self.subTest(levels=levels, quoted=text.startswith('"')):
+                    safe = redact(URLError(text))
+                    self.assertNotIn('SYNTHETIC_SECRET', safe)
+                    self.assertTrue('[redacted]' in safe or 'omitted' in safe)
+
+    def test_unicode_escaped_keys_and_header_delimiters_share_the_same_boundary(self):
+        for key in ('session', 'token', 'refresh_token', 'Cookie'):
+            escaped_key = ''.join('\\u%04x' % ord(char) for char in key)
+            text = '{"' + escaped_key + '": {"value":"SYNTHETIC_SECRET"}}'
+            for levels in range(5):
+                with self.subTest(key=key, levels=levels):
+                    self.assertNotIn('SYNTHETIC_SECRET', redact(URLError(self.encoded(text, levels))))
+        for header in (r'Cookie\u003a SYNTHETIC_SECRET', r'\u0043ookie\u003a SYNTHETIC_SECRET',
+                       r'Authorization\u003a Bearer SYNTHETIC_SECRET'):
+            for levels in range(5):
+                self.assertNotIn('SYNTHETIC_SECRET', redact(URLError(self.encoded(header, levels))))
+
+    def test_ambiguous_escaped_or_nested_malformed_credentials_stay_opaque(self):
+        cases = (
+            r'{\"session\":{\"value\":\"SYNTHETIC_SECRET\"}',
+            r'{\"token\": [\"first\", \"SYNTHETIC_SECRET\"',
+            r'Cookie\q003a SYNTHETIC_SECRET',
+            r'prefix "unescaped" {\"session\":{\"value\":\"SYNTHETIC_SECRET\"}}',
+            '{"message": ' + json.dumps(r'{\"session\":{\"value\":\"SYNTHETIC_SECRET\"}') + '}',
+        )
+        for text in cases:
+            for levels in range(4):
+                with self.subTest(text=text, levels=levels):
+                    safe = redact(URLError(self.encoded(text, levels)))
+                    self.assertNotIn('SYNTHETIC_SECRET', safe)
+                    self.assertIn('omitted', safe)
+
+    def test_escaped_sensitive_values_never_supply_failure_classification_evidence(self):
+        for value in ('login required', 'HTTP 429', 'unsupported', 'connection timed out'):
+            raw = json.dumps({'session': {'value': value}})
+            for levels in range(9):
+                with self.subTest(value=value, levels=levels):
+                    text = self.encoded(raw, levels)
+                    self.assertEqual(classify(URLError(text)).category, 'unknown')
+            header = r'Cookie\u003a ' + value
+            self.assertEqual(classify(URLError(header)).category, 'unknown')
+        # A status before the encoded payload is separate from credential data.
+        text = 'HTTP 403\n' + self.encoded(json.dumps({'session': {'value': 'login required'}}), 1)
+        self.assertEqual(classify(text).category, 'access_refused')
+
+    def test_cli_native_escaped_credential_reporting_does_not_disclose_or_reconnect(self):
+        from linkget import cli, engines
+        for levels in range(7):
+            for value in ('SYNTHETIC_SECRET', 'login required'):
+                raw = self.encoded(json.dumps({'session': {'value': value}}), levels)
+                cause = URLError(raw)
+                outer = RuntimeError('Native transfer failed: ' + str(cause))
+                outer.__cause__ = cause
+                output = io.StringIO()
+                with contextlib.redirect_stderr(output):
+                    category = cli.report_failure(outer)
+                self.assertEqual(category, 'unknown')
+                self.assertNotIn(value, output.getvalue())
+                self.assertIn('Next', output.getvalue())
+                self.assertFalse(engines.needs_login(str(cause)))
+
+    def test_escaped_key_names_share_value_redaction_and_classification_rules(self):
+        for levels in range(7):
+            name = self.encoded(r'\u0073ession', levels)
+            data = {name: {'value': 'SYNTHETIC_SECRET', 'message': 'login required'}}
+            for value in (data, json.dumps(data), {'error': [data]}):
+                with self.subTest(levels=levels, value=value):
+                    self.assertNotIn('SYNTHETIC_SECRET', redact(value))
+                    self.assertEqual(classify(value).category, 'unknown')
+        malformed = {r'sess\qion': {'value': 'SYNTHETIC_SECRET', 'message': 'login required'}}
+        self.assertNotIn('SYNTHETIC_SECRET', redact(malformed))
+        self.assertEqual(classify(malformed).category, 'unknown')
+
+    def test_well_formed_encoded_business_objects_keep_their_meaning(self):
+        value = {'post_id': '123', 'title': '安全样本', 'count': 2, 'token_count': 12}
+        for levels in range(4):
+            raw = self.encoded(json.dumps(value), levels)
+            self.assertEqual(json.loads(redact(raw)), value)
+
     def test_redaction_bounds_large_unknown_diagnostics(self):
         result = classify('x'*5000 + ' token=private')
         self.assertLessEqual(len(result.message), 2001)

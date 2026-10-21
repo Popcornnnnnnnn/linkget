@@ -14,7 +14,7 @@ import tempfile
 import time
 
 if __package__:
-    from . import accounts, jobs, destinations, preflight, recovery, staging, transfers
+    from . import accounts, jobs, destinations, preflight, recovery, staging, transfers, ownership
     from .runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from .output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description
     from .batch import run_batch
@@ -34,7 +34,7 @@ if __package__:
     from .media import DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
     from .live import prepare_pairs, save_pairs
 else:  # Homebrew launches this file directly.
-    import accounts, jobs, destinations, preflight, recovery, staging, transfers
+    import accounts, jobs, destinations, preflight, recovery, staging, transfers, ownership
     from runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description
     from batch import run_batch
@@ -678,6 +678,7 @@ def download(args, setup_results, records=None, media_consumer=None):
     stage = None
     session_dir = None
     info_path = None
+    metadata_proof = None
     read_metadata = {}
     evidence = {"status": "failed", "reference": None, "files": []}
     domain = None
@@ -700,7 +701,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                 stages = previous.get("previous_stages", []) + [previous["stage"]]
                 jobs.record(previous_stages=list(dict.fromkeys(stages)))
         if getattr(args, 'redownload', False):
-            jobs.record(media_progress=None)
+            transfers.reset_progress()
         jobs.record(input=url, status="running", ready=None, receipt=None, stage=None, stage_identity=None)
         started = time.monotonic()
         with activity("Resolving") if any(host in url for host in ("v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/", "xhslink.com", "xhslink.cn", "t.cn/")) else nullcontext():
@@ -764,6 +765,7 @@ def download(args, setup_results, records=None, media_consumer=None):
         browser_item = provided_item
         tried_douyin_page = False
         attempt = 0
+        log_writer = None
         while True:
             check_batch_cancelled()
             try:
@@ -773,15 +775,26 @@ def download(args, setup_results, records=None, media_consumer=None):
                 media_dir.mkdir()
                 if not getattr(_batch, "state", None):
                     print()
-                with (stage / "download.log").open("w") as log:
+                log_path = stage / 'download.log'
+                if log_path.exists():
+                    # This local proof also survives non-journal reading retries.
+                    proof = log_writer.proof if log_writer is not None else None
+                    if proof is None or proof.path != ownership.canonical(log_path):
+                        raise RuntimeError('An existing log has no writer evidence; files were kept.')
+                    proof.remove()
+                log_writer = ownership.Writer(log_path, external=True, register=True)
+                with log_writer as log:
                     log.write(f"Source: {url}\n")
                     command = None
                     if engine not in {"douyin", "xiaohongshu", "kuaishou", "pixiv"}:
                         command = command_for(args, url, engine, domain, media_dir, tools, cookie_path)
                     if engine == "yt-dlp":
                         info_path = stage / "video-info.json"
+                        if info_path.exists() and metadata_proof is not None:
+                            metadata_proof.remove()
                         with activity("Preparing"):
                             command = prepare_video(command, info_path, log, domain)
+                        metadata_proof = getattr(command, 'metadata_proof', None)
                         reader = getattr(args, 'read_metadata_consumer', None)
                         if reader and reader(json.loads(info_path.read_text()), url, site):
                             evidence.update(status='completed')
@@ -821,9 +834,6 @@ def download(args, setup_results, records=None, media_consumer=None):
                         else:
                             result = run_process(command, stdout=log, stderr=subprocess.STDOUT)
                 if result is not None and result.returncode:
-                    if domain == "weibo.com" and engine == "gallery-dl":
-                        for metadata in media_dir.glob("*.json"):
-                            metadata.unlink()
                     tail = (stage / "download.log").read_text(errors="replace").splitlines()[-8:]
                     log_text = "\n".join(tail)
                     if needs_login(log_text):
@@ -846,12 +856,13 @@ def download(args, setup_results, records=None, media_consumer=None):
                         download_info.live_pairs = [(image if (media_dir / image).exists() else str(Path(image).with_name(Path(image).stem + "_preferred" + Path(image).suffix)), video)
                                                     for image, video in download_info.live_pairs]
                     else:
-                        download_info = gallery_evidence(media_dir, domain)
+                        download_info = gallery_evidence(media_dir, domain, remove=False)
                 for note in source_notes:
                     status("Media", note)
                 accepted = MEDIA | ({'.m4a', '.mp3', '.aac', '.opus', '.ogg', '.wav', '.flac', '.webm'} if media_consumer else set())
                 files = sorted(path for path in media_dir.iterdir() if path.is_file() and path.suffix.lower() in accepted)
-                unfinished = [path for path in media_dir.iterdir() if path.suffix.lower() not in accepted]
+                files = ownership.FileList(files, transfers.proofs_for(files))
+                unfinished = [path for path in media_dir.iterdir() if path.suffix.lower() not in accepted | {".json"}]
                 if unfinished:
                     raise RuntimeError("The download contains unsupported or incomplete files. Files have been kept for review.")
                 if not files:
@@ -935,8 +946,7 @@ def download(args, setup_results, records=None, media_consumer=None):
             media_consumer(files, media_records, download_info, url, site, metadata)
             evidence.update(status="completed")
             return 0
-        ready = {"files": [{"path": str(path.resolve()), "sha256": record.get("sha256") or jobs.digest(path)}
-                           for path, record in zip(files, media_records)],
+        ready = {"files": jobs.snapshot(files),
                  "live_pairs": download_info.live_pairs, "prepared": [], "evidence": dict(evidence)}
         jobs.record(ready=ready)
         prepared = []
@@ -953,6 +963,7 @@ def download(args, setup_results, records=None, media_consumer=None):
         transfers.verify(files)
         phase = 'save' if folder else 'import'
         with batch_lock("saving"), activity("Saving" if folder else "Importing"):
+            jobs.record(destination_files=[])
             if folder:
                 saved, skipped = save_folder(files, folder)
                 if prepared:
@@ -965,6 +976,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                 else:
                     saved, skipped = import_photos(files, args.date_now)
             transfers.verify(files)
+            transfers.verify_outputs()
             if saved:
                 summary = f"{saved_description(saved)} · {format_size(sum(path.stat().st_size for path in saved))}"
             else:
@@ -995,16 +1007,19 @@ def download(args, setup_results, records=None, media_consumer=None):
     finally:
         if records is not None:
             records.append(evidence)
-        if info_path is not None:
-            info_path.unlink(missing_ok=True)
+        if metadata_proof is not None:
+            try:
+                if metadata_proof.path.exists():
+                    metadata_proof.remove()
+            except (OSError, ValueError, RuntimeError):
+                pass  # A metadata replacement is retained, never re-observed.
         if session_dir is not None:
             session_dir.cleanup()
         if stage is not None:
+            # Uninstrumented engine/helper outputs and sidecars have no writer
+            # receipt. Observing them cannot authorize recursive deletion.
             if media_consumer is not None:
-                shutil.rmtree(stage)
-            elif domain == "weibo.com":
-                for metadata in stage.glob("*/*.json"):
-                    metadata.unlink(missing_ok=True)
+                status("Files kept", str(stage), "33", stream=sys.stderr)
             if media_consumer is None:
                 if current:
                     try:

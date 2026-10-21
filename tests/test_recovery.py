@@ -8,7 +8,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from linkget import accounts, batch, cli, destinations, jobs, photos, recovery
+from linkget import accounts, batch, cli, destinations, jobs, photos, recovery, ownership
 from media_stub import uninspected
 
 URL = "https://www.pixiv.net/artworks/"
@@ -42,13 +42,19 @@ class RecoveryTests(unittest.TestCase):
     def task(self):
         return jobs.all_journals()[0]
 
+    def write_owned(self, path, data):
+        # This synthetic adapter is a known writer. Uninstrumented external
+        # producers are covered separately and cannot authorize source cleanup.
+        with ownership.Writer(path, register=True) as output:
+            output.write(data)
+
     def downloaded(self, url, folder, cookies):
-        (folder / (url.rsplit("/", 1)[-1] + ".jpg")).write_bytes(url.encode())
+        self.write_owned(folder / (url.rsplit("/", 1)[-1] + ".jpg"), url.encode())
 
     def test_retry_preserves_original_numbers_and_skips_completed_items(self):
         def first(url, folder, cookies):
             if url.endswith("2"):
-                (folder / "2.jpg.part").write_bytes(b"partial")
+                self.write_owned(folder / "2.jpg.part", b"partial")
                 raise RuntimeError("HTTP 403")
             self.downloaded(url, folder, cookies)
         with patch.object(cli, "download_pixiv", side_effect=first):
@@ -149,7 +155,7 @@ class RecoveryTests(unittest.TestCase):
 
     def partial_task(self):
         def partial(url, folder, cookies):
-            (folder / "1.jpg.part").write_bytes(b"partial")
+            self.write_owned(folder / "1.jpg.part", b"partial")
             raise RuntimeError("interrupted")
         with patch.object(cli, "download_pixiv", side_effect=partial):
             self.assertEqual(self.run_cli(URL + "1", "--folder", str(self.root / "out"), "--browser", "none")[0], 1)
@@ -213,7 +219,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_batch_success_does_not_clean_the_other_failed_item(self):
         def partial(url, folder, cookies):
-            (folder / "partial.jpg.part").write_bytes(b"partial")
+            self.write_owned(folder / "partial.jpg.part", b"partial")
             raise RuntimeError("interrupted")
         with patch.object(cli, "download_pixiv", side_effect=partial):
             self.run_cli("batch", URL + "1", URL + "2", "--folder", str(self.root / "out"), "--browser", "none")
@@ -247,12 +253,13 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual((outside / "personal.txt").read_bytes(), b"keep")
         self.assertTrue(moved.exists())
 
-    def test_verified_redownload_removes_unchanged_complete_old_set(self):
+    def test_explicit_redownload_keeps_pre_reset_originals(self):
         task = self.failed_save()
         old = Path(task.data["items"][0]["stage"])
         with patch.object(cli, "download_pixiv", side_effect=self.downloaded):
             self.assertEqual(self.run_cli("retry", task.identifier, "--redownload")[0], 0)
-        self.assertFalse(old.exists())
+        self.assertTrue(old.exists())
+        self.assertEqual((old/'media/1.jpg').read_bytes(), (URL+'1').encode())
 
     def test_nested_recovery_destination_is_preserved(self):
         task = self.failed_save()

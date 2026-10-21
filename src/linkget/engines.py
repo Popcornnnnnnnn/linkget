@@ -12,6 +12,23 @@ else:
 SITES = "Instagram, X/Twitter, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, Weibo, Reddit, Lofter, Pixiv and Pinterest posts; YouTube videos and Shorts"
 
 
+class PreparedCommand(list):
+    """Keep a metadata writer's evidence alongside the existing argv list."""
+    def __init__(self, command, metadata_proof):
+        super().__init__(command)
+        self.metadata_proof = metadata_proof
+
+
+def write_metadata(path, info):
+    if __package__:
+        from .ownership import Writer
+    else:
+        from ownership import Writer
+    with Writer(path, register=True) as output:
+        output.write(json.dumps(info).encode())
+        return output.seal()
+
+
 def needs_login(message):
     """Use the same affirmative, credential-free evidence as error reporting."""
     return classify(message).category in {'login_required', 'login_expired'}
@@ -62,9 +79,8 @@ def prepare_bilibili(command, info_path, log):
     reason = None if audio_read else restricted_bilibili_quality(info, messages)
     if reason:
         raise LoginRequired(reason)
-    info_path.write_text(json.dumps(info))
-    info_path.chmod(0o600)
-    return command[:-1] + ["--load-info-json", str(info_path)]
+    proof = write_metadata(info_path, info)
+    return PreparedCommand(command[:-1] + ["--load-info-json", str(info_path)], proof)
 
 
 
@@ -109,9 +125,8 @@ def prepare_video(command, info_path, log, domain):
         raise ValueError(f"Use a single {site} video link, not a playlist or channel.")
     if info.get("is_live") or info.get("live_status") in {"is_live", "is_upcoming", "post_live"}:
         raise ValueError(f"Live or upcoming {site} streams are not supported. Try the processed replay after it ends.")
-    info_path.write_text(json.dumps(info))
-    info_path.chmod(0o600)
-    return command[:-1] + ["--load-info-json", str(info_path)]
+    proof = write_metadata(info_path, info)
+    return PreparedCommand(command[:-1] + ["--load-info-json", str(info_path)], proof)
 
 
 

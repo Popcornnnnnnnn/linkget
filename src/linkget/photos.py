@@ -5,14 +5,13 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-import tempfile
 
 if __package__:
-    from . import accounts
     from .hashing import digest
+    from . import accounts, ownership
 else:
-    import accounts
     from hashing import digest
+    import accounts, ownership
 
 
 def originals_directory():
@@ -20,30 +19,31 @@ def originals_directory():
 
 
 def retain_originals(files):
-    """Keep stable import sources until managed library copies are verified."""
+    """Keep source-bound writer evidence until managed copies are verified."""
+    if __package__:
+        from . import transfers
+    else:
+        import transfers
     root = originals_directory()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    retained = []
-    for source in files:
-        checksum = digest(source)
-        target = root / ("linkget-" + checksum + source.suffix.lower())
-        if target.exists():
-            if digest(target) != checksum:
-                raise RuntimeError(f"An original failed its content check: {target}. Downloaded files have been kept.")
+    retained, proofs = [], {}
+    for path, source in zip(files, transfers.proofs_for(files)):
+        target = root / ("linkget-" + source.sha256 + path.suffix.lower())
+        key = ownership.canonical(target)
+        if key in proofs:
+            proof = proofs[key].verify()
+        elif target.exists():
+            # Existing shared sources are validated, never newly owned.
+            proof = ownership.FileProof.observe(target, source.sha256)
         else:
-            with tempfile.NamedTemporaryFile(dir=root, prefix=".copy-", delete=False) as output:
-                temporary = Path(output.name)
-                try:
-                    with source.open("rb") as input_file:
-                        shutil.copyfileobj(input_file, output)
-                    output.close()
-                    if digest(temporary) != checksum:
-                        raise RuntimeError("Original copy verification failed; downloaded files have been kept.")
-                    os.replace(temporary, target)
-                finally:
-                    temporary.unlink(missing_ok=True)
+            proof = ownership.copy(source, target, copier=shutil.copyfileobj)
+        source.verify()
+        proofs[key] = proof
         retained.append(target)
-    return retained
+    for proof in proofs.values():
+        proof.verify()
+    return ownership.FileList(retained, proofs.values())
+
 
 
 def library_directory():
@@ -103,14 +103,25 @@ def verify_library_copies(files, identifiers):
                     candidates[asset].append(target)
         except FileNotFoundError:
             pass
+    checked = []
     for source, asset in zip(files, assets):
-        # Final cleanup still requires actual reads of both the staged source
-        # and the library copy, even if either was inspected earlier.
-        checksum = digest(source, fresh=True)
-        size = source.stat().st_size
-        if not any(not target.is_symlink() and target.is_file()
-                   and target.stat().st_size == size
-                   and digest(target, fresh=True) == checksum for target in candidates[asset]):
+        source_proof = (files.proof(source) if isinstance(files, ownership.FileList)
+                        else ownership.FileProof.observe(source))
+        matched = None
+        for target in candidates[asset]:
+            if target.is_symlink() or not target.is_file() or target.stat().st_size != source_proof.identity[2]:
+                continue
+            candidate = ownership.FileProof.observe(target)
+            if candidate.sha256 == source_proof.sha256:
+                candidate.verify(fresh=True)
+                matched = candidate
+                break
+        source_proof.verify(fresh=True)
+        if matched is None:
             raise RuntimeError("Photos has not saved a verified copy of " + source.name
                                + ". Enable Photos > Settings > General > Copy items to the Photos library;"
                                + " use File > Consolidate for referenced items, then retry.")
+        checked.append(matched)
+    for proof in checked:
+        proof.verify()
+    return ownership.FileList([proof.path for proof in checked], checked)

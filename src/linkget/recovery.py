@@ -5,13 +5,13 @@ import subprocess
 from urllib.parse import urlsplit
 
 if __package__:
-    from . import jobs, staging, transfers
+    from . import jobs, staging, transfers, ownership
     from .failures import redact
     from .photos import originals_directory, verify_library_copies, digest
     from .media import inspect_files
     from .live import prepare_pairs, save_pairs
 else:
-    import jobs, staging, transfers
+    import jobs, staging, transfers, ownership
     from failures import redact
     from photos import originals_directory, verify_library_copies, digest
     from media import inspect_files
@@ -57,17 +57,18 @@ def listing(status):
 
 
 def remove_verified(records, root):
+    if records == []:
+        return
     jobs.verified_files(records, root)
+    transfers.verify_outputs()
     for record in records:
-        path = Path(record["path"])
-        if path.exists():
-            if path.is_symlink() or digest(path) != record["sha256"]:
-                raise RuntimeError("A retained file changed; it was kept: " + str(path))
-            row = transfers.record_for(path)
-            expected = row.get('file_identity') if row else transfers.file_identity(path)
-            if expected is None:
-                raise RuntimeError('Retained media has no file identity; files were kept.')
-            staging.remove_owned(path, record['sha256'], expected)
+        # A matching old hash is a read check, never fresh cleanup authority.
+        if record.get('created') is not True or 'file_identity' not in record:
+            continue
+        proof = ownership.FileProof.from_record(record)
+        if proof.path.exists():
+            transfers.verify_outputs()
+            proof.remove()
 
 
 def restore(journal, args, status, save_folder, import_photos, claimed=False, indices=None):
@@ -92,8 +93,13 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                         if not receipt or not receipt.get("identifiers"):
                             raise ValueError("No Photos import identifiers; use recover without --verify to save again.")
                         files = jobs.verified_files(receipt["files"], originals_directory())
-                        staged = jobs.verified_files(receipt["staged"], originals_directory())
-                        verify_library_copies(files, receipt["identifiers"])
+                        staged = (ownership.FileList() if receipt.get('staged') == [] else
+                                  jobs.verified_files(receipt["staged"], originals_directory()))
+                        managed = verify_library_copies(files, receipt["identifiers"])
+                        if not isinstance(managed, ownership.FileList):
+                            raise RuntimeError('Managed copy verification supplied no file evidence; originals were kept.')
+                        jobs.record(destination_files=[])
+                        transfers.record_outputs(managed.proofs.values())
                         ready = row.get("ready")
                         stage = Path(row.get("stage", ""))
                         if ready:
@@ -138,7 +144,7 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                         if args.live_photos and ready.get("live_pairs"):
                             prepared = ready.get("prepared", [])
                             if prepared:
-                                pairs = [tuple(jobs.verified_files(pair, stage)) for pair in prepared]
+                                pairs = [jobs.verified_files(pair, stage) for pair in prepared]
                             else:
                                 folder = Path(ready["files"][0]["path"]).parent.parent
                                 # A previous failed packaging attempt may occupy the original directory.
@@ -148,6 +154,7 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                                 pairs = prepare_pairs(files, ready["live_pairs"], directory)
                                 ready["prepared"] = [jobs.snapshot(pair) for pair in pairs]
                                 jobs.record(ready=ready)
+                        jobs.record(destination_files=[])
                         if args.folder is not None:
                             saved, skipped = save_folder(files, args.folder)
                             if pairs:
@@ -157,6 +164,7 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                         else:
                             saved, skipped = import_photos(files, args.date_now)
                         transfers.verify(files)
+                        transfers.verify_outputs()
                         # All output saves passed; remove only the exact checked downloads.
                         if not staging.contains(stage, args.folder):
                             remove_verified(ready["files"], stage)

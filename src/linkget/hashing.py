@@ -25,7 +25,7 @@ def _signature(info):
 
 def digest(path, *, fresh=False):
     path = Path(path)
-    key = str(path.absolute())
+    key = str(path.parent.resolve() / path.name)
     cache = getattr(_context, "cache", None)
     signature = _signature(path.stat())
     if not fresh and cache is not None and key in cache and cache[key][0] == signature:

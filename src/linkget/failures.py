@@ -47,8 +47,41 @@ class _UnsafeDiagnostic(ValueError):
 
 
 def _clean(value):
-    text = _ANSI.sub('', str(value).replace('\\/', '/'))
+    text = _ANSI.sub('', str(value))
     return ''.join(c for c in text if c in '\n\t' or ord(c) >= 32 and ord(c) != 127)
+
+
+def _normal_form(text):
+    """Decode whole JSON serialization layers, or keep the diagnostic opaque.
+
+    Escaped fragments without their outer string quotes are accepted only when
+    wrapping the *whole* diagnostic produces a valid JSON string. No partial
+    quote/key unescaping is used. Ambiguous/invalid escapes or excess layers are
+    suppressed identically for display and evidence classification.
+    """
+    for _ in range(4):
+        if len(text) > 65536:
+            raise _UnsafeDiagnostic('Encoded diagnostic exceeds parsing bound')
+        try:
+            value = json.loads(text, strict=False)
+        except (ValueError, RecursionError):
+            value = None
+        if isinstance(value, str):
+            text = value
+            continue
+        if isinstance(value, (dict, list)) or '\\' not in text:
+            return text
+        try:
+            text = json.loads('"' + text + '"', strict=False)
+        except (ValueError, RecursionError):
+            raise _UnsafeDiagnostic('Ambiguous diagnostic escape notation') from None
+    try:
+        value = json.loads(text, strict=False)
+    except (ValueError, RecursionError):
+        value = None
+    if isinstance(value, (dict, list)) or '\\' not in text and not isinstance(value, str):
+        return text
+    raise _UnsafeDiagnostic('Too many diagnostic encoding layers')
 
 
 def _container_end(text, start):
@@ -146,12 +179,27 @@ def _plain_redact(text):
     return re.sub(r'\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+', r'\1 [redacted]', text, flags=re.I)
 
 
+def _field_name(value):
+    """Apply the same encoding boundary to structured keys and their values."""
+    name = _normal_form(_clean(value))
+    if _SECRET_FIELD.search(name) or name.startswith(('{', '[')):
+        raise _UnsafeDiagnostic('Ambiguous encoded diagnostic field name')
+    return name
+
+
 def _redact_value(value, depth=0):
     if depth > 16:
         return _OMITTED
     if isinstance(value, dict):
-        return {str(key): '[redacted]' if _SECRET_NAME.fullmatch(str(key)) else _redact_value(item, depth + 1)
-                for key, item in value.items()}
+        result = {}
+        for key, item in value.items():
+            try:
+                name = _field_name(str(key))
+            except _UnsafeDiagnostic:
+                result['[opaque diagnostic field]'] = _OMITTED
+                continue
+            result[name] = '[redacted]' if _SECRET_NAME.fullmatch(name) else _redact_value(item, depth + 1)
+        return result
     if isinstance(value, (list, tuple)):
         return [_redact_value(item, depth + 1) for item in value]
     if isinstance(value, str):
@@ -170,7 +218,7 @@ def _redact_text(text, depth=0):
             if safe == _OMITTED:
                 raise _UnsafeDiagnostic('Unstructured sensitive value')
             return safe
-        return _rewrite_structures(_clean(text),
+        return _rewrite_structures(_normal_form(_clean(text)),
                                    lambda value: json.dumps(_redact_value(value, depth + 1), ensure_ascii=False), plain)
     except _UnsafeDiagnostic:
         return _OMITTED
@@ -230,8 +278,12 @@ def _evidence(error):
             return
         if isinstance(value, dict):
             for name, item in value.items():
+                try:
+                    name = _field_name(str(name))
+                except _UnsafeDiagnostic:
+                    continue
                 normalized = _key(name)
-                if _SECRET_NAME.fullmatch(str(name)) or normalized in _CONFIG_KEYS:
+                if _SECRET_NAME.fullmatch(name) or normalized in _CONFIG_KEYS:
                     continue
                 category = _FLAG_KEYS.get(normalized)
                 if category:
@@ -250,7 +302,10 @@ def _evidence(error):
         collect(error)
         text = ''
     else:
-        text = _clean(error)
+        try:
+            text = _normal_form(_clean(error))
+        except _UnsafeDiagnostic:
+            return '', set(), set()
         text = _URL.sub('[URL]', text)
         try:
             text = _rewrite_structures(text, collect)
@@ -260,7 +315,7 @@ def _evidence(error):
     # Message strings can themselves contain structured diagnostics.
     if messages:
         try:
-            text = _rewrite_structures(text, lambda value: '')
+            text = _rewrite_structures(_normal_form(text), lambda value: '')
         except _UnsafeDiagnostic:
             return '', set(), set()
     # Preserve affirmative diagnostics before a credential field, while treating

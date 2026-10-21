@@ -1,69 +1,51 @@
 """Non-overwriting folder saves and verified Photos imports."""
 from pathlib import Path
 import re
-import os
 import shutil
 import subprocess
 if __package__:
     from .photos import originals_directory
     from .hashing import digest_session
     from .live import retain_pairs
-    from . import jobs, transfers, staging
+    from . import jobs, transfers, staging, ownership
 else:
     from photos import originals_directory
     from hashing import digest_session
     from live import retain_pairs
-    import jobs, transfers, staging
+    import jobs, transfers, staging, ownership
 
 
 def save_folder(files, folder):
-    transfers.verify(files)
+    sources = transfers.proofs_for(files)
     folder.mkdir(parents=True, exist_ok=True)
-    saved = []
+    saved, outputs = [], []
     skipped = 0
-    checked_outputs = []
-    for source in files:
-        target = folder / source.name
-        suffix = 1
-        while True:
-            if target.is_file() and jobs.digest(source, fresh=True) == jobs.digest(target, fresh=True):
-                skipped += 1
-                break
-            created = False
-            created_identity = None
-            try:
-                with target.open("xb") as output:
-                    created = True
-                    try:
-                        with transfers.open_verified(source) as input_file:
-                            shutil.copyfileobj(input_file, output)
-                    finally:
-                        output.flush()
-                        info = os.fstat(output.fileno())
-                        created_identity = [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
-                checksum = jobs.digest(source, fresh=True)
-                if not transfers.matches(target, created_identity, checksum):
-                    transfers.protect([source.parent.parent])
-                    raise RuntimeError("Saved file verification failed; temporary files have been kept.")
-                checked_outputs.append((source, target, created_identity, checksum))
-                saved.append(source)
-                break
-            except FileExistsError:
-                target = folder / f"{source.stem}-{suffix}{source.suffix}"
-                suffix += 1
-            except BaseException:
-                if created and created_identity is not None:
-                    try:
-                        if transfers.file_identity(target) == created_identity:
-                            staging.remove_owned(target, jobs.digest(target, fresh=True), created_identity)
-                    except (OSError, ValueError, RuntimeError):
-                        pass  # Retain any external replacement or uncertain copy.
-                raise
-    transfers.verify(files)
-    for source, target, expected, checksum in checked_outputs:
-        if not transfers.matches(target, expected, checksum):
-            transfers.protect([source.parent.parent])
-            raise RuntimeError('A saved file was replaced; temporary originals have been kept.')
+    try:
+        for original, source in zip(files, sources):
+            target = folder / source.path.name
+            suffix = 1
+            while True:
+                if target.is_file():
+                    existing = ownership.FileProof.observe(target)
+                    if existing.sha256 == source.sha256:
+                        existing.verify()
+                        outputs.append(existing)  # Duplicate evidence is also durable.
+                        skipped += 1
+                        break
+                try:
+                    proof = ownership.copy(source, target, copier=shutil.copyfileobj)
+                    outputs.append(proof)
+                    saved.append(original)
+                    break
+                except FileExistsError:
+                    target = folder / f"{source.path.stem}-{suffix}{source.path.suffix}"
+                    suffix += 1
+        for source in sources:
+            source.verify()
+        transfers.record_outputs(outputs)
+    except BaseException:
+        transfers.protect([source.path.parent.parent for source in sources])
+        raise
     return saved, skipped
 
 
@@ -74,34 +56,51 @@ def import_photos(files, date_now, live_pairs, retain_originals, verify_library_
 
 
 def _import_photos(files, date_now, live_pairs, retain_originals, verify_library_copies):
-    transfers.verify(files)
+    sources = transfers.proofs_for(files)
     retained = retain_originals(files)
-    transfers.verify(files)
-    for source, copy in zip(files, retained):
-        row = transfers.record_for(source)
-        if row and jobs.digest(copy, fresh=True) != row['sha256']:
-            transfers.protect([row['stage']])
-            raise RuntimeError('A retained original changed; Photos import was not started.')
-    staged = set(retained)
+    if len(retained) != len(sources):
+        raise RuntimeError('The original producer returned an incomplete set; import was not started.')
+    proofs = {}
+    def produced(container, path, expected):
+        # New producers carry their writer proof. Legacy/injected callbacks may
+        # only establish a read proof once, BEFORE reading their returned path.
+        proof = (container.proof(path, expected) if isinstance(container, ownership.FileList)
+                 else ownership.FileProof.observe(path, expected))
+        previous = proofs.get(proof.path)
+        if previous is not None and previous != proof:
+            raise RuntimeError('The original producer changed its evidence; import was not started.')
+        proofs[proof.path] = proof
+        return proof
+    for source, path in zip(sources, retained):
+        source.verify()
+        produced(retained, path, source.sha256)
+    pair_inputs = []
     if live_pairs:
+        for pair in live_pairs.values():
+            pair_inputs.extend(transfers.proofs_for(pair))
         paired = retain_pairs(list(live_pairs.values()), originals_directory())
-        staged.update(paired)
+        source_pairs = [path for pair in live_pairs.values() for path in pair]
+        if len(paired) != len(source_pairs):
+            raise RuntimeError('The pair producer returned an incomplete set; import was not started.')
+        for source, path in zip(pair_inputs, paired):
+            source.verify()
+            produced(paired, path, source.sha256)
         replacements = dict(zip((name for pair in live_pairs for name in pair), paired))
         retained = [replacements.get(source.name, path) for source, path in zip(files, retained)]
-    staged_records = [(path, transfers.file_identity(path), jobs.digest(path, fresh=True)) for path in staged]
-    for path, expected, checksum in staged_records:
-        if not transfers.matches(path, expected, checksum):
-            raise RuntimeError('A retained original changed; Photos import was not started.')
     unique = list(dict.fromkeys(retained))
     first_indexes = {}
     for index, path in enumerate(retained):
         first_indexes.setdefault(path, index)
     source_indexes = [first_indexes[path] for path in unique]
-    receipt = ({"files": jobs.snapshot(unique), "staged": jobs.snapshot(sorted(staged)), "identifiers": []}
+    unique_proofs = [proofs[ownership.canonical(path)] for path in unique]
+    staged_proofs = [proof for proof in proofs.values() if proof.created]
+    receipt = ({"files": [proof.record() for proof in unique_proofs],
+                "staged": [proof.record() for proof in staged_proofs], "identifiers": []}
                if jobs.active() else {"identifiers": []})
     jobs.record(receipt=receipt)
     importer = Path(__file__).with_name("import.applescript")
-    transfers.verify(files)
+    for proof in (*sources, *pair_inputs, *proofs.values()):
+        proof.verify(fresh=True)
     try:
         result = subprocess.run(["/usr/bin/osascript", str(importer),
                                  "--date-now" if date_now else "--keep-date",
@@ -123,9 +122,18 @@ def _import_photos(files, date_now, live_pairs, retain_originals, verify_library
     receipt["identifiers"] = identifier_text.split("\t") if identifier_text else []
     jobs.record(receipt=receipt)
     try:
-        verify_library_copies(unique, identifier_text.split("\t") if identifier_text else [])
+        managed = verify_library_copies(ownership.FileList(unique, unique_proofs), identifier_text.split("\t") if identifier_text else [])
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         raise RuntimeError(str(error) + "\nOriginals are safe in: " + str(originals_directory())) from error
-    for path, expected, checksum in staged_records:
-        staging.remove_owned(path, checksum, expected)
+    # Verification consumes the same evidence; it never creates new authority.
+    for proof in (*sources, *pair_inputs, *proofs.values()):
+        proof.verify(fresh=True)
+    if isinstance(managed, ownership.FileList):
+        transfers.record_outputs(managed.proofs.values())
+        for proof in staged_proofs:
+            transfers.verify_outputs()
+            for target in managed.proofs.values():
+                target.verify(fresh=True)
+            proof.remove()
+    # Legacy verification callbacks returning no evidence authorize no deletion.
     return [files[source_indexes[index - 1]] for index in indexes], skipped + len(files) - len(unique)

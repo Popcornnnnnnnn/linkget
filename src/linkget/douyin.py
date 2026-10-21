@@ -11,11 +11,13 @@ import concurrent.futures
 
 if __package__:
     from .transfers import TransferSet
+    from .ownership import Writer
     from .links import MOBILE_UA
     from .runtime import cancellation_check
     from .media import DownloadResult
 else:
     from transfers import TransferSet
+    from ownership import Writer
     from links import MOBILE_UA
     from runtime import cancellation_check
     from media import DownloadResult
@@ -292,17 +294,17 @@ def download(url, directory, cookie_path=None, *, browser_item=None, require_mot
                 path = directory / f"douyin_{post_id}_{index:03d}{variant}{extension}"
                 partial = path.with_suffix(extension + ".part")
                 count = len(head)
-                with partial.open("xb") as output:
+                with Writer(partial) as output:
                     output.write(head)
                     while chunk := response.read(1024 * 1024):
                         check_cancelled()
                         count += len(chunk)
                         output.write(chunk)
-                expected = response.headers.get("Content-Length")
-                if expected and count != int(expected):
-                    raise RuntimeError("Douyin media download was incomplete; partial files have been kept.")
-                partial.rename(path)
-            return path.name, local_fallback or initial_fallback
+                    expected = response.headers.get("Content-Length")
+                    if expected and count != int(expected):
+                        raise RuntimeError("Douyin media download was incomplete; partial files have been kept.")
+                    proof = output.publish(path)
+            return path.name, local_fallback or initial_fallback, proof
 
         checkpoint = TransferSet(directory, 'douyin', post_id, media)
         def transfer(index, kind, media_url):
@@ -310,8 +312,8 @@ def download(url, directory, cookie_path=None, *, browser_item=None, require_mot
                 reused = checkpoint.reuse(index)
                 if reused is not None:
                     return reused
-                name, fallback = _download_one(index, kind, media_url)
-                checkpoint.complete(index, directory / name, fallback)
+                name, fallback, proof = _download_one(index, kind, media_url)
+                checkpoint.complete(index, directory / name, fallback, proof=proof)
                 return name, fallback
             except BaseException as error:
                 checkpoint.failed(index, error)

@@ -1,8 +1,6 @@
 """Per-resource native transfer receipts, scoped to one existing download task."""
 import copy
 import hashlib
-import os
-import stat
 from contextlib import contextmanager
 from pathlib import Path
 import re
@@ -10,9 +8,9 @@ import shutil
 import threading
 
 if __package__:
-    from . import jobs, staging
+    from . import jobs, staging, ownership
 else:
-    import jobs, staging
+    import jobs, staging, ownership
 
 _HASH = re.compile(r'[a-f0-9]{64}')
 
@@ -115,46 +113,41 @@ class TransferSet:
                 self.persist()
                 return None
             target = self.directory / source.name
-            created_identity = None
             try:
-                with target.open('xb') as output:
-                    info = os.fstat(output.fileno())
-                    created_identity = (info.st_dev, info.st_ino)
-                    with source.open('rb') as original:
-                        shutil.copyfileobj(original, output)
-                verified_identity = file_identity(target)
-                if verified_identity[:2] != list(created_identity):
-                    raise RuntimeError('Retained media copy was replaced; files were kept.')
-                if (jobs.digest(target, fresh=True) != row['sha256']
-                        or jobs.digest(source, fresh=True) != row['sha256']):
-                    raise RuntimeError('Retained media copy changed; source files were kept.')
-                self.complete(index, target, row['fallback'], row['sha256'], verified_identity)
+                source_proof = ownership.FileProof.from_record(row)
+                copied = ownership.copy(source_proof, target, copier=shutil.copyfileobj)
+                self.complete(index, target, row['fallback'], proof=copied)
             except BaseException:
-                # Keep the whole attempt, including a target that already
-                # existed before our exclusive open or a concurrent replacement.
                 protect([self.directory.parent], self.current)
                 raise
             return target.name, row['fallback']
 
-    def complete(self, index, path, fallback=False, expected_hash=None, expected_identity=None):
+    def complete(self, index, path, fallback=False, *, proof):
+        # Evidence must come from the exclusive writer. No fallback observes
+        # the post-download pathname, including calls without a task context.
+        if not isinstance(proof, ownership.FileProof) or not proof.created or proof.path != ownership.canonical(path):
+            protect([self.directory.parent], self.current)
+            raise ValueError('The writer supplied no valid creation evidence; files were kept.')
+        try:
+            proof.verify()
+        except (OSError, ValueError, RuntimeError):
+            protect([self.directory.parent], self.current)
+            raise
         if not self.current:
             return
         with self.lock:
             stage = self.directory.parent
             row = self.data['items'][index - 1]
-            expected_identity = expected_identity or file_identity(path)
-            expected_hash = expected_hash or jobs.digest(path, fresh=True)
-            if not matches(path, expected_identity, expected_hash):
-                protect([stage], self.current)
-                raise RuntimeError('A verified media file was replaced or changed; files were kept.')
-            row.update(state='complete', path=str(Path(path).parent.resolve() / Path(path).name), stage=str(stage.resolve()),
-                       stage_identity=staging.identity(stage), sha256=expected_hash,
-                       file_identity=expected_identity, fallback=bool(fallback))
+            row.update(proof.record(), state='complete', stage=str(stage.resolve()),
+                       stage_identity=staging.identity(stage), fallback=bool(fallback))
             row.pop('error_type', None)
             self.persist()
-            if not matches(path, expected_identity, expected_hash):
+            ownership.register_created([proof], self.current)
+            try:
+                proof.verify()
+            except (OSError, ValueError, RuntimeError):
                 protect([stage], self.current)
-                raise RuntimeError('A verified media file changed during completion; files were kept.')
+                raise
 
     def failed(self, index, error):
         if not self.current:
@@ -194,17 +187,14 @@ def invalidate(files):
 
 
 def file_identity(path):
-    info = Path(path).lstat()
-    if not stat.S_ISREG(info.st_mode):
-        raise ValueError('Media is no longer a regular file; files were kept.')
-    return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+    return list(ownership.file_identity(path))
 
 
 def matches(path, expected, checksum):
     try:
-        return (file_identity(path) == expected and jobs.digest(path, fresh=True) == checksum
-                and file_identity(path) == expected)
-    except (OSError, ValueError):
+        ownership.FileProof(ownership.canonical(path), tuple(expected), checksum).verify()
+        return True
+    except (OSError, ValueError, RuntimeError, TypeError):
         return False
 
 
@@ -232,24 +222,92 @@ def record_for(path):
 
 
 def verify(files):
+    if isinstance(files, ownership.FileList):
+        for path in files:
+            files.proof(path)
     for path in files:
         row = record_for(path)
-        if row and (not row.get('file_identity') or not matches(path, row['file_identity'], row['sha256'])):
+        if row:
+            try:
+                ownership.FileProof.from_record(row).verify()
+            except (OSError, ValueError, RuntimeError):
+                protect([row['stage']])
+                raise
+
+
+def proofs_for(files):
+    if isinstance(files, ownership.FileList):
+        return [files.proof(path) for path in files]
+    return [proof_for(path) for path in files]
+
+
+def proof_for(path):
+    row = record_for(path)
+    if row:
+        try:
+            return ownership.FileProof.from_record(row).verify()
+        except (OSError, ValueError, RuntimeError):
             protect([row['stage']])
-            raise RuntimeError('A verified media file was replaced or changed; files were kept.')
+            raise
+    current = jobs.current()
+    if current:
+        journal, index = current
+        records = journal.data['items'][index - 1].get('owned_files', [])
+        if not isinstance(records, list):
+            raise ValueError('The created-file receipt is invalid; files were kept.')
+        for record in records:
+            if record.get('path') == str(ownership.canonical(path)):
+                return ownership.FileProof.from_record(record).verify()
+    return ownership.FileProof.observe(path)
 
 
 @contextmanager
 def open_verified(path):
-    """Pin the checked inode while copying; never adopt a replacement hash."""
-    verify([path])
-    row = record_for(path)
-    with Path(path).open('rb') as stream:
-        if row:
-            info = os.fstat(stream.fileno())
-            actual = [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
-            if actual != row['file_identity']:
-                protect([row['stage']])
-                raise RuntimeError('Media changed before copying; files were kept.')
+    with proof_for(path).open() as stream:
         yield stream
-        verify([path])
+
+
+def record_outputs(proofs):
+    proofs = list(proofs)
+    for proof in proofs:
+        proof.verify()
+    current = jobs.current()
+    if current:
+        journal, index = current
+        with journal.mutex:
+            old = journal.data['items'][index - 1].get('destination_files', [])
+            if not isinstance(old, list):
+                raise ValueError('The destination receipt is invalid; originals were kept.')
+            records = {row['path']: row for row in old}
+            for proof in proofs:
+                records[str(proof.path)] = proof.record()
+            journal.update(index, destination_files=list(records.values()))
+    verify_outputs()
+
+
+def verify_outputs():
+    current = jobs.current()
+    if current:
+        journal, index = current
+        row = journal.data['items'][index - 1]
+        proofs = row.get('destination_files', [])
+        if not isinstance(proofs, list):
+            raise ValueError('The destination receipt is invalid; originals were kept.')
+        try:
+            for proof in proofs:
+                ownership.FileProof.from_record(proof).verify(fresh=True)
+        except (OSError, ValueError, RuntimeError):
+            protect(staging.paths(row))
+            raise
+
+
+def reset_progress():
+    """Explicit reset can change a plan, never its old resources' deletion rights."""
+    current = jobs.current()
+    if current:
+        journal, index = current
+        row = journal.data['items'][index - 1]
+        # Protect before clearing even a malformed manifest. Do not infer that
+        # the next response will include every previously completed resource.
+        protect(staging.paths(row), current)
+        journal.update(index, media_progress=None)

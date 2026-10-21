@@ -246,20 +246,24 @@ class CommandTests(unittest.TestCase):
             downloader.chmod(0o755)
             stage = root / "linkget-test"
 
+            created = []
             def make_stage(**kwargs):
-                stage.mkdir()
-                return str(stage)
+                path = root / ('linkget-test' if not created else 'linkget-test-next')
+                path.mkdir()
+                created.append(path)
+                return str(path)
 
             with patch.object(cli, "find_tool", return_value=str(downloader)), patch.object(cli.tempfile, "tempdir", str(root)), patch.object(cli.tempfile, "mkdtemp", side_effect=make_stage), patch.object(cli, "import_photos") as photos, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 args = ["https://x.com/user/status/123", "--folder", str(root / "output"), "--browser", "none"]
                 self.assertEqual(cli.main(args), 0)
-                self.assertFalse(stage.exists())
+                self.assertTrue(stage.exists())  # External bytes grant no delete authority.
+                self.assertEqual((stage / 'media/sample.jpg').read_bytes(), b'sample')
                 self.assertEqual((root / "output/sample.jpg").read_bytes(), b"sample")
                 photos.assert_not_called()
                 with patch.dict(os.environ, {"LINKGET_TEST_EXIT": "1"}):
                     self.assertEqual(cli.main(args), 1)
-                self.assertTrue((stage / "media/sample.jpg").exists())
-                self.assertTrue((stage / "download.log").exists())
+                self.assertTrue((created[-1] / "media/sample.jpg").exists())
+                self.assertTrue((created[-1] / "download.log").exists())
 
     def test_photos_bad_count_prevents_success(self):
         from subprocess import CompletedProcess

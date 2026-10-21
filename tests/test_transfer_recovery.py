@@ -252,7 +252,7 @@ class GalleryRecoveryTests(unittest.TestCase):
         def swap(path, **kwargs):
             value = real(path, **kwargs)
             path = Path(path)
-            if path.parent == output:
+            if path.parent.resolve() == output.resolve():
                 alternate = path.with_name('user.tmp')
                 alternate.write_bytes(user)
                 os.replace(alternate, path)

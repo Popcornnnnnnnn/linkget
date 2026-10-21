@@ -1,13 +1,12 @@
 """Remove only unchanged, item-owned temporary trees after a verified save."""
 from pathlib import Path
 import os
-import secrets
 import tempfile
 
 if __package__:
-    from . import jobs
+    from . import jobs, ownership
 else:
-    import jobs
+    import jobs, ownership
 
 
 def identity(path):
@@ -81,7 +80,25 @@ def remember(path, expected_identity=None):
     files, directories, identities = _inventory(root)
     if identity(root) != before:
         raise ValueError("The temporary folder changed during its content check")
-    snapshots[key] = {"identity": before, "files": files, "directories": directories, "file_identities": identities}
+    # Inventory is an observation, never proof that this task created a file.
+    records = row.get('owned_files', [])
+    if not isinstance(records, list):
+        raise ValueError('The created-file receipt is invalid; files were kept')
+    known = {}
+    for record in records:
+        if record.get('created') is True and contains(root, record.get('path')):
+            proof = ownership.FileProof.from_record(record)
+            if not proof.path.exists() and not proof.path.is_symlink():
+                continue
+            proof.verify()
+            known[str(proof.path.relative_to(root))] = proof
+    known_directories = {str(parent) for name in known for parent in Path(name).parents if str(parent) != '.'}
+    snapshots[key] = {"identity": before,
+                      "files": {name: proof.sha256 for name, proof in known.items()},
+                      "directories": sorted(known_directories),
+                      "directory_identities": {name: identity(root/name) for name in known_directories},
+                      "file_identities": {name: list(proof.identity) for name, proof in known.items()},
+                      "created": True}
     jobs.record(stage_snapshots=snapshots)
 
 
@@ -110,6 +127,11 @@ def cleanup(status, folder=None):
     current = jobs.current()
     if current is None:
         return
+    if __package__:
+        from .transfers import verify_outputs
+    else:
+        from transfers import verify_outputs
+    verify_outputs()
     journal, index = current
     row = journal.data["items"][index - 1]
     receipt = row.get("receipt")
@@ -152,7 +174,7 @@ def cleanup(status, folder=None):
             if any(target == root or root in target.parents for target in protected):
                 raise ValueError("The temporary folder contains a save destination or another task's files")
             record = snapshots.get(str(root))
-            if (not isinstance(record, dict) or identity(root) != record.get("identity")
+            if (not isinstance(record, dict) or record.get('created') is not True or identity(root) != record.get("identity")
                     or not isinstance(record.get("files"), dict) or not isinstance(record.get("directories"), list)):
                 raise ValueError("The temporary folder has no matching ownership record")
             files, directories, identities = _inventory(root)
@@ -167,17 +189,28 @@ def cleanup(status, folder=None):
             recorded_ids = record.get('file_identities')
             if not isinstance(recorded_ids, dict):
                 raise ValueError('The temporary folder has no file identity record; files are kept')
+            directory_ids = record.get('directory_identities')
+            if not isinstance(directory_ids, dict):
+                raise ValueError('The temporary folder has no directory identity evidence; files are kept')
             if (any(recorded_ids.get(name) != value for name, value in identities.items())
                     or any(record["files"].get(name) != checksum for name, checksum in files.items())
-                    or any(name not in allowed_directories for name in directories)):
+                    or any(name not in allowed_directories or directory_ids.get(name) != identity(root/name)
+                           for name in directories)):
                 raise ValueError("The temporary folder contains changed or newly added files")
             if identity(root) != record["identity"]:
                 raise ValueError("The temporary folder was replaced")
             # Claim each checked inode before deleting it. Never recursively
             # delete the original tree: a concurrent replacement must survive.
             for name, checksum in files.items():
+                if __package__:
+                    from .transfers import verify_outputs
+                else:
+                    from transfers import verify_outputs
+                verify_outputs()
                 remove_owned(root / name, checksum, recorded_ids[name])
             for name in sorted(directories, key=lambda value: len(Path(value).parts), reverse=True):
+                if directory_ids.get(name) != identity(root/name):
+                    raise ValueError('A temporary directory was replaced; it is kept')
                 (root / name).rmdir()
             root.rmdir()
             snapshots.pop(str(root), None)
@@ -191,37 +224,5 @@ def cleanup(status, folder=None):
 
 
 def remove_owned(path, checksum, expected):
-    """Atomically claim a checked file; restore and retain external replacements."""
-    if __package__:
-        from .transfers import file_identity, matches
-    else:
-        from transfers import file_identity, matches
-    path = Path(path)
-    if not matches(path, expected, checksum):
-        raise RuntimeError('A temporary file was replaced or changed; files are kept')
-    quarantine = path.parent / ('.linkget-cleanup-' + secrets.token_hex(16))
-    quarantine.mkdir(mode=0o700)
-    claimed = quarantine / 'claimed'
-    try:
-        os.rename(path, claimed)
-        actual = file_identity(claimed)
-        # rename changes ctime, but not inode, size or modification time.
-        if (actual[:4] != expected[:4] or jobs.digest(claimed, fresh=True) != checksum
-                or file_identity(claimed) != actual):
-            raise RuntimeError('A temporary file changed while being claimed; files are kept')
-        claimed.unlink()
-    except BaseException:
-        if claimed.exists():
-            try:
-                os.link(claimed, path, follow_symlinks=False)
-            except OSError:
-                # Original pathname occupied: retain the claimed file as well.
-                pass
-            else:
-                claimed.unlink()
-        raise
-    finally:
-        try:
-            quarantine.rmdir()
-        except OSError:
-            pass
+    """Compatibility wrapper: caller must supply pre-existing creation evidence."""
+    ownership.FileProof(ownership.canonical(path), tuple(expected), checksum, True).remove()

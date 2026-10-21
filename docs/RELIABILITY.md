@@ -64,15 +64,14 @@ Every reuse checks that the file belongs to this task's recorded staging tree,
 that the stage identity matches, that no path component is a symbolic link, and
 that the recorded content hash still matches. Invalid manifests fail safely;
 `retry TASK --redownload` bypasses reuse while keeping unverified old files.
-Each completed native file also retains its inode, size and timestamp identity.
-Reuse cannot replace its recorded hash with a later pathname's hash. Saving pins
-checked source descriptors, checks created destination identities, and rechecks
-transfer evidence before completion or a Photos call. Cleanup records per-file
-identities, atomically claims each checked file, and removes only known empty
-directories. Concurrent replacements are restored or retained for review; cleanup
-does not recursively remove a tree that another writer can change.
-Older receipts without file identities cannot authorize reuse or cleanup; their
-files remain available for inspection or an explicit redownload.
+The common [file-evidence model](FILE_OWNERSHIP.md) starts at an exclusive
+writer descriptor, before completion registration. Its immutable identity/hash
+continues through normal and duplicate saves, retained Photos copies, managed
+copy verification and recovery. Observation is separate from creation authority;
+unknown files, older receipts, shared originals and uninstrumented engine/tool
+outputs are kept. Explicit redownload protects old stages before clearing the old
+manifest, even without an earlier ordinary retry. This intentionally retains more
+temporary files, including content-reading stages; it adds no automatic purge.
 Manifest/disk-write failure may leave an unrecorded successful transfer; that file
 is retained but cannot be safely reused without a durable valid receipt.
 
@@ -123,8 +122,8 @@ command with `--require-extractor` to cover the optional five extractor cases.
 
 ## Local verification, 2026-10-21
 
-- Source/Python 3.14 and an isolated installed wheel: 397 cases each, 389
-  successful, eight skipped. The user's installed command was not replaced.
+- Source/Python 3.14 and an unpacked wheel imported in isolation: 438 cases each, 430
+  successful, eight skipped. No package was installed or user command replaced.
 - Five skips are optional Instagram extractor cases: ordinary Python cannot
   import gallery-dl. Three PhotosScriptTests are deliberately excluded by the
   guarded acceptance runner to avoid any AppleScript execution. No actual Photos
@@ -134,12 +133,13 @@ command with `--require-extractor` to cover the optional five extractor cases.
   executed and successful. Empty, command-only, skipped, duplicated or missing
   execution cannot satisfy `--require-extractor`.
 - Sensitive diagnostics are parsed recursively (including arrays and multiline
-  credential values); unsafe malformed structures are omitted. Classification
-  distinguishes affirmative boolean response flags from false/configuration values.
+  credential values and bounded complete encoding layers). Ambiguous/malformed
+  structures are omitted. Classification distinguishes affirmative boolean response flags from false/configuration values.
 - Generated fixtures cover repeated partial failures, cancellation, disk-full
   copies, edited sources, rejected format probes, changed source identities,
   damaged manifests, outside/symlink paths, shrinking plans and valid generated PNG
-  replacements after hashing/probing and during cleanup claims. Mock Photos
+  replacements at writer publication/completion, duplicate and retention handoffs,
+  managed-copy verification and cleanup claims. Mock Photos
   boundaries verify importer prevention and retained-copy preservation.
   Concurrently replaced temporary copies are preserved, and their stages are
   excluded from later automatic cleanup.

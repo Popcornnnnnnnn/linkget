@@ -30,7 +30,7 @@ class DigestReuseTests(unittest.TestCase):
         original_open = Path.open
         def opened(path, mode="r", *args, **kwargs):
             if mode == "rb":
-                reads.append(path)
+                reads.append(path.resolve())
             return original_open(path, mode, *args, **kwargs)
         with patch.object(accounts, "directory", return_value=self.root / "settings/sessions"), patch.object(media.shutil, "which", return_value=None), patch.object(Path, "open", opened), jobs.item(None, 1):
             record = media.inspect_files([self.source])[0]
@@ -39,12 +39,12 @@ class DigestReuseTests(unittest.TestCase):
             second = jobs.snapshot(retained)
         self.assertEqual(record["sha256"], first[0]["sha256"])
         self.assertEqual(first, second)
-        self.assertEqual(reads.count(self.source), 2)  # hash once, copy once
-        self.assertEqual(reads.count(retained[0]), 1)
+        self.assertEqual(reads.count(self.source.resolve()), 2)  # hash once, copy once
+        self.assertEqual(reads.count(retained[0].resolve()), 1)
         # A new task does a new read; no persistent/global content cache.
         with patch.object(Path, "open", opened), jobs.item(None, 1):
             hashing.digest(self.source)
-        self.assertEqual(reads.count(self.source), 3)
+        self.assertEqual(reads.count(self.source.resolve()), 3)
 
     def test_same_size_edit_and_replacement_invalidate_digest(self):
         with hashing.digest_session():
