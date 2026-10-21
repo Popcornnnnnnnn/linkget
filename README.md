@@ -14,7 +14,7 @@ brew install Popcornnnnnnnn/tap/linkget
 linkget
 ```
 
-Homebrew installs the download engines, Python and Deno (needed for YouTube). See [installation, updates and removal](docs/INSTALL.md) for details and the wheel alternative.
+The current release is **0.2.1.dev22**, a prerelease. The Homebrew tap follows these development releases; unreleased `main` changes may differ. Homebrew installs the download engines, Python and Deno (needed for YouTube). See [installation, updates and removal](docs/INSTALL.md) for details and the wheel alternative.
 
 ## Use
 
@@ -62,7 +62,7 @@ Use straight ASCII quotes (`'` or `"`) around command-line URLs. Shells interpre
 
 ## Batch downloads
 
-Use `linkget batch` to paste several links, one per line. Each line can contain sharing text around one URL. A blank line starts the downloads. This is available since development version `0.2.1.dev4` and local build `0.2.0+parallel-batch.1`; the current local development build is `0.2.1.dev10`, with task recovery, optional concurrency limits and faster repeated lookups. You can also pass individually quoted links or pipe a text file:
+Use `linkget batch` to paste several links, one per line. Each line can contain sharing text around one URL. A blank line starts the downloads. Batch downloads support task recovery, optional concurrency limits and repeated-lookup reuse. You can also pass individually quoted links or pipe a text file:
 
 ```sh
 linkget batch 'URL1' 'URL2' --folder ~/Downloads
@@ -75,7 +75,7 @@ Identical short URLs in one batch share their resolution, including concurrent r
 
 ### Retry and recover
 
-Downloads keep their task ID in a local receipt without displaying it during normal use. A failed or cancelled download shows a retry command with that ID; `linkget recover` also lists tasks needing attention. The receipt remembers the resolved destination, download options and unfinished items. Completed items are skipped on retry, and original item numbers are retained. If a download was complete but saving failed, retry saves the checked local files first. A partial download is downloaded again; this is not a promise of byte-level resume across all engines.
+Downloads keep their task ID in a local receipt without displaying it during normal use. A failed or cancelled download shows a retry command with that ID; `linkget recover` also lists tasks needing attention. The receipt remembers the resolved destination, download options and unfinished items. Completed items are skipped on retry, and original item numbers are retained. If a download was complete but saving failed, retry saves the checked local files first. For native Xiaohongshu/Douyin downloads, matching successful media resources are checked and reused; only missing or rejected resources are fetched again. A changed or smaller exposed plan is refused unless explicitly redownloaded. Other engines retain their existing whole-item retry behavior. This does not provide byte-level resume or prove that the source exposed every resource.
 
 ```sh
 linkget retry                         # latest unfinished task
@@ -84,10 +84,10 @@ linkget recover                      # retained locations and recovery status
 linkget recover TASK --folder ~/Downloads
 linkget recover TASK --photos --item 2
 linkget recover TASK --verify         # no import; verify existing Photos copies
-linkget retry TASK --redownload       # fetch again; old staging is kept until success
+linkget retry TASK --redownload       # fetch again; protect uncertain old staging
 ```
 
-Replace `TASK` with the printed ID. Recovery refuses incomplete, missing or changed media; it does not silently import a partial set. A folder or Photos override applies to that recovery command. Since `0.2.1.dev20`, a successful same-item retry/recovery removes its unchanged tracked earlier temporary directories after complete media have been saved and verified. Folder copies are checked against the source bytes; Photos imports must pass managed-original verification. Failed/cancelled retries keep older files. Changed or newly added files, symbolic links, another task's sources and destinations inside a staging directory are kept with a notice. Files retained by older builds without a task receipt are listed but kept; download their original link again to obtain verified Photos cleanup. Saving a previously failed Photos task to a folder does not delete resources that Photos may still reference; its import receipt remains available to `recover TASK --verify`.
+Replace `TASK` with the printed ID. Recovery refuses incomplete, missing or changed media; it does not silently import a partial set. A folder or Photos override applies to that recovery command. In `0.2.1.dev22`, cleanup requires creation evidence carried from the writer and a verified saved copy. Folder copies are checked against source bytes; Photos imports must pass managed-original verification. Failed/cancelled retries keep older files. Externally replaced or newly added files, symbolic links, shared/legacy originals and outputs from uninstrumented external engines or transformation tools are retained. Explicit redownload protects old stages before resetting progress. More temporary data can remain, including reading stages; there is no automatic purge. Older receipts without creation evidence cannot authorize deletion, even after a new successful download. See [reliability scope and recovery limits](docs/RELIABILITY.md). Saving a previously failed Photos task to a folder does not delete resources that Photos may still reference; its import receipt remains available to `recover TASK --verify`.
 
 Receipts are kept in `~/Library/Application Support/linkget/jobs/` on macOS, with user-only directory/file permissions. Unfinished tasks retain their original share text or link, including access tokens needed to retry, plus a selected browser profile path if supplied. They contain no browser cookies. Successful items drop their share text; do not share unfinished task receipts. Optional `--report` files continue to exclude share tokens and local recovery paths. Retrying with `--report` reports only the retried subset.
 
@@ -116,7 +116,7 @@ linkget 'URL' --folder ~/Downloads --live-photos
 linkget 'URL' --photos --live-photos
 ```
 
-Folder mode saves unchanged downloaded originals and puts paired copies in `Live Photos/`. Photos mode stages both original downloads and paired copies, submits the paired resources together, and removes those staged files after verifying identical managed originals for the saved Photos item IDs. Picture pixels and encoded video/audio streams are preserved; only pairing/container metadata is changed on copies. Packaging dates are normalized for repeat-export deduplication. The still-frame marker is placed at the start; the source camera's original key-frame timing is not recovered. A social-network motion track may have lower resolution than its still picture. Missing exposed motion is reported. macOS offline pair recognition is checked before saving, but actual Photos library pairing/playback needs manual acceptance; it remains unverified for this development version.
+Folder mode saves unchanged downloaded originals and puts paired copies in `Live Photos/`. Photos mode stages original downloads and paired copies and submits the paired resources together. Cleanup additionally requires identical managed originals for the saved Photos item IDs and writer-origin evidence for each source; shared, transformed or uncertain sources can remain staged. Picture pixels and encoded video/audio streams are preserved; only pairing/container metadata is changed on copies. Packaging dates are normalized for repeat-export deduplication. The still-frame marker is placed at the start; the source camera's original key-frame timing is not recovered. A social-network motion track may have lower resolution than its still picture. Missing exposed motion is reported. macOS offline pair recognition is checked before saving, but actual Photos library pairing/playback needs manual acceptance; it remains unverified for this development version.
 
 Douyin's public share response can omit per-image motion information. Photos imports and `--live-photos` stop when that information is incomplete; ordinary folder downloads report `motion_metadata_complete=false` and a warning. A browser connector such as BrowserOS neo can run the packaged `douyin_browser.js` on the exact post and save a content-only JSON object containing `aweme_id` plus its `images` or `video`. Pass that snapshot to the normal download pipeline:
 

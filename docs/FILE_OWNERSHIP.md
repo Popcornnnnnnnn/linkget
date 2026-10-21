@@ -1,4 +1,4 @@
-# File evidence and cleanup (unreleased local branch)
+# File evidence and cleanup (0.2.1.dev22)
 
 This change fixes a pipeline invariant, rather than treating every successful hash
 read as new permission to trust or delete its current pathname.

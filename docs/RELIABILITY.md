@@ -1,28 +1,6 @@
-# Local reliability work (unreleased)
+# Reliability in 0.2.1.dev22 (prerelease)
 
-This branch starts at public main `67a174b`, independently of the earlier local
-`start` entrance commits `c6c21ed` and `6a40458`. No entrance changes, system
-installation, publication, personal library or account access are part of it.
-
-## Plan and initial gaps
-
-1. Errors: existing text matching misses explicit expiry, processing failures and
-   uncertain causes; raw engine errors can include signed URLs. Add verified
-   classification, safe messages and bounded read-only retry policy.
-2. Gallery recovery: whole-post retries and complete-set save recovery already
-   exist. Add per-resource receipts for native Xiaohongshu/Douyin transfers so a
-   retry can reuse checked successful resources and fetch missing resources only.
-   Exposed-plan counts must remain distinct from independently known source totals.
-3. Fallback extractors: existing original/display and browser-content fallbacks
-   are already implemented. Evaluate public candidates without installation;
-   provide a disabled policy/interface and offline fake adapters, accepting a real
-   adapter only with compatible licensing and matching failure evidence.
-4. Compatibility: reuse synthetic fixtures, record engine versions and distinguish
-   parser/engine/platform evidence. Default checks remain offline, with no scheduled
-   checks or changes to external CI.
-
-Each area is verified independently, then integrated and tested together. Actual
-Photos playback remains the user's own check; it is not an assistant prerequisite.
+This release preserves the existing CLI while strengthening transfer recovery, diagnostics and file ownership. The boundaries below distinguish enabled behavior from preparatory interfaces.
 
 ## Implemented boundaries
 
@@ -122,8 +100,8 @@ command with `--require-extractor` to cover the optional five extractor cases.
 
 ## Local verification, 2026-10-21
 
-- Source/Python 3.14 and an unpacked wheel imported in isolation: 438 cases each, 430
-  successful, eight skipped. No package was installed or user command replaced.
+- Local guarded source/Python 3.14 and isolated-wheel validation: 440 cases each, 432
+  successful, eight skipped. The wheel is tested in a task-local environment; the user installation is unchanged.
 - Five skips are optional Instagram extractor cases: ordinary Python cannot
   import gallery-dl. Three PhotosScriptTests are deliberately excluded by the
   guarded acceptance runner to avoid any AppleScript execution. No actual Photos
@@ -145,11 +123,4 @@ command with `--require-extractor` to cover the optional five extractor cases.
   excluded from later automatic cleanup.
 - Offline sdist/wheel builds and modified-document link/fence checks passed.
   There was no website download, cookie read, actual Photos access, third-party
-  candidate installation/execution, external CI change or publication.
-
-The earlier `start` commits are not ancestors of this branch; its module and CLI
-command are absent. The original checkout remains on `ccdafe2` with its existing
-user edits. This branch intentionally starts at public main rather than importing
-that checkout's later local Neo/reading work; future integration must reconcile
-those independent commits before installation. Nothing is merged or deployed by
-this local handoff.
+  candidate installation/execution, external CI configuration change. Release CI additionally tests Linux/Python 3.10 and macOS/Python 3.14; consult the release-linked runs for their results.

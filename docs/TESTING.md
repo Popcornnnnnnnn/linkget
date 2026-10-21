@@ -97,9 +97,9 @@ These cases use synthetic post data and make no network or Photos requests.
 
 GitHub Actions runs source and installed-wheel tests on Linux/Python 3.10 and macOS/Python 3.14, and compiles the AppleScript on the isolated macOS runner. The tap's `brew test linkget` does not request browser or Photos permissions.
 
-## Local reliability follow-up
+## Reliability in 0.2.1.dev22
 
-The independent unreleased reliability branch adds evidence-based diagnostics,
+This prerelease adds evidence-based diagnostics,
 per-resource native gallery recovery, a disabled fallback metadata interface and
 an offline upstream compatibility command. See [scope, verification and limits](RELIABILITY.md),
 [candidate review](FALLBACKS.md) and [compatibility commands](COMPATIBILITY.md).

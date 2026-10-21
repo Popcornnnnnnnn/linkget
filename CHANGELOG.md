@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1.dev22 (prerelease)
+
+- Classify explicit download/save failure evidence and provide next steps without guessing unknown causes; redact structured, encoded and malformed credential diagnostics.
+- Checkpoint native Xiaohongshu/Douyin media resources and reuse verified successful resources on retry. Refuse shrinking or changed plans without explicit redownload; protect omitted resources even after redownload. Other engines retain their existing retry behavior.
+- Carry creation evidence from native writers through registration, duplicate handling, folder copies, retained Photos sources and cleanup. Preserve replaced, shared, legacy and uncertain files; report actual removed/retained counts. This conservative policy can retain more staging data.
+- Add a manual offline compatibility checker with generated fixtures, engine versions and required extractor execution checks. Website availability and actual Photos playback are not established by these tests.
+- Add disabled extractor-fallback interfaces and a read-only retry-delay policy for future work. Neither is connected to normal download execution; no third-party fallback extractor is integrated.
+- Refresh installation, recovery and optional reading prerequisites. Include the previously unreleased dev21 Douyin motion safeguards below.
+
 ## 0.2.1.dev21
 
 - Preserve explicit per-image motion in Douyin posts and pair each motion track with its still, including lazy-loaded galleries. Exclude post background music from motion pairs.

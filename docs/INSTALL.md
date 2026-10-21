@@ -9,7 +9,7 @@ brew install Popcornnnnnnnn/tap/linkget
 linkget
 ```
 
-The tap installs Python, gallery-dl, yt-dlp, ffmpeg and Deno as dependencies. Deno runs YouTube's JavaScript challenges. Homebrew may ask you to confirm trust in this third-party formula. After installation, `linkget` is available on PATH; follow Homebrew's shellenv instructions if `brew` itself is not on PATH.
+The tap currently distributes the `0.2.1.dev22` prerelease. It installs Python, gallery-dl, yt-dlp, ffmpeg and Deno as dependencies. Deno runs YouTube's JavaScript challenges. Homebrew may ask you to confirm trust in this third-party formula. After installation, `linkget` is available on PATH; follow Homebrew's shellenv instructions if `brew` itself is not on PATH.
 
 To update linkget and its download engines:
 
@@ -39,9 +39,9 @@ On macOS, data lives in `~/Library/Application Support/linkget/`:
 | --- | --- | --- |
 | `sessions/` | Website login copies; restricted to your user | `linkget logout all` removes them |
 | `preferences.json` | Default save destination, browser choice and disconnected sites | Can be removed manually after uninstall |
-| `originals/` | Staged Photos import sources; removed after verified library copies | Failed or unverified imports remain here; verify or consolidate before removal |
+| `originals/` | Staged Photos import sources; verified writer-owned copies may be removed | Failed, shared, legacy or uncertain sources remain; verify or consolidate before removal |
 
-Successful verified imports leave no additional originals in linkget. **Do not delete leftover `originals/` files just to uninstall linkget.** If Photos uses referenced files, deleting originals breaks the items in your library. To reclaim the retained copies, first use Photos > File > Consolidate for those items and verify that the library has its own originals. linkget does not automate this operation.
+Successful imports can retain additional originals when creation evidence or exclusive ownership cannot be established. Verification alone does not authorize deletion. The conservative policy can retain more temporary data; linkget does not automatically purge it. **Do not delete leftover `originals/` files just to uninstall linkget.** If Photos uses referenced files, deleting originals breaks the items in your library. To reclaim the retained copies, first use Photos > File > Consolidate for those items and verify that the library has its own originals. linkget does not automate this operation.
 
 `LINKGET_HOME=/path/to/data` overrides the data directory for isolated testing or a portable setup. Do not point it to a temporary folder when importing into Photos, because failed or unverified imports may still reference staged originals there.
 
@@ -50,8 +50,8 @@ Successful verified imports leave no additional originals in linkget. **Do not d
 The GitHub release includes a wheel. Use an isolated installer:
 
 ```sh
-uv tool install ./linkget-0.2.0-py3-none-any.whl
-# or: pipx install ./linkget-0.2.0-py3-none-any.whl
+uv tool install ./linkget-0.2.1.dev22-py3-none-any.whl
+# or: pipx install ./linkget-0.2.1.dev22-py3-none-any.whl
 ```
 
 This installs linkget but not its external download engines. On macOS:
