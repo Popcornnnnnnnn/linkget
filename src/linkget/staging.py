@@ -70,10 +70,18 @@ def remember(path, expected_identity=None):
     jobs.record(stage_snapshots=snapshots)
 
 
+def paths(row):
+    previous, current = row.get('previous_stages', []), row.get('stage')
+    if (not isinstance(previous, list) or any(not isinstance(path, str) for path in previous)
+            or current is not None and not isinstance(current, str)):
+        raise ValueError('The temporary stage list is invalid; retained files have been kept.')
+    return list(dict.fromkeys(previous + ([current] if current else [])))
+
+
 def remember_earlier(status):
     journal, index = jobs.current()
     row = journal.data["items"][index - 1]
-    for path in dict.fromkeys(row.get("previous_stages", []) + ([row["stage"]] if row.get("stage") else [])):
+    for path in paths(row):
         if not Path(path).exists():
             continue
         try:
@@ -94,7 +102,7 @@ def cleanup(status, folder=None):
     if receipt and any(Path(item["path"]).exists() for item in receipt.get("staged", [])):
         status("Files kept", "Photos originals still need verification", "33")
         return
-    paths = list(dict.fromkeys(row.get("previous_stages", []) + ([row["stage"]] if row.get("stage") else [])))
+    stage_paths = paths(row)
     protected = [jobs.directory().parent.resolve()]
     if folder is not None:
         protected.append(Path(folder).resolve())
@@ -106,9 +114,8 @@ def cleanup(status, folder=None):
             for number, item in enumerate(other.data["items"], 1):
                 if other.identifier == journal.identifier and number == index:
                     continue
-                protected.extend(Path(path).resolve() for path in item.get("previous_stages", [])
-                                 + ([item["stage"]] if item.get("stage") else []))
-    except (OSError, ValueError, RuntimeError):
+                protected.extend(Path(path).resolve() for path in paths(item))
+    except (OSError, ValueError, RuntimeError, TypeError):
         status("Files kept", "Could not check other task receipts before cleanup", "33")
         return
     removed = 0
@@ -116,12 +123,17 @@ def cleanup(status, folder=None):
         status("Files kept", "The temporary cleanup record is invalid", "33")
         return
     snapshots = dict(row.get("stage_snapshots", {}))
-    for path in paths:
+    for path in stage_paths:
         if not Path(path).exists() and not Path(path).is_symlink():
             snapshots.pop(str(Path(path).resolve()), None)
             continue
         try:
             root = _root(path)
+            protected_stages = row.get('protected_stages', [])
+            if not isinstance(protected_stages, list) or any(not isinstance(value, str) for value in protected_stages):
+                raise ValueError('The protected stage list is invalid; files are kept')
+            if str(root) in protected_stages:
+                raise ValueError('A temporary copy was replaced concurrently; this stage is kept for review')
             if any(target == root or root in target.parents for target in protected):
                 raise ValueError("The temporary folder contains a save destination or another task's files")
             record = snapshots.get(str(root))
@@ -149,5 +161,5 @@ def cleanup(status, folder=None):
             status("Files kept", f"{Path(path).name}: {error}", "33")
     remaining = [path for path in row.get("previous_stages", []) if Path(path).exists() or Path(path).is_symlink()]
     jobs.record(previous_stages=remaining, stage_snapshots=snapshots)
-    if removed and (len(paths) > 1 or row.get("ready")):
+    if removed and (len(stage_paths) > 1 or row.get("ready")):
         status("Cleanup", f"{removed} temporary folder{'s' if removed != 1 else ''} removed")

@@ -5,20 +5,16 @@ import re
 from urllib.parse import urlsplit
 if __package__:
     from .runtime import run_process
+    from .failures import classify
 else:
     from runtime import run_process
+    from failures import classify
 SITES = "Instagram, X/Twitter, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, Weibo, Reddit, Lofter, Pixiv and Pinterest posts; YouTube videos and Shorts"
 
 
 def needs_login(message):
-    """Match explicit authentication failures, not generic 403/429/network errors."""
-    return bool(re.search(
-        r"login[_ -]required|log[ -]?in (?:is )?required|(?:please|must|need to) (?:log[ -]?in|sign in)|"
-        r"(?:account|login) credentials (?:required|needed)|invalid login credentials|"
-        r"(?:cookies|authentication|authorization)['\"]? (?:are |is )?(?:required|needed)|"
-        r"fresh cookies.*needed|(?:cookies|session)(?: are| is| have| has)? (?:expired|no longer valid)|"
-        r"sign in (?:to|if)|redirect to login page|登录后|请(?:先)?登录|需要登录",
-        message, re.I))
+    """Use the same affirmative, credential-free evidence as error reporting."""
+    return classify(message).category in {'login_required', 'login_expired'}
 
 
 
@@ -54,7 +50,7 @@ def prepare_bilibili(command, info_path, log):
     log.flush()
     if result.returncode or ("--cookies" in command and needs_login(messages)):
         if needs_login(messages):
-            raise LoginRequired("Bilibili requires a signed-in account for this video.")
+            raise LoginRequired("Bilibili authentication response:\n" + messages)
         raise RuntimeError("Could not read this Bilibili video's formats.\n" + "\n".join(messages.splitlines()[-8:]))
     try:
         info = json.loads(lines[-1])
@@ -99,13 +95,9 @@ def prepare_video(command, info_path, log, domain):
     log.flush()
     if result.returncode or ("--cookies" in command and needs_login(messages)):
         if needs_login(messages):
-            raise LoginRequired(f"{site} asks you to sign in or complete verification for this video.")
+            raise LoginRequired(f"{site} authentication response:\n" + messages)
         if domain == "youtube.com" and ("PO Token" in messages or "JavaScript" in messages or "challenge" in messages.lower()):
             raise RuntimeError("YouTube's verification could not be completed. Run brew upgrade yt-dlp deno, then retry.\n" + "\n".join(messages.splitlines()[-6:]))
-        if domain == "reddit.com" and "HTTP Error 404" in messages:
-            if "--cookies" not in command:
-                raise LoginRequired(f"{site} returned 404. This post may be deleted, age-restricted, or quarantined. Run linkget auth reddit to connect a Reddit login and retry.")
-            raise RuntimeError(f"This {site} post is unavailable, deleted, or private.")
         raise RuntimeError(f"Could not read this {site} video.\n" + "\n".join(messages.splitlines()[-8:]))
     try:
         info = json.loads(lines[-1])

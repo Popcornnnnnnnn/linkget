@@ -5,12 +5,14 @@ import subprocess
 from urllib.parse import urlsplit
 
 if __package__:
-    from . import jobs, staging
+    from . import jobs, staging, transfers
+    from .failures import redact
     from .photos import originals_directory, verify_library_copies, digest
     from .media import inspect_files
     from .live import prepare_pairs, save_pairs
 else:
-    import jobs, staging
+    import jobs, staging, transfers
+    from failures import redact
     from photos import originals_directory, verify_library_copies, digest
     from media import inspect_files
     from live import prepare_pairs, save_pairs
@@ -32,6 +34,12 @@ def listing(status):
             status("Task", f"{journal.identifier} · {len(pending)} need attention · {ready} ready to save")
             for index in pending:
                 row = journal.data["items"][index - 1]
+                try:
+                    progress = transfers.summary(row)
+                    if progress:
+                        status("Media", f"Item {index}: {progress}")
+                except (ValueError, TypeError):
+                    status("Media", f"Item {index}: retained media manifest needs repair; use retry --redownload")
                 if row.get("stage"):
                     status("Files kept", f"Item {index}: {row['stage']}")
                 if row.get("receipt"):
@@ -153,5 +161,5 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                     jobs.record(status="completed")
             except (OSError, ValueError, RuntimeError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
                 failures += 1
-                status("Kept", f"Item {index}: {error}", "33")
+                status("Kept", f"Item {index}: {redact(error)}", "33")
     return 1 if failures else 0

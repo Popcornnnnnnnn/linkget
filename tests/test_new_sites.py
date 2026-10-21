@@ -316,7 +316,7 @@ class NewSiteTests(unittest.TestCase):
         for domain, html, expected in cases:
             self.assertEqual(session.classify_response(domain, 200, session.webpage_login(domain, html)).state, expected)
             self.assertEqual(session.classify_response(domain, 403, session.webpage_login(domain, html)).state, "unverified")
-        self.assertTrue(cli.needs_login("Sign in to confirm you're not a bot"))
+        self.assertFalse(cli.needs_login("Sign in to confirm you're not a bot"))
         self.assertTrue(cli.needs_login("HTTP redirect to login page"))
         self.assertFalse(cli.needs_login("HTTP Error 403: Forbidden"))
 

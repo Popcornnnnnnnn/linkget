@@ -14,12 +14,13 @@ import tempfile
 import time
 
 if __package__:
-    from . import accounts, jobs, destinations, preflight, recovery, staging
+    from . import accounts, jobs, destinations, preflight, recovery, staging, transfers
     from .runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from .output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description
     from .batch import run_batch
     from .engines import route, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login
     from .photos import originals_directory, retain_originals, verify_library_copies
+    from .failures import classify, redact
     from .version import VERSION
     from .session import LOGIN_URLS, prepare_session
     from .links import normalize_link
@@ -33,12 +34,13 @@ if __package__:
     from .media import DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
     from .live import prepare_pairs, save_pairs
 else:  # Homebrew launches this file directly.
-    import accounts, jobs, destinations, preflight, recovery, staging
+    import accounts, jobs, destinations, preflight, recovery, staging, transfers
     from runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description
     from batch import run_batch
     from engines import route, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login
     from photos import originals_directory, retain_originals, verify_library_copies
+    from failures import classify, redact
     from version import VERSION
     from session import LOGIN_URLS, prepare_session
     from links import normalize_link
@@ -58,7 +60,7 @@ SITES = "Instagram, X/Twitter, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, 
 
 
 def login_guidance(args, domain, url, reason):
-    status("Stopped", reason, "33", stream=sys.stderr)
+    status("Stopped", redact(reason), "33", stream=sys.stderr)
     if args.browser == "none":
         status("Next", "Public-only mode is enabled. Run without --browser none to use a browser login.", stream=sys.stderr)
     elif not sys.stdin.isatty():
@@ -66,24 +68,11 @@ def login_guidance(args, domain, url, reason):
         status("Next", "Run linkget in an interactive terminal to connect a browser and continue.", stream=sys.stderr)
 
 
-def report_failure(message):
-    label, next_step = "Error", None
-    if re.search(r"HTTP(?: Error)?[ :]+429|too many requests|rate.?limit", message, re.I):
-        label, next_step = "Rate limit", "Wait before retrying this item."
-    elif re.search(r"captcha|challenge|verification page|verification required|confirm you.re not a bot", message, re.I):
-        label, next_step = "Website check", "Open the post in your browser, complete any website check, then retry this item."
-    elif re.search(r"timed? out|timeout|connection (?:reset|refused)|TLS|SSL|could not resolve|temporary failure in name resolution", message, re.I):
-        label, next_step = "Network", "Check your connection, then retry this item."
-    elif re.search(r"HTTP(?: Error)?[ :]+403|forbidden|blocked by network security", message, re.I):
-        label, next_step = "Access refused", "Open the post in your browser to check access or website verification, then retry this item."
-    elif re.search(r"HTTP(?: Error)?[ :]+(?:404|410)|unavailable, deleted, or private|video unavailable", message, re.I):
-        label, next_step = "Unavailable", "Check that the post still opens in your browser, or copy a fresh share link."
-    elif re.search(r"unsupported|not supported|not implemented", message, re.I):
-        label, next_step = "Unsupported", "Run linkget sites to check the supported links and media."
-    status(label, message, "31", stream=sys.stderr)
-    if next_step:
-        status("Next", next_step, stream=sys.stderr)
-    return label.lower().replace(" ", "_")
+def report_failure(error, phase=None):
+    failure = classify(error, phase=phase)
+    status(failure.label, failure.message, "31", stream=sys.stderr)
+    status("Next", failure.next_step, stream=sys.stderr)
+    return failure.category
 
 
 def login_result(site, state, saved=False, public_summary=False):
@@ -273,7 +262,7 @@ def recover_login_interactive(args, domain, reason, proactive=False):
     if not tool:
         raise RuntimeError(installation_hint(["gallery-dl"]))
     if not proactive:
-        status("Action needed", reason, "33")
+        status("Action needed", redact(reason), "33")
     while True:
         new_browser = not browser or proactive
         proactive = False
@@ -304,7 +293,7 @@ def recover_login_interactive(args, domain, reason, proactive=False):
             accounts.set_preferences(browser=browser, profile=profile, setup=True)
             return True
         reason = state.detail
-        status(site, "Could not connect · " + reason, "1;33")
+        status(site, "Could not connect · " + redact(reason), "1;33")
 
 
 def sign_in_link(domain, stream=None):
@@ -535,7 +524,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 write_report(args.report, VERSION, records, code)
             return code
         except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
-            report_failure(str(error))
+            report_failure(error)
             return 1
         except (KeyboardInterrupt, EOFError):
             status("Cancelled", "Recovery stopped; retained files are safe", "33")
@@ -557,13 +546,13 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             status("Quality", "Uploader maximum and watermark absence remain unverified.")
             return 0
         except (OSError, ValueError, KeyError, TypeError) as error:
-            report_failure(str(error))
+            report_failure(error)
             return 1
     if args.link and args.link[0] == "config":
         try:
             return configure(args, parser)
         except (OSError, ValueError, RuntimeError) as error:
-            status("Error", str(error), "31", stream=sys.stderr)
+            status("Error", redact(error), "31", stream=sys.stderr)
             return 1
     if args.link and args.link[0] == "login":
         parser.error("Browser connection is now part of the normal flow. Run linkget or linkget URL.")
@@ -571,7 +560,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         try:
             return account_command(args, parser)
         except (OSError, ValueError, RuntimeError) as error:
-            status("Error", str(error), "31", stream=sys.stderr)
+            status("Error", redact(error), "31", stream=sys.stderr)
             return 1
         except (KeyboardInterrupt, EOFError):
             status("Cancelled", "Stopped", "33", stream=sys.stderr)
@@ -592,7 +581,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 if args.photos:
                     status("Photos", "Automation and managed-copy checks run at import time")
             except (OSError, ValueError, RuntimeError) as error:
-                report_failure(str(error))
+                report_failure(error)
                 return 1
         return code
     if args.link == "sites":
@@ -636,7 +625,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             status("Report", str(args.report.expanduser().resolve()))
         return code
     except (OSError, ValueError, RuntimeError) as error:
-        report_failure(str(error))
+        report_failure(error)
         return 1
     except (KeyboardInterrupt, EOFError):
         status("Cancelled", "Download stopped", "33", stream=sys.stderr)
@@ -685,6 +674,7 @@ def batch_download(args, parser, links, records=None):
 
 
 def download(args, setup_results, records=None, media_consumer=None):
+    phase = "download"
     stage = None
     session_dir = None
     info_path = None
@@ -709,6 +699,8 @@ def download(args, setup_results, records=None, media_consumer=None):
             if previous.get("stage"):
                 stages = previous.get("previous_stages", []) + [previous["stage"]]
                 jobs.record(previous_stages=list(dict.fromkeys(stages)))
+        if getattr(args, 'redownload', False):
+            jobs.record(media_progress=None)
         jobs.record(input=url, status="running", ready=None, receipt=None, stage=None, stage_identity=None)
         started = time.monotonic()
         with activity("Resolving") if any(host in url for host in ("v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/", "xhslink.com", "xhslink.cn", "t.cn/")) else nullcontext():
@@ -835,13 +827,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                     tail = (stage / "download.log").read_text(errors="replace").splitlines()[-8:]
                     log_text = "\n".join(tail)
                     if needs_login(log_text):
-                        raise LoginRequired(f"{site} requires a signed-in account to download this post.")
-                    if domain == "reddit.com" and "blocked by network security" in log_text.lower():
-                        raise LoginRequired(f"{site} requires a signed-in account to download this post. Run linkget auth reddit to connect a Reddit login.")
-                    if any(msg in log_text for msg in ("Video unavailable", "HTTP Error 404: Not Found", "not found")):
-                        raise RuntimeError(f"This {site} post is unavailable, deleted, or private.")
-                    if "blocked by copyright" in log_text.lower() or "region" in log_text.lower():
-                        raise RuntimeError(f"This {site} post is blocked due to copyright or region restrictions.")
+                        raise LoginRequired(f"{site} authentication response:\n" + log_text)
                     raise RuntimeError("Download failed.\n" + log_text)
                 if media_consumer is not None:
                     if __package__:
@@ -935,6 +921,7 @@ def download(args, setup_results, records=None, media_consumer=None):
         if 'motion_metadata_complete' in download_info.metadata:
             evidence['motion_metadata_complete'] = download_info.metadata['motion_metadata_complete']
         if any(record.get('probe_ok') is False for record in media_records):
+            transfers.invalidate([path for path, record in zip(files, media_records) if record.get('probe_ok') is False])
             raise RuntimeError("The downloaded media did not pass format validation. Files have been kept; nothing was saved or imported.")
         status("Quality", quality_summary(media_records))
         count_text = f"{len(files)} / {download_info.expected_count} files" if download_info.expected_count is not None else f"{len(files)} files · source count unknown"
@@ -943,6 +930,7 @@ def download(args, setup_results, records=None, media_consumer=None):
             status("Source", "Fallback media included", "33")
         if media_consumer is not None:
             metadata = json.loads(info_path.read_text()) if info_path is not None else read_metadata
+            phase = 'postprocess'
             media_consumer(files, media_records, download_info, url, site, metadata)
             evidence.update(status="completed")
             return 0
@@ -953,6 +941,7 @@ def download(args, setup_results, records=None, media_consumer=None):
         prepared = []
         if download_info.live_pairs:
             if args.live_photos:
+                phase = 'pair'
                 with activity("Pairing Live Photos"):
                     prepared = prepare_pairs(files, download_info.live_pairs, stage / "live-photos")
                 ready["prepared"] = [jobs.snapshot(pair) for pair in prepared]
@@ -960,6 +949,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                 status("Live Photos", f"{len(prepared)} source pairs recognized by macOS")
             else:
                 status("Live Photos", f"{len(download_info.live_pairs)} pairs saved separately · use --live-photos to pair")
+        phase = 'save' if folder else 'import'
         with batch_lock("saving"), activity("Saving" if folder else "Importing"):
             if folder:
                 saved, skipped = save_folder(files, folder)
@@ -985,14 +975,15 @@ def download(args, setup_results, records=None, media_consumer=None):
         evidence.update(status="completed", saved_count=len(saved), skipped_count=skipped)
         return 0
     except LoginRequired as error:
-        evidence['failure'] = "login_required"
+        category = classify(error).category
+        evidence['failure'] = category if category in {'login_required', 'login_expired'} else 'login_required'
         login_guidance(args, domain, url, str(error))
         return 1
-    except subprocess.TimeoutExpired:
-        evidence['failure'] = report_failure("The website request timed out.")
+    except subprocess.TimeoutExpired as error:
+        evidence['failure'] = report_failure(error, phase=phase)
         return 1
     except (OSError, ValueError, RuntimeError) as error:
-        evidence['failure'] = report_failure(str(error))
+        evidence['failure'] = report_failure(error, phase=phase)
         return 1
     except (KeyboardInterrupt, EOFError):
         evidence['status'] = "cancelled"
@@ -1012,6 +1003,13 @@ def download(args, setup_results, records=None, media_consumer=None):
                 for metadata in stage.glob("*/*.json"):
                     metadata.unlink(missing_ok=True)
             if media_consumer is None:
+                if current:
+                    try:
+                        progress = transfers.summary(journal.data['items'][index - 1])
+                        if progress:
+                            status("Partial", progress, "33", stream=sys.stderr)
+                    except (ValueError, TypeError):
+                        pass  # A corrupt receipt must not replace the original failure.
                 try:
                     staging.remember(stage, journal.data["items"][index - 1].get("stage_identity") if current else None)
                 except (OSError, ValueError, RuntimeError) as error:

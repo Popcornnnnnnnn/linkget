@@ -96,3 +96,12 @@ installation, use `PYTHONPATH=src /opt/homebrew/opt/gallery-dl/libexec/bin/pytho
 These cases use synthetic post data and make no network or Photos requests.
 
 GitHub Actions runs source and installed-wheel tests on Linux/Python 3.10 and macOS/Python 3.14, and compiles the AppleScript on the isolated macOS runner. The tap's `brew test linkget` does not request browser or Photos permissions.
+
+## Local reliability follow-up
+
+The independent unreleased reliability branch adds evidence-based diagnostics,
+per-resource native gallery recovery, a disabled fallback metadata interface and
+an offline upstream compatibility command. See [scope, verification and limits](RELIABILITY.md),
+[candidate review](FALLBACKS.md) and [compatibility commands](COMPATIBILITY.md).
+These checks do not arrange a real Photos acceptance run; the user reviews actual
+Photos results in normal use.

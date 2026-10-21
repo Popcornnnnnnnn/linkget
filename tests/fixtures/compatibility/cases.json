@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "provenance": "Generated minimal metadata and fictional post identifiers; no captured post content, signed URLs or account data.",
+  "routes": [
+    {"id": "youtube-single-video", "url": "https://www.youtube.com/watch?v=abcdefghijk", "engine": "yt-dlp", "domain": "youtube.com"},
+    {"id": "instagram-post", "url": "https://www.instagram.com/p/fixture/", "engine": "gallery-dl", "domain": "instagram.com"},
+    {"id": "douyin-native", "url": "https://www.douyin.com/note/123", "engine": "douyin", "domain": "douyin.com"},
+    {"id": "xhs-native", "url": "https://www.xiaohongshu.com/explore/aaaaaaaaaaaaaaaaaaaaaaaa", "engine": "xiaohongshu", "domain": "xiaohongshu.com"}
+  ],
+  "galleries": [
+    {
+      "id": "source-count-missing-picture", "domain": "x.com", "outcome": "reject", "error_contains": "incomplete according to its source count",
+      "files": [{"name": "one.jpg", "metadata": {"tweet_id": "fixture", "num": 1, "count": 2}}]
+    },
+    {
+      "id": "live-pair-resources", "domain": "bilibili.com", "outcome": "accept", "expected_count": 2,
+      "live_pairs": [["one.jpg", "one.mov"]],
+      "files": [
+        {"name": "one.jpg", "metadata": {"num": 1, "count": 1, "suffix": "", "live_url": "synthetic-marker"}},
+        {"name": "one.mov", "metadata": {"num": 1, "count": 1, "suffix": "l", "live_url": "synthetic-marker"}}
+      ]
+    },
+    {
+      "id": "source-count-unknown", "domain": "x.com", "outcome": "accept", "expected_count": null, "live_pairs": [],
+      "files": [{"name": "one.jpg", "metadata": {"tweet_id": "fixture", "num": 1}}]
+    }
+  ]
+}
