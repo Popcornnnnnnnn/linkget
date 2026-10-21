@@ -1,4 +1,5 @@
 include README.md LICENSE CHANGELOG.md
+include docs/RELIABILITY.md docs/FILE_OWNERSHIP.md docs/COMPATIBILITY.md docs/FALLBACKS.md
 include docs/TESTING.md docs/INSTALL.md docs/WATERMARKS.md docs/WEIBO_IMAGE_AUDIT.md
 include docs/MEDIA_VALIDATION.md docs/READ.md docs/TOUTIAO.md docs/MAC_SHARE.md docs/TRANSLATION_VALIDATION.md
 recursive-include macos *.py *.swift

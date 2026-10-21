@@ -7,9 +7,38 @@ import sys
 import uuid
 
 if __package__:
-    from .photos import digest
+    from .hashing import digest
+    from . import ownership
 else:
-    from photos import digest
+    from hashing import digest
+    import ownership
+
+
+def _transfers():
+    if __package__:
+        from . import transfers
+    else:
+        import transfers
+    return transfers
+
+
+def _proof(files, path):
+    if isinstance(files, ownership.FileList):
+        return files.proof(path)
+    return _transfers().proof_for(path)
+
+
+def _verify(proofs):
+    for proof in proofs:
+        proof.verify()
+
+
+def _remove_created(proofs):
+    for proof in reversed(proofs):
+        try:
+            proof.remove()
+        except (OSError, ValueError, RuntimeError):
+            pass  # A replacement or uncertain file is kept, never re-authorized.
 
 
 def prepare_pairs(files, pairs, directory):
@@ -24,31 +53,48 @@ def prepare_pairs(files, pairs, directory):
     helper = directory / ".livephoto-helper"
     commands = [["/usr/bin/xcrun", "swiftc", str(Path(__file__).with_name("livephoto.swift")), "-o", str(helper)]]
     sources = {path.name: path for path in files}
-    outputs = []
+    outputs, produced, inputs = [], {}, []
     for image_name, video_name in pairs:
         image, video = sources[image_name], sources[video_name]
-        checksum = hashlib.sha256((digest(image) + digest(video)).encode()).hexdigest()
+        image_proof, video_proof = _proof(files, image), _proof(files, video)
+        inputs.extend((image_proof, video_proof))
+        checksum = hashlib.sha256((image_proof.sha256 + video_proof.sha256).encode()).hexdigest()
         identifier = str(uuid.uuid5(uuid.NAMESPACE_URL, "linkget:" + checksum)).upper()
         photo = directory / ("linkget-live-" + checksum + image.suffix.lower())
         movie = photo.with_suffix(".mov")
-        if photo.exists() and movie.exists():
-            outputs.append((photo, movie))
+        key = (photo, movie)
+        if key in produced:
+            pair = produced[key]
+            _verify(pair.proofs.values())
+            outputs.append(pair)
             continue
+        if any(path.exists() or path.is_symlink() for path in key):
+            raise RuntimeError("Unverified Live Photo output already exists; original downloads have been kept.")
         template = directory / ".metadata.jpg"
-        # The image is copied first; ExifTool edits only the copy's maker notes.
-        shutil.copyfile(image, photo)
+        # The input copy has writer evidence. External metadata tools legitimately
+        # transform it below; their final outputs carry observed, non-owning
+        # proofs and are retained rather than granted automatic cleanup rights.
+        ownership.copy(image_proof, photo, copier=shutil.copyfileobj)
         if commands:
             run(commands.pop())
-        run([str(helper), "template", str(image), str(template), identifier])
+        image_proof.verify()
+        run([str(helper), "template", str(image_proof.path), str(template), identifier])
         run([exiftool, "-overwrite_original", "-TagsFromFile", str(template), "-MakerNotes", str(photo)])
-        run([str(helper), "movie", str(video), str(movie), identifier])
-        # AVAssetWriter stamps the packaging time into container headers. These
-        # are not capture dates; normalize them so a repeated export deduplicates.
+        video_proof.verify()
+        run([str(helper), "movie", str(video_proof.path), str(movie), identifier])
+        # Packaging time is not capture time. Normalization preserves repeat
+        # export deduplication without claiming original camera key-frame timing.
         dates = ("QuickTime:CreateDate", "QuickTime:ModifyDate", "TrackCreateDate",
                  "TrackModifyDate", "MediaCreateDate", "MediaModifyDate")
         run([exiftool, "-overwrite_original", *[f"-{key}=0000:00:00 00:00:00" for key in dates], str(movie)])
+        _verify((image_proof, video_proof))
+        proofs = [ownership.FileProof.observe(photo), ownership.FileProof.observe(movie)]
         run([str(helper), "validate", str(photo), str(movie)])
-        outputs.append((photo, movie))
+        _verify(proofs)
+        pair = ownership.FileList((photo, movie), proofs)
+        produced[key] = pair
+        outputs.append(pair)
+    _verify(inputs)
     return outputs
 
 
@@ -62,59 +108,65 @@ def run(command):
 
 
 def save_pairs(pairs, folder):
-    """A filename collision selects one suffix for both components."""
+    """A collision selects one suffix; every saved or duplicate output has proof."""
     folder.mkdir(parents=True, exist_ok=True)
-    saved, skipped = [], 0
-    for image, video in pairs:
-        suffix = 0
-        while True:
-            stem = image.stem + (f"-{suffix}" if suffix else "")
-            targets = [folder / (stem + image.suffix), folder / (stem + video.suffix)]
-            if all(p.is_file() for p in targets) and all(digest(a, fresh=True) == digest(b, fresh=True) for a, b in zip((image, video), targets)):
-                skipped += 2
-                break
-            if any(p.exists() for p in targets):
-                suffix += 1
-                continue
+    saved, skipped, inputs, outputs, created = [], 0, [], [], []
+    try:
+        for pair in pairs:
             created = []
-            try:
-                for source, target in zip((image, video), targets):
-                    with target.open("xb") as output:
-                        created.append(target)
-                        with source.open("rb") as input_file:
-                            shutil.copyfileobj(input_file, output)
-                    if digest(source, fresh=True) != digest(target, fresh=True):
-                        raise RuntimeError("Saved Live Photo verification failed; temporary files have been kept.")
+            image, video = pair
+            sources = [_proof(pair, image), _proof(pair, video)]
+            inputs.extend(sources)
+            suffix = 0
+            while True:
+                stem = image.stem + (f"-{suffix}" if suffix else "")
+                targets = [folder / (stem + image.suffix), folder / (stem + video.suffix)]
+                if all(path.is_file() and not path.is_symlink() for path in targets):
+                    # Observe each existing target once. A stable hash mismatch
+                    # is a collision; a changed inode/hash is an error, not a
+                    # reason to re-observe and silently adopt a replacement.
+                    observed = [ownership.FileProof.observe(path) for path in targets]
+                    if all(proof.sha256 == source.sha256 for proof, source in zip(observed, sources)):
+                        outputs.extend(observed)
+                        skipped += 2
+                        break
+                if any(path.exists() or path.is_symlink() for path in targets):
+                    suffix += 1
+                    continue
+                for source, target in zip(sources, targets):
+                    proof = ownership.copy(source, target, copier=shutil.copyfileobj)
+                    created.append(proof)
+                    outputs.append(proof)
                 saved.extend((image, video))
+                created = []  # Keep complete earlier pairs if a later pair fails.
                 break
-            except BaseException:
-                for target in created:
-                    target.unlink(missing_ok=True)
-                raise
-    return saved, skipped
+        _verify(inputs)
+        _verify(outputs)
+        _transfers().record_outputs(outputs)
+        _transfers().verify_outputs()
+        return saved, skipped
+    except BaseException:
+        _remove_created(created)
+        raise
 
 
 def retain_pairs(pairs, root):
-    """Keep stable pair basenames for Photos, including referenced libraries."""
+    """Carry proof for each retained component; observed copies are never owned."""
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    retained = []
+    retained, proofs, inputs = [], [], []
     for pair in pairs:
         for source in pair:
+            source_proof = _proof(pair, source)
+            inputs.append(source_proof)
             target = root / source.name
-            if target.exists():
-                if digest(target) != digest(source):
-                    raise RuntimeError("A retained Live Photo component failed its content check. Downloads have been kept.")
+            if target.exists() or target.is_symlink():
+                proof = ownership.FileProof.observe(target, expected_hash=source_proof.sha256)
             else:
-                created = False
-                try:
-                    with target.open("xb") as output:
-                        created = True
-                        with source.open("rb") as input_file:
-                            shutil.copyfileobj(input_file, output)
-                    target.chmod(0o600)
-                except BaseException:
-                    if created:
-                        target.unlink(missing_ok=True)
-                    raise
+                # A completed retention copy is kept if another component fails;
+                # ownership.copy handles only its own uncertain partial output.
+                proof = ownership.copy(source_proof, target, copier=shutil.copyfileobj)
             retained.append(target)
-    return retained
+            proofs.append(proof)
+    _verify(inputs)
+    _verify(proofs)
+    return ownership.FileList(retained, proofs)

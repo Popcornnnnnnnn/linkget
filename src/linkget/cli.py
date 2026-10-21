@@ -14,12 +14,13 @@ import tempfile
 import time
 
 if __package__:
-    from . import accounts, jobs, destinations, preflight, recovery, staging
+    from . import accounts, jobs, destinations, preflight, recovery, staging, transfers, ownership
     from .runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from .output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description
     from .batch import run_batch
     from .engines import route, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login
     from .photos import originals_directory, retain_originals, verify_library_copies
+    from .failures import classify, redact
     from .version import VERSION
     from .session import LOGIN_URLS, prepare_session
     from .links import normalize_link
@@ -33,12 +34,13 @@ if __package__:
     from .media import DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
     from .live import prepare_pairs, save_pairs
 else:  # Homebrew launches this file directly.
-    import accounts, jobs, destinations, preflight, recovery, staging
+    import accounts, jobs, destinations, preflight, recovery, staging, transfers, ownership
     from runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description
     from batch import run_batch
     from engines import route, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login
     from photos import originals_directory, retain_originals, verify_library_copies
+    from failures import classify, redact
     from version import VERSION
     from session import LOGIN_URLS, prepare_session
     from links import normalize_link
@@ -58,7 +60,7 @@ SITES = "Instagram, X/Twitter, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, 
 
 
 def login_guidance(args, domain, url, reason):
-    status("Stopped", reason, "33", stream=sys.stderr)
+    status("Stopped", redact(reason), "33", stream=sys.stderr)
     if args.browser == "none":
         status("Next", "Public-only mode is enabled. Run without --browser none to use a browser login.", stream=sys.stderr)
     elif not sys.stdin.isatty():
@@ -66,24 +68,11 @@ def login_guidance(args, domain, url, reason):
         status("Next", "Run linkget in an interactive terminal to connect a browser and continue.", stream=sys.stderr)
 
 
-def report_failure(message):
-    label, next_step = "Error", None
-    if re.search(r"HTTP(?: Error)?[ :]+429|too many requests|rate.?limit", message, re.I):
-        label, next_step = "Rate limit", "Wait before retrying this item."
-    elif re.search(r"captcha|challenge|verification page|verification required|confirm you.re not a bot", message, re.I):
-        label, next_step = "Website check", "Open the post in your browser, complete any website check, then retry this item."
-    elif re.search(r"timed? out|timeout|connection (?:reset|refused)|TLS|SSL|could not resolve|temporary failure in name resolution", message, re.I):
-        label, next_step = "Network", "Check your connection, then retry this item."
-    elif re.search(r"HTTP(?: Error)?[ :]+403|forbidden|blocked by network security", message, re.I):
-        label, next_step = "Access refused", "Open the post in your browser to check access or website verification, then retry this item."
-    elif re.search(r"HTTP(?: Error)?[ :]+(?:404|410)|unavailable, deleted, or private|video unavailable", message, re.I):
-        label, next_step = "Unavailable", "Check that the post still opens in your browser, or copy a fresh share link."
-    elif re.search(r"unsupported|not supported|not implemented", message, re.I):
-        label, next_step = "Unsupported", "Run linkget sites to check the supported links and media."
-    status(label, message, "31", stream=sys.stderr)
-    if next_step:
-        status("Next", next_step, stream=sys.stderr)
-    return label.lower().replace(" ", "_")
+def report_failure(error, phase=None):
+    failure = classify(error, phase=phase)
+    status(failure.label, failure.message, "31", stream=sys.stderr)
+    status("Next", failure.next_step, stream=sys.stderr)
+    return failure.category
 
 
 def login_result(site, state, saved=False, public_summary=False):
@@ -273,7 +262,7 @@ def recover_login_interactive(args, domain, reason, proactive=False):
     if not tool:
         raise RuntimeError(installation_hint(["gallery-dl"]))
     if not proactive:
-        status("Action needed", reason, "33")
+        status("Action needed", redact(reason), "33")
     while True:
         new_browser = not browser or proactive
         proactive = False
@@ -304,7 +293,7 @@ def recover_login_interactive(args, domain, reason, proactive=False):
             accounts.set_preferences(browser=browser, profile=profile, setup=True)
             return True
         reason = state.detail
-        status(site, "Could not connect · " + reason, "1;33")
+        status(site, "Could not connect · " + redact(reason), "1;33")
 
 
 def sign_in_link(domain, stream=None):
@@ -535,7 +524,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 write_report(args.report, VERSION, records, code)
             return code
         except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
-            report_failure(str(error))
+            report_failure(error)
             return 1
         except (KeyboardInterrupt, EOFError):
             status("Cancelled", "Recovery stopped; retained files are safe", "33")
@@ -557,13 +546,13 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             status("Quality", "Uploader maximum and watermark absence remain unverified.")
             return 0
         except (OSError, ValueError, KeyError, TypeError) as error:
-            report_failure(str(error))
+            report_failure(error)
             return 1
     if args.link and args.link[0] == "config":
         try:
             return configure(args, parser)
         except (OSError, ValueError, RuntimeError) as error:
-            status("Error", str(error), "31", stream=sys.stderr)
+            status("Error", redact(error), "31", stream=sys.stderr)
             return 1
     if args.link and args.link[0] == "login":
         parser.error("Browser connection is now part of the normal flow. Run linkget or linkget URL.")
@@ -571,7 +560,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         try:
             return account_command(args, parser)
         except (OSError, ValueError, RuntimeError) as error:
-            status("Error", str(error), "31", stream=sys.stderr)
+            status("Error", redact(error), "31", stream=sys.stderr)
             return 1
         except (KeyboardInterrupt, EOFError):
             status("Cancelled", "Stopped", "33", stream=sys.stderr)
@@ -592,7 +581,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 if args.photos:
                     status("Photos", "Automation and managed-copy checks run at import time")
             except (OSError, ValueError, RuntimeError) as error:
-                report_failure(str(error))
+                report_failure(error)
                 return 1
         return code
     if args.link == "sites":
@@ -636,7 +625,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             status("Report", str(args.report.expanduser().resolve()))
         return code
     except (OSError, ValueError, RuntimeError) as error:
-        report_failure(str(error))
+        report_failure(error)
         return 1
     except (KeyboardInterrupt, EOFError):
         status("Cancelled", "Download stopped", "33", stream=sys.stderr)
@@ -685,9 +674,11 @@ def batch_download(args, parser, links, records=None):
 
 
 def download(args, setup_results, records=None, media_consumer=None):
+    phase = "download"
     stage = None
     session_dir = None
     info_path = None
+    metadata_proof = None
     read_metadata = {}
     evidence = {"status": "failed", "reference": None, "files": []}
     domain = None
@@ -709,6 +700,8 @@ def download(args, setup_results, records=None, media_consumer=None):
             if previous.get("stage"):
                 stages = previous.get("previous_stages", []) + [previous["stage"]]
                 jobs.record(previous_stages=list(dict.fromkeys(stages)))
+        if getattr(args, 'redownload', False):
+            transfers.reset_progress()
         jobs.record(input=url, status="running", ready=None, receipt=None, stage=None, stage_identity=None)
         started = time.monotonic()
         with activity("Resolving") if any(host in url for host in ("v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/", "xhslink.com", "xhslink.cn", "t.cn/")) else nullcontext():
@@ -772,6 +765,7 @@ def download(args, setup_results, records=None, media_consumer=None):
         browser_item = provided_item
         tried_douyin_page = False
         attempt = 0
+        log_writer = None
         while True:
             check_batch_cancelled()
             try:
@@ -781,15 +775,26 @@ def download(args, setup_results, records=None, media_consumer=None):
                 media_dir.mkdir()
                 if not getattr(_batch, "state", None):
                     print()
-                with (stage / "download.log").open("w") as log:
+                log_path = stage / 'download.log'
+                if log_path.exists():
+                    # This local proof also survives non-journal reading retries.
+                    proof = log_writer.proof if log_writer is not None else None
+                    if proof is None or proof.path != ownership.canonical(log_path):
+                        raise RuntimeError('An existing log has no writer evidence; files were kept.')
+                    proof.remove()
+                log_writer = ownership.Writer(log_path, external=True, register=True)
+                with log_writer as log:
                     log.write(f"Source: {url}\n")
                     command = None
                     if engine not in {"douyin", "xiaohongshu", "kuaishou", "pixiv"}:
                         command = command_for(args, url, engine, domain, media_dir, tools, cookie_path)
                     if engine == "yt-dlp":
                         info_path = stage / "video-info.json"
+                        if info_path.exists() and metadata_proof is not None:
+                            metadata_proof.remove()
                         with activity("Preparing"):
                             command = prepare_video(command, info_path, log, domain)
+                        metadata_proof = getattr(command, 'metadata_proof', None)
                         reader = getattr(args, 'read_metadata_consumer', None)
                         if reader and reader(json.loads(info_path.read_text()), url, site):
                             evidence.update(status='completed')
@@ -829,19 +834,10 @@ def download(args, setup_results, records=None, media_consumer=None):
                         else:
                             result = run_process(command, stdout=log, stderr=subprocess.STDOUT)
                 if result is not None and result.returncode:
-                    if domain == "weibo.com" and engine == "gallery-dl":
-                        for metadata in media_dir.glob("*.json"):
-                            metadata.unlink()
                     tail = (stage / "download.log").read_text(errors="replace").splitlines()[-8:]
                     log_text = "\n".join(tail)
                     if needs_login(log_text):
-                        raise LoginRequired(f"{site} requires a signed-in account to download this post.")
-                    if domain == "reddit.com" and "blocked by network security" in log_text.lower():
-                        raise LoginRequired(f"{site} requires a signed-in account to download this post. Run linkget auth reddit to connect a Reddit login.")
-                    if any(msg in log_text for msg in ("Video unavailable", "HTTP Error 404: Not Found", "not found")):
-                        raise RuntimeError(f"This {site} post is unavailable, deleted, or private.")
-                    if "blocked by copyright" in log_text.lower() or "region" in log_text.lower():
-                        raise RuntimeError(f"This {site} post is blocked due to copyright or region restrictions.")
+                        raise LoginRequired(f"{site} authentication response:\n" + log_text)
                     raise RuntimeError("Download failed.\n" + log_text)
                 if media_consumer is not None:
                     if __package__:
@@ -860,12 +856,13 @@ def download(args, setup_results, records=None, media_consumer=None):
                         download_info.live_pairs = [(image if (media_dir / image).exists() else str(Path(image).with_name(Path(image).stem + "_preferred" + Path(image).suffix)), video)
                                                     for image, video in download_info.live_pairs]
                     else:
-                        download_info = gallery_evidence(media_dir, domain)
+                        download_info = gallery_evidence(media_dir, domain, remove=False)
                 for note in source_notes:
                     status("Media", note)
                 accepted = MEDIA | ({'.m4a', '.mp3', '.aac', '.opus', '.ogg', '.wav', '.flac', '.webm'} if media_consumer else set())
                 files = sorted(path for path in media_dir.iterdir() if path.is_file() and path.suffix.lower() in accepted)
-                unfinished = [path for path in media_dir.iterdir() if path.suffix.lower() not in accepted]
+                files = ownership.FileList(files, transfers.proofs_for(files))
+                unfinished = [path for path in media_dir.iterdir() if path.suffix.lower() not in accepted | {".json"}]
                 if unfinished:
                     raise RuntimeError("The download contains unsupported or incomplete files. Files have been kept for review.")
                 if not files:
@@ -929,12 +926,14 @@ def download(args, setup_results, records=None, media_consumer=None):
                     continue
                 raise LoginRequired(reason) from None
         media_records = inspect_files(files, download_info.variants)
+        transfers.verify(files)
         evidence.update(files=media_records, expected_count=download_info.expected_count,
                         missing_motion=download_info.missing_motion, live_pairs=download_info.live_pairs,
                         highest_quality="not_verified", watermark="not_verified")
         if 'motion_metadata_complete' in download_info.metadata:
             evidence['motion_metadata_complete'] = download_info.metadata['motion_metadata_complete']
         if any(record.get('probe_ok') is False for record in media_records):
+            transfers.invalidate([path for path, record in zip(files, media_records) if record.get('probe_ok') is False])
             raise RuntimeError("The downloaded media did not pass format validation. Files have been kept; nothing was saved or imported.")
         status("Quality", quality_summary(media_records))
         count_text = f"{len(files)} / {download_info.expected_count} files" if download_info.expected_count is not None else f"{len(files)} files · source count unknown"
@@ -943,16 +942,17 @@ def download(args, setup_results, records=None, media_consumer=None):
             status("Source", "Fallback media included", "33")
         if media_consumer is not None:
             metadata = json.loads(info_path.read_text()) if info_path is not None else read_metadata
+            phase = 'postprocess'
             media_consumer(files, media_records, download_info, url, site, metadata)
             evidence.update(status="completed")
             return 0
-        ready = {"files": [{"path": str(path.resolve()), "sha256": record.get("sha256") or jobs.digest(path)}
-                           for path, record in zip(files, media_records)],
+        ready = {"files": jobs.snapshot(files),
                  "live_pairs": download_info.live_pairs, "prepared": [], "evidence": dict(evidence)}
         jobs.record(ready=ready)
         prepared = []
         if download_info.live_pairs:
             if args.live_photos:
+                phase = 'pair'
                 with activity("Pairing Live Photos"):
                     prepared = prepare_pairs(files, download_info.live_pairs, stage / "live-photos")
                 ready["prepared"] = [jobs.snapshot(pair) for pair in prepared]
@@ -960,7 +960,10 @@ def download(args, setup_results, records=None, media_consumer=None):
                 status("Live Photos", f"{len(prepared)} source pairs recognized by macOS")
             else:
                 status("Live Photos", f"{len(download_info.live_pairs)} pairs saved separately · use --live-photos to pair")
+        transfers.verify(files)
+        phase = 'save' if folder else 'import'
         with batch_lock("saving"), activity("Saving" if folder else "Importing"):
+            jobs.record(destination_files=[])
             if folder:
                 saved, skipped = save_folder(files, folder)
                 if prepared:
@@ -972,6 +975,8 @@ def download(args, setup_results, records=None, media_consumer=None):
                     saved, skipped = import_photos(files, args.date_now, dict(zip(download_info.live_pairs, prepared)))
                 else:
                     saved, skipped = import_photos(files, args.date_now)
+            transfers.verify(files)
+            transfers.verify_outputs()
             if saved:
                 summary = f"{saved_description(saved)} · {format_size(sum(path.stat().st_size for path in saved))}"
             else:
@@ -985,14 +990,15 @@ def download(args, setup_results, records=None, media_consumer=None):
         evidence.update(status="completed", saved_count=len(saved), skipped_count=skipped)
         return 0
     except LoginRequired as error:
-        evidence['failure'] = "login_required"
+        category = classify(error).category
+        evidence['failure'] = category if category in {'login_required', 'login_expired'} else 'login_required'
         login_guidance(args, domain, url, str(error))
         return 1
-    except subprocess.TimeoutExpired:
-        evidence['failure'] = report_failure("The website request timed out.")
+    except subprocess.TimeoutExpired as error:
+        evidence['failure'] = report_failure(error, phase=phase)
         return 1
     except (OSError, ValueError, RuntimeError) as error:
-        evidence['failure'] = report_failure(str(error))
+        evidence['failure'] = report_failure(error, phase=phase)
         return 1
     except (KeyboardInterrupt, EOFError):
         evidence['status'] = "cancelled"
@@ -1001,17 +1007,27 @@ def download(args, setup_results, records=None, media_consumer=None):
     finally:
         if records is not None:
             records.append(evidence)
-        if info_path is not None:
-            info_path.unlink(missing_ok=True)
+        if metadata_proof is not None:
+            try:
+                if metadata_proof.path.exists():
+                    metadata_proof.remove()
+            except (OSError, ValueError, RuntimeError):
+                pass  # A metadata replacement is retained, never re-observed.
         if session_dir is not None:
             session_dir.cleanup()
         if stage is not None:
+            # Uninstrumented engine/helper outputs and sidecars have no writer
+            # receipt. Observing them cannot authorize recursive deletion.
             if media_consumer is not None:
-                shutil.rmtree(stage)
-            elif domain == "weibo.com":
-                for metadata in stage.glob("*/*.json"):
-                    metadata.unlink(missing_ok=True)
+                status("Files kept", str(stage), "33", stream=sys.stderr)
             if media_consumer is None:
+                if current:
+                    try:
+                        progress = transfers.summary(journal.data['items'][index - 1])
+                        if progress:
+                            status("Partial", progress, "33", stream=sys.stderr)
+                    except (ValueError, TypeError):
+                        pass  # A corrupt receipt must not replace the original failure.
                 try:
                     staging.remember(stage, journal.data["items"][index - 1].get("stage_identity") if current else None)
                 except (OSError, ValueError, RuntimeError) as error:

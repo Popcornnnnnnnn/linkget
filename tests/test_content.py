@@ -100,7 +100,7 @@ class ContentTests(unittest.TestCase):
                     self.assertEqual(data['title'], 'Publisher title')
                     self.assertIn('?p=2', data['reference'])
                     self.assertEqual(asr.call_args.args[3], 3)
-        self.assertTrue(all(not stage.exists() for stage in self.stages))
+        self.assertTrue(all(stage.exists() for stage in self.stages))  # External outputs have no cleanup authority.
 
     def test_multiple_videos_have_independent_time_segments_and_ignore_images_and_motion(self):
         self.names = ['001.jpg', '002.mp4', '003.mp4', '004.mp4']
@@ -122,7 +122,7 @@ class ContentTests(unittest.TestCase):
         self.assertFalse((self.root / 'out/content.json').exists())
         self.assertTrue((self.root / 'out/media').exists())
         self.assertEqual(json.loads((self.root / 'out/.read-job.json').read_text())['status'], 'failed')
-        self.assertTrue(all(not stage.exists() for stage in self.stages))
+        self.assertTrue(all(stage.exists() for stage in self.stages))  # External outputs have no cleanup authority.
 
     def test_image_only_and_no_audio_fail_without_recognition(self):
         self.names = ['image.jpg']

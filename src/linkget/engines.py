@@ -5,20 +5,33 @@ import re
 from urllib.parse import urlsplit
 if __package__:
     from .runtime import run_process
+    from .failures import classify
 else:
     from runtime import run_process
+    from failures import classify
 SITES = "Instagram, X/Twitter, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, Weibo, Reddit, Lofter, Pixiv and Pinterest posts; YouTube videos and Shorts"
 
 
+class PreparedCommand(list):
+    """Keep a metadata writer's evidence alongside the existing argv list."""
+    def __init__(self, command, metadata_proof):
+        super().__init__(command)
+        self.metadata_proof = metadata_proof
+
+
+def write_metadata(path, info):
+    if __package__:
+        from .ownership import Writer
+    else:
+        from ownership import Writer
+    with Writer(path, register=True) as output:
+        output.write(json.dumps(info).encode())
+        return output.seal()
+
+
 def needs_login(message):
-    """Match explicit authentication failures, not generic 403/429/network errors."""
-    return bool(re.search(
-        r"login[_ -]required|log[ -]?in (?:is )?required|(?:please|must|need to) (?:log[ -]?in|sign in)|"
-        r"(?:account|login) credentials (?:required|needed)|invalid login credentials|"
-        r"(?:cookies|authentication|authorization)['\"]? (?:are |is )?(?:required|needed)|"
-        r"fresh cookies.*needed|(?:cookies|session)(?: are| is| have| has)? (?:expired|no longer valid)|"
-        r"sign in (?:to|if)|redirect to login page|登录后|请(?:先)?登录|需要登录",
-        message, re.I))
+    """Use the same affirmative, credential-free evidence as error reporting."""
+    return classify(message).category in {'login_required', 'login_expired'}
 
 
 
@@ -54,7 +67,7 @@ def prepare_bilibili(command, info_path, log):
     log.flush()
     if result.returncode or ("--cookies" in command and needs_login(messages)):
         if needs_login(messages):
-            raise LoginRequired("Bilibili requires a signed-in account for this video.")
+            raise LoginRequired("Bilibili authentication response:\n" + messages)
         raise RuntimeError("Could not read this Bilibili video's formats.\n" + "\n".join(messages.splitlines()[-8:]))
     try:
         info = json.loads(lines[-1])
@@ -66,9 +79,8 @@ def prepare_bilibili(command, info_path, log):
     reason = None if audio_read else restricted_bilibili_quality(info, messages)
     if reason:
         raise LoginRequired(reason)
-    info_path.write_text(json.dumps(info))
-    info_path.chmod(0o600)
-    return command[:-1] + ["--load-info-json", str(info_path)]
+    proof = write_metadata(info_path, info)
+    return PreparedCommand(command[:-1] + ["--load-info-json", str(info_path)], proof)
 
 
 
@@ -99,13 +111,9 @@ def prepare_video(command, info_path, log, domain):
     log.flush()
     if result.returncode or ("--cookies" in command and needs_login(messages)):
         if needs_login(messages):
-            raise LoginRequired(f"{site} asks you to sign in or complete verification for this video.")
+            raise LoginRequired(f"{site} authentication response:\n" + messages)
         if domain == "youtube.com" and ("PO Token" in messages or "JavaScript" in messages or "challenge" in messages.lower()):
             raise RuntimeError("YouTube's verification could not be completed. Run brew upgrade yt-dlp deno, then retry.\n" + "\n".join(messages.splitlines()[-6:]))
-        if domain == "reddit.com" and "HTTP Error 404" in messages:
-            if "--cookies" not in command:
-                raise LoginRequired(f"{site} returned 404. This post may be deleted, age-restricted, or quarantined. Run linkget auth reddit to connect a Reddit login and retry.")
-            raise RuntimeError(f"This {site} post is unavailable, deleted, or private.")
         raise RuntimeError(f"Could not read this {site} video.\n" + "\n".join(messages.splitlines()[-8:]))
     try:
         info = json.loads(lines[-1])
@@ -117,9 +125,8 @@ def prepare_video(command, info_path, log, domain):
         raise ValueError(f"Use a single {site} video link, not a playlist or channel.")
     if info.get("is_live") or info.get("live_status") in {"is_live", "is_upcoming", "post_live"}:
         raise ValueError(f"Live or upcoming {site} streams are not supported. Try the processed replay after it ends.")
-    info_path.write_text(json.dumps(info))
-    info_path.chmod(0o600)
-    return command[:-1] + ["--load-info-json", str(info_path)]
+    proof = write_metadata(info_path, info)
+    return PreparedCommand(command[:-1] + ["--load-info-json", str(info_path)], proof)
 
 
 

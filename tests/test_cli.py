@@ -145,13 +145,18 @@ class CommandTests(unittest.TestCase):
 
     def test_photos_reports_which_files_were_added(self):
         from subprocess import CompletedProcess
-        files = [Path("existing.jpg"), Path("new.mp4")]
-        with patch.object(cli, "retain_originals", side_effect=lambda files: files), patch.object(cli, "verify_library_copies"), patch.object(Path, "unlink"), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, "1:1:2\n", "")):
-            self.assertEqual(cli.import_photos(files, False), ([files[1]], 1))
-        for response in ("1:1:3", "2:0:1:1", "1:1", "invalid"):
-            with patch.object(cli, "retain_originals", side_effect=lambda files: files), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, response, "")):
-                with self.assertRaises(RuntimeError):
-                    cli.import_photos(files, False)
+        with tempfile.TemporaryDirectory() as temporary:
+            files = [Path(temporary)/'existing.jpg', Path(temporary)/'new.mp4']
+            for path in files:
+                path.write_bytes(b'generated count-contract fixture')
+            with patch.object(cli, "retain_originals", side_effect=lambda files: files), patch.object(cli, "verify_library_copies"), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, "1:1:2\n", "")):
+                self.assertEqual(cli.import_photos(files, False), ([files[1]], 1))
+            for response in ("1:1:3", "2:0:1:1", "1:1", "invalid"):
+                for path in files:
+                    path.write_bytes(b'generated count-contract fixture')
+                with patch.object(cli, "retain_originals", side_effect=lambda files: files), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, response, "")):
+                    with self.assertRaises(RuntimeError):
+                        cli.import_photos(files, False)
 
     def test_animation_stops_and_clears_on_failure_and_cancel(self):
         class Terminal(io.StringIO):
@@ -241,26 +246,33 @@ class CommandTests(unittest.TestCase):
             downloader.chmod(0o755)
             stage = root / "linkget-test"
 
+            created = []
             def make_stage(**kwargs):
-                stage.mkdir()
-                return str(stage)
+                path = root / ('linkget-test' if not created else 'linkget-test-next')
+                path.mkdir()
+                created.append(path)
+                return str(path)
 
             with patch.object(cli, "find_tool", return_value=str(downloader)), patch.object(cli.tempfile, "tempdir", str(root)), patch.object(cli.tempfile, "mkdtemp", side_effect=make_stage), patch.object(cli, "import_photos") as photos, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 args = ["https://x.com/user/status/123", "--folder", str(root / "output"), "--browser", "none"]
                 self.assertEqual(cli.main(args), 0)
-                self.assertFalse(stage.exists())
+                self.assertTrue(stage.exists())  # External bytes grant no delete authority.
+                self.assertEqual((stage / 'media/sample.jpg').read_bytes(), b'sample')
                 self.assertEqual((root / "output/sample.jpg").read_bytes(), b"sample")
                 photos.assert_not_called()
                 with patch.dict(os.environ, {"LINKGET_TEST_EXIT": "1"}):
                     self.assertEqual(cli.main(args), 1)
-                self.assertTrue((stage / "media/sample.jpg").exists())
-                self.assertTrue((stage / "download.log").exists())
+                self.assertTrue((created[-1] / "media/sample.jpg").exists())
+                self.assertTrue((created[-1] / "download.log").exists())
 
     def test_photos_bad_count_prevents_success(self):
         from subprocess import CompletedProcess
-        with patch.object(cli, "retain_originals", side_effect=lambda files: files), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, "0:0\n", "")):
-            with self.assertRaises(RuntimeError):
-                cli.import_photos([Path("fake.jpg")], False)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)/'fake.jpg'
+            path.write_bytes(b'generated count-contract fixture')
+            with patch.object(cli, "retain_originals", side_effect=lambda files: files), patch.object(cli.subprocess, "run", return_value=CompletedProcess([], 0, "0:0\n", "")):
+                with self.assertRaises(RuntimeError):
+                    cli.import_photos([path], False)
 
     def test_prompt_preserves_full_unquoted_share_link(self):
         from subprocess import CompletedProcess

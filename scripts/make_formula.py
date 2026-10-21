@@ -46,7 +46,7 @@ args.output.write_text('''class Linkget < Formula
     <<~EOS
       Run linkget and paste a post link. Use --folder to save to the current folder.
       Use linkget config to view or change your default save destination.
-      Verified Photos imports remove staged copies; failed imports retain originals.
+      Verified owned copies may be cleaned; shared or uncertain originals are retained.
       Uninstalling does not remove your downloads or saved account data.
     EOS
   end

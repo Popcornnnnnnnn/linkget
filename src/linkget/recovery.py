@@ -5,12 +5,14 @@ import subprocess
 from urllib.parse import urlsplit
 
 if __package__:
-    from . import jobs, staging
+    from . import jobs, staging, transfers, ownership
+    from .failures import redact
     from .photos import originals_directory, verify_library_copies, digest
     from .media import inspect_files
     from .live import prepare_pairs, save_pairs
 else:
-    import jobs, staging
+    import jobs, staging, transfers, ownership
+    from failures import redact
     from photos import originals_directory, verify_library_copies, digest
     from media import inspect_files
     from live import prepare_pairs, save_pairs
@@ -32,6 +34,12 @@ def listing(status):
             status("Task", f"{journal.identifier} · {len(pending)} need attention · {ready} ready to save")
             for index in pending:
                 row = journal.data["items"][index - 1]
+                try:
+                    progress = transfers.summary(row)
+                    if progress:
+                        status("Media", f"Item {index}: {progress}")
+                except (ValueError, TypeError):
+                    status("Media", f"Item {index}: retained media manifest needs repair; use retry --redownload")
                 if row.get("stage"):
                     status("Files kept", f"Item {index}: {row['stage']}")
                 if row.get("receipt"):
@@ -49,13 +57,21 @@ def listing(status):
 
 
 def remove_verified(records, root):
+    if records == []:
+        return 0
     jobs.verified_files(records, root)
+    transfers.verify_outputs()
+    removed = 0
     for record in records:
-        path = Path(record["path"])
-        if path.exists():
-            if path.is_symlink() or digest(path) != record["sha256"]:
-                raise RuntimeError("A retained file changed; it was kept: " + str(path))
-            path.unlink()
+        # A matching old hash is a read check, never fresh cleanup authority.
+        if record.get('created') is not True or 'file_identity' not in record:
+            continue
+        proof = ownership.FileProof.from_record(record)
+        if proof.path.exists():
+            transfers.verify_outputs()
+            proof.remove()
+            removed += 1
+    return removed
 
 
 def restore(journal, args, status, save_folder, import_photos, claimed=False, indices=None):
@@ -80,8 +96,13 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                         if not receipt or not receipt.get("identifiers"):
                             raise ValueError("No Photos import identifiers; use recover without --verify to save again.")
                         files = jobs.verified_files(receipt["files"], originals_directory())
-                        staged = jobs.verified_files(receipt["staged"], originals_directory())
-                        verify_library_copies(files, receipt["identifiers"])
+                        staged = (ownership.FileList() if receipt.get('staged') == [] else
+                                  jobs.verified_files(receipt["staged"], originals_directory()))
+                        managed = verify_library_copies(files, receipt["identifiers"])
+                        if not isinstance(managed, ownership.FileList):
+                            raise RuntimeError('Managed copy verification supplied no file evidence; originals were kept.')
+                        jobs.record(destination_files=[])
+                        transfers.record_outputs(managed.proofs.values())
                         ready = row.get("ready")
                         stage = Path(row.get("stage", ""))
                         if ready:
@@ -90,12 +111,14 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                             jobs.verified_files(ready["files"], stage)
                             for pair in ready.get("prepared", []):
                                 jobs.verified_files(pair, stage)
-                        remove_verified(receipt["staged"], originals_directory())
+                        removed = remove_verified(receipt["staged"], originals_directory())
                         if ready:
                             remove_verified(ready["files"], stage)
                             for pair in ready.get("prepared", []):
                                 remove_verified(pair, stage)
-                        status("Verified", f"Item {index} · Photos originals match · {len(staged)} staged copies removed")
+                        kept = sum(path.exists() for path in set(staged))
+                        retention = f" · {kept} kept" if kept else ""
+                        status("Verified", f"Item {index} · Photos originals match · {removed} staged copies removed{retention}")
                         if row.get("stage"):
                             status("Files kept", row["stage"])
                     else:
@@ -118,6 +141,7 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                         if not stage.name.startswith("linkget-") or stage.is_symlink() or not stage.is_dir():
                             raise ValueError("The recorded staging folder is unavailable; use retry --redownload.")
                         files = jobs.verified_files(ready["files"], stage)
+                        transfers.verify(files)
                         inspected = inspect_files(files)
                         if any(record.get("probe_ok") is False for record in inspected):
                             raise RuntimeError("Retained media failed format validation; files have been kept.")
@@ -125,7 +149,7 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                         if args.live_photos and ready.get("live_pairs"):
                             prepared = ready.get("prepared", [])
                             if prepared:
-                                pairs = [tuple(jobs.verified_files(pair, stage)) for pair in prepared]
+                                pairs = [jobs.verified_files(pair, stage) for pair in prepared]
                             else:
                                 folder = Path(ready["files"][0]["path"]).parent.parent
                                 # A previous failed packaging attempt may occupy the original directory.
@@ -135,6 +159,7 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                                 pairs = prepare_pairs(files, ready["live_pairs"], directory)
                                 ready["prepared"] = [jobs.snapshot(pair) for pair in pairs]
                                 jobs.record(ready=ready)
+                        jobs.record(destination_files=[])
                         if args.folder is not None:
                             saved, skipped = save_folder(files, args.folder)
                             if pairs:
@@ -143,15 +168,17 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                             saved, skipped = import_photos(files, args.date_now, dict(zip(map(tuple, ready["live_pairs"]), pairs)))
                         else:
                             saved, skipped = import_photos(files, args.date_now)
+                        transfers.verify(files)
+                        transfers.verify_outputs()
                         # All output saves passed; remove only the exact checked downloads.
                         if not staging.contains(stage, args.folder):
                             remove_verified(ready["files"], stage)
                             for pair in ready.get("prepared", []):
                                 remove_verified(pair, stage)
                         status("Recovered", f"Item {index} · {len(saved)} saved · {skipped} duplicates")
-                    staging.cleanup(status, args.folder)
+                    staging.cleanup(status, args.folder, photos_verified=args.verify)
                     jobs.record(status="completed")
             except (OSError, ValueError, RuntimeError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
                 failures += 1
-                status("Kept", f"Item {index}: {error}", "33")
+                status("Kept", f"Item {index}: {redact(error)}", "33")
     return 1 if failures else 0

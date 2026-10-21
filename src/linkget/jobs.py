@@ -12,13 +12,9 @@ import time
 import uuid
 
 if __package__:
-    from . import accounts
-    from .photos import digest
-    from .hashing import digest_session
+    from .hashing import digest, digest_session
 else:
-    import accounts
-    from photos import digest
-    from hashing import digest_session
+    from hashing import digest, digest_session
 
 _context = threading.local()
 OPTIONS = ("folder", "date_now", "live_photos", "browser", "profile", "jobs", "page_data")
@@ -26,6 +22,10 @@ INCOMPLETE = {"pending", "running", "failed", "cancelled"}
 
 
 def directory():
+    if __package__:
+        from . import accounts
+    else:
+        import accounts
     return accounts.directory().parent / "jobs"
 
 
@@ -140,7 +140,7 @@ def select(identifier=None):
 @contextmanager
 def item(journal, index):
     previous = getattr(_context, "item", None)
-    _context.item = (journal, index)
+    _context.item = (journal, index) if journal is not None else None
     try:
         with digest_session():
             yield
@@ -163,13 +163,21 @@ def current():
 
 
 def snapshot(files):
-    return [{"path": str(path.resolve()), "sha256": digest(path)} for path in files]
+    if __package__:
+        from . import transfers
+    else:
+        import transfers
+    return [proof.record() for proof in transfers.proofs_for(files)]
 
 
 def verified_files(records, root=None):
     if not isinstance(records, list) or not records:
         raise ValueError("This item has no complete media set; use linkget retry instead.")
-    files = []
+    if __package__:
+        from . import ownership
+    else:
+        import ownership
+    files, proofs = [], []
     for row in records:
         if (not isinstance(row, dict) or not isinstance(row.get("path"), str)
                 or not re.fullmatch(r"[a-f0-9]{64}", str(row.get("sha256", "")))):
@@ -177,7 +185,14 @@ def verified_files(records, root=None):
         path = Path(row["path"])
         if root is not None and not path.resolve().is_relative_to(Path(root).resolve()):
             raise ValueError("A retained file is outside its recorded staging folder; nothing was removed.")
-        if path.is_symlink() or not path.is_file() or digest(path, fresh=True) != row["sha256"]:
-            raise RuntimeError("A retained file is missing or changed; nothing was removed: " + str(path))
+        try:
+            if 'file_identity' in row:
+                proof = ownership.FileProof.from_record(row).verify()
+            else:
+                # Legacy receipts can authorize a checked read/copy, not deletion.
+                proof = ownership.FileProof.observe(path, row['sha256'])
+        except (OSError, ValueError, RuntimeError) as error:
+            raise RuntimeError('A retained file is missing or changed; nothing was removed: ' + str(path)) from error
         files.append(path)
-    return files
+        proofs.append(proof)
+    return ownership.FileList(files, proofs)

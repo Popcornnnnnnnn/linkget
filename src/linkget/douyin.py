@@ -10,10 +10,14 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener
 import concurrent.futures
 
 if __package__:
+    from .transfers import TransferSet
+    from .ownership import Writer
     from .links import MOBILE_UA
     from .runtime import cancellation_check
     from .media import DownloadResult
 else:
+    from transfers import TransferSet
+    from ownership import Writer
     from links import MOBILE_UA
     from runtime import cancellation_check
     from media import DownloadResult
@@ -290,21 +294,34 @@ def download(url, directory, cookie_path=None, *, browser_item=None, require_mot
                 path = directory / f"douyin_{post_id}_{index:03d}{variant}{extension}"
                 partial = path.with_suffix(extension + ".part")
                 count = len(head)
-                with partial.open("xb") as output:
+                with Writer(partial) as output:
                     output.write(head)
                     while chunk := response.read(1024 * 1024):
                         check_cancelled()
                         count += len(chunk)
                         output.write(chunk)
-                expected = response.headers.get("Content-Length")
-                if expected and count != int(expected):
-                    raise RuntimeError("Douyin media download was incomplete; partial files have been kept.")
-                partial.rename(path)
-            return path.name, local_fallback or initial_fallback
+                    expected = response.headers.get("Content-Length")
+                    if expected and count != int(expected):
+                        raise RuntimeError("Douyin media download was incomplete; partial files have been kept.")
+                    proof = output.publish(path)
+            return path.name, local_fallback or initial_fallback, proof
+
+        checkpoint = TransferSet(directory, 'douyin', post_id, media)
+        def transfer(index, kind, media_url):
+            try:
+                reused = checkpoint.reuse(index)
+                if reused is not None:
+                    return reused
+                name, fallback, proof = _download_one(index, kind, media_url)
+                checkpoint.complete(index, directory / name, fallback, proof=proof)
+                return name, fallback
+            except BaseException as error:
+                checkpoint.failed(index, error)
+                raise
 
         variants, filenames = {}, {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [executor.submit(_download_one, index, kind, media_url) for index, (kind, media_url) in enumerate(media, 1)]
+            futures = [executor.submit(transfer, index, kind, media_url) for index, (kind, media_url) in enumerate(media, 1)]
             indexes = {future: index for index, future in enumerate(futures, 1)}
             for future in concurrent.futures.as_completed(futures):
                 name, fallback = future.result()
@@ -331,4 +348,4 @@ def download(url, directory, cookie_path=None, *, browser_item=None, require_mot
     except (URLError, OSError, HTTPException) as error:
         reason = error.reason if isinstance(error, URLError) else error
         detail = str(reason) or type(reason).__name__
-        raise DownloadInterrupted(f"Douyin download failed: {detail}\nPartial files, if any, have been kept.") from None
+        raise DownloadInterrupted(f"Douyin download failed: {detail}\nPartial files, if any, have been kept.") from error

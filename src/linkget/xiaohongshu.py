@@ -10,10 +10,14 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener
 import concurrent.futures
 
 if __package__:
+    from .transfers import TransferSet
+    from .ownership import Writer
     from .links import MOBILE_UA
     from .runtime import cancellation_check
     from .media import DownloadResult
 else:
+    from transfers import TransferSet
+    from ownership import Writer
     from links import MOBILE_UA
     from runtime import cancellation_check
     from media import DownloadResult
@@ -219,22 +223,35 @@ def download(url, directory, cookie_path=None):
                 path = directory / f"xiaohongshu_{note_id}_{index:03d}_{variant}{suffix}"
                 partial = path.with_suffix(suffix + ".part")
                 count = len(head)
-                with partial.open("xb") as output:
+                with Writer(partial) as output:
                     output.write(head)
                     while chunk := response.read(1024 * 1024):
                         check_cancelled()
                         count += len(chunk)
                         output.write(chunk)
-                expected = response.headers.get("Content-Length")
-                if expected and count != int(expected):
-                    raise RuntimeError("Xiaohongshu download was incomplete; partial files have been kept.")
-                partial.rename(path)
-            return index, path.name, not used_original
+                    expected = response.headers.get("Content-Length")
+                    if expected and count != int(expected):
+                        raise RuntimeError("Xiaohongshu download was incomplete; partial files have been kept.")
+                    proof = output.publish(path)
+            return index, path.name, not used_original, proof
+
+        checkpoint = TransferSet(directory, 'xiaohongshu', note_id, media)
+        def transfer(index, kind, target, used_original):
+            try:
+                reused = checkpoint.reuse(index)
+                if reused is not None:
+                    return index, *reused
+                number, name, fallback, proof = _download_one(index, kind, target, used_original)
+                checkpoint.complete(index, directory / name, fallback, proof=proof)
+                return number, name, fallback
+            except BaseException as error:
+                checkpoint.failed(index, error)
+                raise
 
         retained = 0
         outputs = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [executor.submit(_download_one, index, kind, target, originals[index - 1]) for index, (kind, target) in enumerate(media, 1)]
+            futures = [executor.submit(transfer, index, kind, target, originals[index - 1]) for index, (kind, target) in enumerate(media, 1)]
             for future in concurrent.futures.as_completed(futures):
                 index, name, fallback = future.result()
                 outputs[index] = name
@@ -259,5 +276,7 @@ def download(url, directory, cookie_path=None):
     except HTTPError as error:
         error.close()
         raise RuntimeError(f"Xiaohongshu request failed (HTTP {error.code}). Open a fresh share link in your browser and check access or verification.") from None
-    except (URLError, OSError, HTTPException):
-        raise RuntimeError("Xiaohongshu download interrupted. Check your connection and retry; partial files have been kept.") from None
+    except (URLError, OSError, HTTPException) as error:
+        reason = error.reason if isinstance(error, URLError) else error
+        detail = str(reason) or type(reason).__name__
+        raise RuntimeError(f"Xiaohongshu download interrupted: {detail}. Partial files have been kept.") from error
