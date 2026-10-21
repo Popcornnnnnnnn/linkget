@@ -447,6 +447,44 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse(staged.exists())
         self.assertEqual(managed.read_bytes(), (URL + "1").encode())
 
+    def test_legacy_verified_original_reports_zero_removed_and_one_kept(self):
+        task = self.failed_save()
+        root = photos.originals_directory()
+        root.mkdir(parents=True)
+        retained = root/'legacy.jpg'
+        retained.write_bytes(b'generated legacy original')
+        legacy = {'path': str(retained.resolve()), 'sha256': jobs.digest(retained)}
+        row = task.data['items'][0]
+        row['ready'] = None
+        row['receipt'] = {'files': [legacy], 'staged': [legacy], 'identifiers': ['synthetic-id']}
+        task.write()
+        managed = self.root/'managed.jpg'
+        managed.write_bytes(retained.read_bytes())
+        evidence = ownership.FileList([managed], [ownership.FileProof.observe(managed)])
+        with patch.object(recovery, 'verify_library_copies', return_value=evidence):
+            code, out, err = self.run_cli('recover', task.identifier, '--verify')
+        self.assertEqual(code, 0, err)
+        self.assertIn('Photos originals match · 0 staged copies removed · 1 kept', out)
+        self.assertIn('Verified Photos originals retained without cleanup ownership evidence', out)
+        self.assertNotIn('Photos originals still need verification', out)
+        self.assertEqual(retained.read_bytes(), b'generated legacy original')
+        self.assertEqual(jobs.Journal.load(task.identifier).needs_verification(), [1])
+
+    def test_remove_verified_counts_only_owned_files_actually_removed(self):
+        root = self.root/'mixed-originals'
+        root.mkdir()
+        legacy = root/'legacy.jpg'
+        legacy.write_bytes(b'generated legacy original')
+        record = {'path': str(legacy), 'sha256': jobs.digest(legacy)}
+        owned = root/'owned.jpg'
+        with ownership.Writer(owned) as writer:
+            writer.write(b'generated owned original')
+            proof = writer.seal()
+        self.assertEqual(recovery.remove_verified([record, proof.record()], root), 1)
+        self.assertEqual(legacy.read_bytes(), b'generated legacy original')
+        self.assertFalse(owned.exists())
+        self.assertEqual(recovery.remove_verified([], root), 0)
+
     def test_folder_recovery_keeps_failed_photos_receipt_available_for_later_verification(self):
         identifier = "90FA4F22-C80E-43F2-A2AF-FE5BA03A989E/L0/001"
         library = self.root / "Test.photoslibrary"

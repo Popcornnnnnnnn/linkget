@@ -58,9 +58,10 @@ def listing(status):
 
 def remove_verified(records, root):
     if records == []:
-        return
+        return 0
     jobs.verified_files(records, root)
     transfers.verify_outputs()
+    removed = 0
     for record in records:
         # A matching old hash is a read check, never fresh cleanup authority.
         if record.get('created') is not True or 'file_identity' not in record:
@@ -69,6 +70,8 @@ def remove_verified(records, root):
         if proof.path.exists():
             transfers.verify_outputs()
             proof.remove()
+            removed += 1
+    return removed
 
 
 def restore(journal, args, status, save_folder, import_photos, claimed=False, indices=None):
@@ -108,12 +111,14 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                             jobs.verified_files(ready["files"], stage)
                             for pair in ready.get("prepared", []):
                                 jobs.verified_files(pair, stage)
-                        remove_verified(receipt["staged"], originals_directory())
+                        removed = remove_verified(receipt["staged"], originals_directory())
                         if ready:
                             remove_verified(ready["files"], stage)
                             for pair in ready.get("prepared", []):
                                 remove_verified(pair, stage)
-                        status("Verified", f"Item {index} · Photos originals match · {len(staged)} staged copies removed")
+                        kept = sum(path.exists() for path in set(staged))
+                        retention = f" · {kept} kept" if kept else ""
+                        status("Verified", f"Item {index} · Photos originals match · {removed} staged copies removed{retention}")
                         if row.get("stage"):
                             status("Files kept", row["stage"])
                     else:
@@ -171,7 +176,7 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                             for pair in ready.get("prepared", []):
                                 remove_verified(pair, stage)
                         status("Recovered", f"Item {index} · {len(saved)} saved · {skipped} duplicates")
-                    staging.cleanup(status, args.folder)
+                    staging.cleanup(status, args.folder, photos_verified=args.verify)
                     jobs.record(status="completed")
             except (OSError, ValueError, RuntimeError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
                 failures += 1

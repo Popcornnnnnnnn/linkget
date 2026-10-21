@@ -122,7 +122,7 @@ def remember_earlier(status):
             status("Files kept", f"Earlier temporary files: {error}", "33")
 
 
-def cleanup(status, folder=None):
+def cleanup(status, folder=None, *, photos_verified=False):
     """Called only after complete media have passed destination verification."""
     current = jobs.current()
     if current is None:
@@ -137,7 +137,9 @@ def cleanup(status, folder=None):
     receipt = row.get("receipt")
     # Folder recovery must not discard evidence for an unverified Photos import.
     if receipt and any(Path(item["path"]).exists() for item in receipt.get("staged", [])):
-        status("Files kept", "Photos originals still need verification", "33")
+        detail = ("Verified Photos originals retained without cleanup ownership evidence" if photos_verified
+                  else "Photos originals still need verification")
+        status("Files kept", detail, "33")
         return
     stage_paths = paths(row)
     protected = [jobs.directory().parent.resolve()]
