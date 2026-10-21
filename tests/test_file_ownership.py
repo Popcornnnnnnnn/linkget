@@ -298,11 +298,13 @@ class FileOwnershipTests(unittest.TestCase):
             if len(calls) == 1:
                 raise cli.PixivBrowserRequired('synthetic login required')
             (folder/'read.png').write_bytes(RED)
-        args = argparse.Namespace(link='https://www.pixiv.net/artworks/123', folder=None,
-                browser='chrome', profile=None, date_now=False, report=None, live_photos=False,
+        args = argparse.Namespace(link='https://www.pixiv.net/artworks/123', folder=self.root/'read-output',
+                browser='auto', profile=None, date_now=False, report=None, live_photos=False,
                 redownload=False, page_data=None)
+        # The reader always supplies its output folder; this is not a Photos request.
         consumed = []
-        with patch.object(cli, 'download_pixiv', side_effect=download), \
+        with patch.object(cli.sys, 'platform', 'linux'), \
+                patch.object(cli, 'download_pixiv', side_effect=download), \
                 patch.object(cli.accounts, 'copy_saved', return_value=True), \
                 patch.object(cli, 'recover_login', return_value=True), \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -320,10 +322,11 @@ class FileOwnershipTests(unittest.TestCase):
             personal = files[0].parent.parent/'user-note.txt'
             personal.write_bytes(b'keep user note')
             added.append(personal)
-        args = argparse.Namespace(link='https://www.pixiv.net/artworks/123', folder=None,
+        args = argparse.Namespace(link='https://www.pixiv.net/artworks/123', folder=self.root/'read-output',
                 browser='none', profile=None, date_now=False, report=None, live_photos=False,
                 redownload=False, page_data=None)
-        with patch.object(cli, 'download_pixiv', side_effect=download), \
+        with patch.object(cli.sys, 'platform', 'linux'), \
+                patch.object(cli, 'download_pixiv', side_effect=download), \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(cli.download(args, {}, media_consumer=consume), 0)
         self.assertEqual(added[0].read_bytes(), b'keep user note')
