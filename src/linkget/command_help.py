@@ -6,7 +6,7 @@ COMMON={'folder','photos','browser','profile','live_photos','date_now','report'}
 SPECS={
  'config':('View or save personal defaults. Omit options for a read-only query.',
            {'folder','photos','reader_browser'},
-           'linkget config\nlinkget config --reader-browser neo\nlinkget config --folder ~/Downloads\nPermanent settings use config; omit config for a one-time download override.'),
+           'linkget config\nlinkget config --reader-browser neo\nlinkget config --folder ~/Downloads\nThese settings are permanent. One-time page override: linkget URL --rendered-backend chrome.\n--reader-browser is configuration only; omit config for one-time --folder/--photos.'),
  'doctor':('Inspect local tools, page-controller selection and saved-session metadata. Default: no website or browser requests.',
            {'folder','photos','live_photos','browser','rendered_backend','probe_browser','check_session'},
            'linkget doctor\nlinkget doctor --probe-browser neo\nlinkget doctor --check-session bilibili\nConnection/control checks do not establish actual article or website availability.'),
