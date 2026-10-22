@@ -43,7 +43,7 @@ def chrome_automation_access():
 
 
 def browser_probe(name):
-    """Check only the selected interface; no page is opened or navigated."""
+    """Check selected transport/access evidence; no page is opened or navigated."""
     if name == 'neo':
         if __package__:
             from . import neo_browser
@@ -69,7 +69,7 @@ def inspect(args=None):
     choice = rendered_page.selection(getattr(args,'rendered_backend',None),browser=browser)
     rows=[('Page controller', choice['browser']+' · '+choice['source']+
            (' · supported; connection not checked' if choice['supported'] else ' · disabled' if not choice['enabled'] else ' · unsupported controller'))]
-    rows.append(('Browser next', 'linkget doctor --probe-browser '+choice['browser']+' checks connection/control only; no site is opened.' if choice['supported'] else 'Choose config --reader-browser chrome or neo for rendered pages; direct downloads are unaffected.'))
+    rows.append(('Browser next', 'linkget doctor --probe-browser '+choice['browser']+' runs a limited connection/access check; DOM and site access are not tested.' if choice['supported'] else 'Choose config --reader-browser chrome or neo for rendered pages; direct downloads are unaffected.'))
     settings=accounts.preferences();blocked=set(settings.get('blocked',[]))
     for site,domain in accounts.SITES.items():
         path=accounts.path_for(domain)

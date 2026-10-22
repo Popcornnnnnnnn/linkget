@@ -518,7 +518,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                                      help="save to FOLDER, or the current folder if omitted; overrides the default")
     destination_options.add_argument("--photos", action="store_true", help="save to Photos; overrides the default")
     parser.add_argument("--browser", choices=["auto", "none", "chrome", "firefox", "safari", "edge", "brave"], default="auto", help="auto: public first, then saved login and browser refresh if needed; none: public only; specify a browser to use its login")
-    parser.add_argument("--probe-browser", choices=["neo", "chrome"], help="doctor only: explicitly test one browser connection/control interface without opening a page")
+    parser.add_argument("--probe-browser", choices=["neo", "chrome"], help="doctor only: explicitly inspect one browser connection or OS access without opening a page")
     parser.add_argument("--check-session", choices=list(accounts.SITES), help="doctor only: explicitly verify one saved website session; no browser export")
     parser.add_argument("--reader-browser", choices=["auto", "chrome", "neo"], help="config only: save the page-reading preference; auto follows saved browser choice or system default")
     parser.add_argument("--rendered-backend", choices=["chrome", "neo"], help="override the page-reading controller for this download; credentials are unchanged")
