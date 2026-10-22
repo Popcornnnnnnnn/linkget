@@ -1,5 +1,6 @@
 """New sites: complete posts, scoped sessions, and no personal apps or browsers."""
 import contextlib
+import hashlib
 from http.cookiejar import Cookie, MozillaCookieJar
 import io
 import json
@@ -19,10 +20,13 @@ YT_URL = "https://www.youtube.com/watch?v=BaW_jenozKc"
 
 
 class Response(io.BytesIO):
-    def __init__(self, body=b"", code=200, headers=None):
+    def __init__(self, body=b"", code=200, headers=None, url=None):
         super().__init__(body)
         self.code = code
         self.headers = headers or {}
+        self.url = url
+
+    def geturl(self):return self.url
 
 
 def page(note):
@@ -123,6 +127,60 @@ class NewSiteTests(unittest.TestCase):
             network.return_value.open.side_effect = [Response(page(note)), Response(b"\x00\x00\x00\x18ftypmp42" + b"x" * 100)]
             xhs.download(NOTE_URL, self.root)
             self.assertTrue((self.root / f"xiaohongshu_{NOTE_ID}_001_original.mp4").is_file())
+
+    def test_xhs_video_transport_binds_exact_note_batch_response_and_bytes_without_tokens(self):
+        target='https://sns-video-bd.xhscdn.com/original/video.mp4'
+        final=target+'?signed=private'
+        note={'type':'video','noteId':NOTE_ID,'video':{'consumer':{'originVideoKey':'original/video.mp4'}}}
+        body=b'\x00\x00\x00\x18ftypmp42'+b'video'*100
+        with patch.object(xhs,'build_opener') as network:
+            network.return_value.open.side_effect=[Response(page(note)),
+                Response(body,headers={'Content-Length':str(len(body))},url=final)]
+            result=xhs.download(NOTE_URL+'?xsec_token=private',self.root)
+        proof=result.source_transport;name=f'xiaohongshu_{NOTE_ID}_001_original.mp4'
+        transfer=proof['files'][name]
+        self.assertEqual(proof['note_id'],NOTE_ID);self.assertEqual(proof['requested_note_id'],NOTE_ID)
+        self.assertEqual(proof['source_reference'],'www.xiaohongshu.com/explore/'+NOTE_ID)
+        self.assertEqual(transfer['batch_id'],proof['batch_id']);self.assertEqual(transfer['note_id'],NOTE_ID)
+        self.assertEqual(transfer['expected_bytes'],len(body));self.assertEqual(transfer['actual_bytes'],len(body))
+        self.assertEqual(transfer['sha256'],hashlib.sha256(body).hexdigest())
+        self.assertEqual(transfer['media_url_sha256'],hashlib.sha256(target.encode()).hexdigest())
+        self.assertEqual(transfer['final_url_sha256'],hashlib.sha256(final.encode()).hexdigest())
+        self.assertEqual(transfer['http_status'],200);self.assertFalse(transfer['range_present'])
+        self.assertNotIn('private',json.dumps(proof));self.assertGreater(proof['acquired_at'],0)
+
+    def test_xhs_transport_does_not_invent_note_identity_length_or_final_response_url(self):
+        note={'type':'video','video':{'consumer':{'originVideoKey':'original/video.mp4'}}}
+        body=b'\x00\x00\x00\x18ftypmp42'+b'video'*20
+        with patch.object(xhs,'build_opener') as network:
+            network.return_value.open.side_effect=[Response(page(note)),Response(body)]
+            result=xhs.download(NOTE_URL,self.root)
+        transfer=next(iter(result.source_transport['files'].values()))
+        self.assertIsNone(result.source_transport['note_id']);self.assertIsNone(transfer['note_id'])
+        self.assertIsNone(transfer['expected_bytes']);self.assertIsNone(transfer['final_url_sha256'])
+        self.assertIsNone(transfer['final_host'])
+
+    def test_xhs_transport_records_actual_fallback_from_same_note(self):
+        target='https://sns-video-bd.xhscdn.com/display'
+        note={'type':'video','noteId':NOTE_ID,'video':{'consumer':{'originVideoKey':'original/video.mp4'},
+              'media':{'stream':{'h264':[{'masterUrl':target}]}}}}
+        body=b'\x00\x00\x00\x18ftypmp42'+b'video'*20
+        with patch.object(xhs,'build_opener') as network:
+            network.return_value.open.side_effect=[Response(page(note)),
+                HTTPError('https://sns-video-bd.xhscdn.com/original/video.mp4',404,'missing',{},None),
+                Response(body,headers={'Content-Length':str(len(body))},url=target)]
+            result=xhs.download(NOTE_URL,self.root)
+        transfer=next(iter(result.source_transport['files'].values()))
+        self.assertEqual(transfer['variant'],'display')
+        self.assertEqual(transfer['media_url_sha256'],hashlib.sha256(target.encode()).hexdigest())
+
+    def test_xhs_media_redirect_outside_existing_allowlist_is_rejected_before_writing(self):
+        note={'type':'video','noteId':NOTE_ID,'video':{'consumer':{'originVideoKey':'original/video.mp4'}}}
+        with patch.object(xhs,'build_opener') as network:
+            network.return_value.open.side_effect=[Response(page(note)),
+                Response(b'\x00\x00\x00\x18ftypmp42',url='https://unrelated.invalid/file')]
+            with self.assertRaisesRegex(RuntimeError,'unsupported media source'):xhs.download(NOTE_URL,self.root)
+        self.assertFalse(list(self.root.glob('*.mp4')))
 
     def test_xhs_one_rejected_original_does_not_require_display_urls_for_other_images(self):
         note = {"type": "normal", "imageList": [

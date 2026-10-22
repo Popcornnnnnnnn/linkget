@@ -344,7 +344,7 @@ def download(url, directory, cookie_path=None, *, browser_item=None, require_mot
                               metadata={'description': item.get('desc', ''),
                                         'motion_metadata_complete': motion_complete})
     except HTTPError as error:
-        raise RuntimeError(f"Douyin request failed (HTTP {error.code}). Open the post in your browser and check access or verification, then retry.") from None
+        raise RuntimeError(f"Douyin request failed (HTTP {error.code}). Open the post in your browser and check access or verification, then retry.") from error
     except (URLError, OSError, HTTPException) as error:
         reason = error.reason if isinstance(error, URLError) else error
         detail = str(reason) or type(reason).__name__

@@ -98,8 +98,8 @@ def download(url, directory, cookie_path=None):
     except HTTPError as error:
         if error.code in {401, 403} and not cookie_path:
             raise BrowserRequired("Pixiv denied this request. Try a browser login if the artwork is accessible to your account.") from None
-        raise RuntimeError(f"Pixiv request failed (HTTP {error.code}). Check access to the artwork.") from None
-    except (URLError, OSError, HTTPException):
-        raise RuntimeError("Pixiv download interrupted. Check your connection and retry.") from None
+        raise RuntimeError(f"Pixiv request failed (HTTP {error.code}). Check access to the artwork.") from error
+    except (URLError, OSError, HTTPException) as error:
+        raise RuntimeError("Pixiv download interrupted. Check your connection and retry.") from error
     except (ValueError, TypeError, AttributeError):
         raise RuntimeError("Pixiv returned unreadable artwork or image information.") from None

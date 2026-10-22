@@ -90,13 +90,59 @@ class ToutiaoTests(unittest.TestCase):
         class Response(io.BytesIO):
             def geturl(self):return MEDIA
         for status,headers,data in [(206,{'Content-Range':'bytes 0-2/10'},b'abc'),
+                                    (200,{'Content-Range':'bytes 0-2/10','Content-Length':'3'},b'abc'),
                                     (200,{'Content-Length':'10'},b'abc'),(200,{'Content-Length':'3'},b'abc')]:
             with tempfile.TemporaryDirectory() as tmp:
                 response=Response(data);response.status=status;response.headers=headers
                 with patch.object(toutiao,'urlopen',return_value=response):
-                    if status==200 and headers['Content-Length']=='3':toutiao.download_video(MEDIA,Path(tmp)/'video.mp4')
+                    if status==200 and headers.get('Content-Length')=='3' and not headers.get('Content-Range'):toutiao.download_video(MEDIA,Path(tmp)/'video.mp4')
                     else:
                         with self.assertRaises(RuntimeError):toutiao.download_video(MEDIA,Path(tmp)/'video.mp4')
+
+    def response(self,data,expected=None):
+        class Response(io.BytesIO):
+            def geturl(self):return MEDIA
+        r=Response(data);r.status=200;r.headers={} if expected is None else {'Content-Length':str(expected)}
+        return r
+
+    def test_declared_size_above_limit_rejects_before_reading_or_creating_media(self):
+        r=self.response(b'not downloaded',toutiao.MAX_MEDIA_BYTES+1)
+        with tempfile.TemporaryDirectory() as tmp,patch.object(toutiao,'urlopen',return_value=r),patch.object(r,'read',wraps=r.read) as read:
+            p=Path(tmp)/'source.mp4'
+            with self.assertRaises(toutiao.MediaTransferLimit) as caught:toutiao.download_video(MEDIA,p)
+            self.assertEqual(caught.exception.diagnostic['reason'],'declared_size')
+            self.assertEqual(caught.exception.diagnostic['downloaded_bytes'],0)
+            self.assertNotIn(MEDIA,str(caught.exception));self.assertFalse(p.exists());read.assert_not_called()
+
+    def test_large_declared_transfer_gets_more_than_sixty_seconds_but_a_hard_deadline(self):
+        self.assertGreater(toutiao.transfer_budget(413844676),60)
+        self.assertLessEqual(toutiao.transfer_budget(413844676),600)
+        self.assertEqual(toutiao.transfer_budget(None),600)
+        r=self.response(b'a'*50,50)
+        with tempfile.TemporaryDirectory() as tmp,patch.object(toutiao,'urlopen',return_value=r),\
+                patch.object(toutiao,'TRANSFER_BYTES_PER_SECOND',1),\
+                patch.object(toutiao.time,'monotonic',side_effect=[0,0,70,70,70,70]):
+            p=Path(tmp)/'source.mp4';result=toutiao.download_video(MEDIA,p)
+            self.assertEqual(p.read_bytes(),b'a'*50);self.assertEqual(result['elapsed_seconds'],70)
+            self.assertTrue(result['complete_http_response'])
+
+    def test_unknown_size_is_bounded_while_streaming(self):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(toutiao,'urlopen',return_value=self.response(b'a'*9)),\
+                patch.object(toutiao,'MAX_MEDIA_BYTES',8):
+            with self.assertRaises(toutiao.MediaTransferLimit) as caught:toutiao.download_video(MEDIA,Path(tmp)/'source.mp4')
+            self.assertEqual(caught.exception.diagnostic['reason'],'streamed_size')
+
+    def test_deadline_is_checked_after_eof_read_and_partial_media_is_cleaned(self):
+        r=self.response(b'a')
+        with tempfile.TemporaryDirectory() as tmp,patch.object(toutiao,'urlopen',return_value=r),\
+                patch.object(toutiao,'MAX_TRANSFER_SECONDS',10),\
+                patch.object(toutiao.time,'monotonic',side_effect=[0,0,1,1,11]),\
+                patch.object(toutiao.shutil,'which',return_value='tool'):
+            root=Path(tmp);model=root/'model.bin';model.touch()
+            with self.assertRaises(toutiao.MediaTransferLimit) as caught:toutiao.read(URL,root/'out',page(),model)
+            self.assertEqual(caught.exception.diagnostic['reason'],'time')
+            self.assertEqual(caught.exception.diagnostic['downloaded_bytes'],1)
+            self.assertEqual(list((root/'out').iterdir()),[])
 
     def test_separate_pair_requires_matching_batch_roles_and_no_arbitrary_extra_url(self):
         pending={**page(),'duration':None,'duration_pending':True,'media_binding':'paired_page_vod_resources','media_streams':PAIR}
@@ -115,11 +161,12 @@ class ToutiaoTests(unittest.TestCase):
                 '-t','1.2','-an','-c:v','libx264',str(video)],check=True,capture_output=True)
             subprocess.run([ffmpeg,'-nostdin','-loglevel','error','-f','lavfi','-i','sine=frequency=440',
                 '-t','1.2','-vn','-c:a','aac',str(audio)],check=True,capture_output=True)
-            for wrong_role,expected in [(False,1.2),(False,30),(True,1.2)]:
-                folder=root/str((wrong_role,expected));folder.mkdir()
+            for wrong_role,expected,too_large in [(False,1.2,False),(False,30,False),(True,1.2,False),(False,1.2,True)]:
+                folder=root/str((wrong_role,expected,too_large));folder.mkdir()
                 def download(url,path):toutiao.shutil.copyfile(video if url==PAIR['video'] or wrong_role else audio,path)
-                with patch.object(toutiao,'download_video',side_effect=download):
-                    if wrong_role or expected==30:
+                limit=video.stat().st_size+audio.stat().st_size-1 if too_large else toutiao.MAX_MEDIA_BYTES
+                with patch.object(toutiao,'download_video',side_effect=download),patch.object(toutiao,'MAX_MEDIA_BYTES',limit):
+                    if wrong_role or expected==30 or too_large:
                         with self.assertRaises(RuntimeError):toutiao.merge_tracks(PAIR,folder,expected)
                     else:
                         evidence=toutiao.merge_tracks(PAIR,folder,expected)
@@ -156,6 +203,7 @@ class ToutiaoTests(unittest.TestCase):
             with patch.object(toutiao.shutil, 'which', return_value='tool'), \
                     patch.object(toutiao, 'download_video', side_effect=download), \
                     patch.object(toutiao, 'transcribe', side_effect=recognized), \
+                    patch('linkget.read_asr.probe', return_value=(38.4, True)), \
                     patch.object(cli, 'inspect_files', return_value=[{'duration': 38.4, 'audio': True, 'probe_ok': True}]), \
                     patch.object(cli, 'first_run') as setup, patch.object(cli, 'prepare_session') as credentials, \
                     patch.object(cli, 'import_photos') as photos, contextlib.redirect_stdout(io.StringIO()):
@@ -180,6 +228,19 @@ class ToutiaoTests(unittest.TestCase):
             (root / 'source.mp4').symlink_to(root / 'model.bin')
             with self.assertRaises(ValueError):toutiao.cleanup_media(root)
             self.assertEqual((root / 'model.bin').read_text(), 'evidence')
+
+    def test_checkpoint_resume_keeps_checked_json_and_cleans_only_known_failed_work(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);chunks=root/'chunks';chunks.mkdir();checkpoint=chunks/('a'*64+'.json');checkpoint.write_text('{}')
+            working=root/'chunk-0001';working.mkdir()
+            for name in ('audio.wav','transcript.json','transcript.txt'):(working/name).write_text('generated')
+            unknown=root/'unknown.txt';unknown.write_text('keep')
+            with self.assertRaises(ValueError):toutiao.prepare_checkpoint_resume(root)
+            self.assertTrue((working/'audio.wav').exists());self.assertTrue(unknown.exists())
+            unknown.unlink();toutiao.prepare_checkpoint_resume(root)
+            self.assertFalse(working.exists());self.assertEqual(checkpoint.read_text(),'{}')
+            checkpoint.unlink();checkpoint.symlink_to(root.parent/'outside.json')
+            with self.assertRaises(ValueError):toutiao.prepare_checkpoint_resume(root)
 
     def test_completed_content_removes_duplicate_checkpoints_only(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -220,7 +281,7 @@ class ToutiaoTests(unittest.TestCase):
         script = (Path(toutiao.__file__).parent / 'toutiao_browser.js').read_text()
         cases = [('video', 'https://v9-web.toutiaovod.com/video.mp4', 38.4), ('video', '', 38.4)]
         for kind, src, duration in cases:
-            code = 'const location={hostname:"www.toutiao.com",pathname:"/video/123/"};\n'
+            code = 'const location={href:"https://www.toutiao.com/video/123/",hostname:"www.toutiao.com",pathname:"/video/123/"};\n'
             code += 'const document={querySelector:s=>s==="h1"?{innerText:"展开\\nTitle"}:s==="video"?'
             code += json.dumps({'currentSrc': src, 'duration': duration, 'textTracks': []}) + ':null};\n'
             code += 'process.stdout.write(JSON.stringify((' + script + ')()));'

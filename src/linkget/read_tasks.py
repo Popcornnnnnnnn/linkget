@@ -12,8 +12,10 @@ import time
 import uuid
 
 if __package__:
+    from .failures import redact
     from . import read_store
 else:
+    from failures import redact
     import read_store
 
 TERMINAL = {'completed', 'failed', 'cancelled', 'interrupted'}
@@ -51,6 +53,10 @@ def update(identifier, **changes):
 def progress(**changes):
     if _current:
         update(_current, **changes)
+
+
+def failure(error):
+    progress(failure=redact(error))
 
 
 def record_output(path):
@@ -158,7 +164,8 @@ def submit(argv, kind):
     identifier = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S') + '-' + uuid.uuid4().hex[:12]
     record, _, _, log = paths(identifier)
     read_store.write_json(record, {'schema': 1, 'id': identifier, 'kind': kind, 'argv': argv,
-        'created': time.time(), 'status': 'queued', 'phase': 'queued', 'outputs': [], 'pid': None})
+        'created': time.time(), 'status': 'queued', 'phase': 'queued', 'outputs': [], 'pid': None,
+        'source_folder': str(Path(argv[1]).expanduser().resolve()) if kind in {'translate', 'summarize', 'retry'} and len(argv) > 1 else None})
     try:
         fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, 'wb') as stream:
@@ -209,12 +216,14 @@ def worker(identifier):
             code = 130
         except SystemExit as error:
             code = error.code if isinstance(error.code, int) else 1
-        except Exception:
+        except Exception as error:
+            failure(error)
             print('Background processing failed; source/checkpoints were preserved.', file=sys.stderr)
             code = 1
         finally:
             final = 'completed' if code == 0 else 'cancelled' if code == 130 else 'failed'
-            update(identifier, status=final, phase=final, exit_code=code, finished=time.time())
+            update(identifier, status=final, phase=final, exit_code=code, finished=time.time(),
+                   failure=None if code == 0 else 'Cancelled by request.' if code == 130 else load(identifier).get('failure') or 'Processing failed (exit ' + str(code) + '); inspect the private log for the cause.')
             _current = None
         return code
 

@@ -16,7 +16,7 @@ import time
 if __package__:
     from . import accounts, jobs, destinations, preflight, recovery, staging, transfers, ownership
     from .runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
-    from .output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description
+    from .output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity
     from .batch import run_batch
     from .engines import route, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login
     from .photos import originals_directory, retain_originals, verify_library_copies
@@ -36,7 +36,7 @@ if __package__:
 else:  # Homebrew launches this file directly.
     import accounts, jobs, destinations, preflight, recovery, staging, transfers, ownership
     from runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
-    from output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description
+    from output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity
     from batch import run_batch
     from engines import route, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login
     from photos import originals_directory, retain_originals, verify_library_copies
@@ -73,6 +73,22 @@ def report_failure(error, phase=None):
     status(failure.label, failure.message, "31", stream=sys.stderr)
     status("Next", failure.next_step, stream=sys.stderr)
     return failure.category
+
+
+def record_failure(args, error, phase):
+    failure = classify(error, phase=phase)
+    jobs.record(failure={'category': failure.category, 'message': failure.message,
+                         'next_step': failure.next_step, 'phase': phase})
+    if phase == 'download':
+        args._retry_failure = failure
+        cause, seen = error, set()
+        while cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
+            headers = getattr(cause, 'headers', None)
+            if headers is not None and headers.get('Retry-After') is not None:
+                args._retry_after = headers.get('Retry-After')
+                break
+            cause = cause.__cause__ or (None if cause.__suppress_context__ else cause.__context__)
 
 
 def login_result(site, state, saved=False, public_summary=False):
@@ -396,6 +412,12 @@ def main(argv=None):
         except OSError:
             pass
     tokens = list(sys.argv[1:] if argv is None else argv)
+    if tokens and tokens[0] == 'tasks':
+        if __package__:
+            from .tasks import main as task_status
+        else:
+            from tasks import main as task_status
+        return task_status(tokens[1:])
     if tokens and tokens[0] == 'read':
         if __package__:
             from .read_tasks import main as read_content
@@ -423,6 +445,7 @@ def main(argv=None):
   doctor               Check download tools and installation
   config               View or change the default save destination
   batch [LINK ...]     Download all links concurrently; paste one per line if omitted
+  tasks [TASK]         View download and background read tasks
   retry [TASK]         Retry unfinished items from the latest or specified task
   recover [TASK]       List kept files, or save a complete retained task
   compare A.json B.json Compare reports for the same links
@@ -473,7 +496,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     parser.add_argument("--report", type=Path, help="write download evidence to a new JSON file for comparison")
     parser.add_argument("--live-photos", action="store_true", help="package exposed Live Photo pairs on macOS; original downloads are preserved")
     parser.add_argument("--page-data", type=Path, help="Douyin only: content-only JSON for one post from a browser connector; requires --browser none")
-    parser.add_argument("--jobs", type=int, metavar="N", help="limit simultaneous batch downloads; default: all links")
+    parser.add_argument("--jobs", type=int, metavar="N", help="limit simultaneous batch downloads; default: 3; one task per website with a short gap")
     parser.add_argument("--verify", action="store_true", help="recover: verify existing Photos originals before cleaning staged copies")
     parser.add_argument("--item", type=int, metavar="N", help="recover: save or verify only one unfinished item")
     parser.add_argument("--redownload", action="store_true", help="retry: download again instead of reusing a complete retained set")
@@ -675,6 +698,8 @@ def batch_download(args, parser, links, records=None):
 
 def download(args, setup_results, records=None, media_consumer=None):
     phase = "download"
+    args._retry_failure = None
+    args._retry_after = None
     stage = None
     session_dir = None
     info_path = None
@@ -690,6 +715,7 @@ def download(args, setup_results, records=None, media_consumer=None):
             ready = journal.data["items"][index - 1].get("ready")
             if ready and not args.redownload:
                 # A failed save already has a checked complete set. Retry the save.
+                phase = "save"
                 result = recovery.restore(journal, args, status, save_folder, import_photos, claimed=True, indices=[index])
                 evidence.update(ready.get("evidence", {}), status="completed" if result == 0 else "failed")
                 return result
@@ -702,7 +728,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                 jobs.record(previous_stages=list(dict.fromkeys(stages)))
         if getattr(args, 'redownload', False):
             transfers.reset_progress()
-        jobs.record(input=url, status="running", ready=None, receipt=None, stage=None, stage_identity=None)
+        jobs.record(input=url, status="running", failure=None, ready=None, receipt=None, stage=None, stage_identity=None)
         started = time.monotonic()
         with activity("Resolving") if any(host in url for host in ("v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/", "xhslink.com", "xhslink.cn", "t.cn/")) else nullcontext():
             url = normalize_link(url)
@@ -795,6 +821,8 @@ def download(args, setup_results, records=None, media_consumer=None):
                         with activity("Preparing"):
                             command = prepare_video(command, info_path, log, domain)
                         metadata_proof = getattr(command, 'metadata_proof', None)
+                        if getattr(_batch, "state", {}).get("panel"):
+                            batch_media([], json.loads(info_path.read_text()))
                         reader = getattr(args, 'read_metadata_consumer', None)
                         if reader and reader(json.loads(info_path.read_text()), url, site):
                             evidence.update(status='completed')
@@ -925,7 +953,9 @@ def download(args, setup_results, records=None, media_consumer=None):
                     cookie_path = candidate
                     continue
                 raise LoginRequired(reason) from None
-        media_records = inspect_files(files, download_info.variants)
+        batch_media(files, download_info.metadata)
+        with activity("Checking") if getattr(_batch, "state", None) else nullcontext():
+            media_records = inspect_files(files, download_info.variants)
         transfers.verify(files)
         evidence.update(files=media_records, expected_count=download_info.expected_count,
                         missing_motion=download_info.missing_motion, live_pairs=download_info.live_pairs,
@@ -962,7 +992,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                 status("Live Photos", f"{len(download_info.live_pairs)} pairs saved separately · use --live-photos to pair")
         transfers.verify(files)
         phase = 'save' if folder else 'import'
-        with batch_lock("saving"), activity("Saving" if folder else "Importing"):
+        with saving_activity("Saving" if folder else "Importing"):
             jobs.record(destination_files=[])
             if folder:
                 saved, skipped = save_folder(files, folder)
@@ -990,14 +1020,17 @@ def download(args, setup_results, records=None, media_consumer=None):
         evidence.update(status="completed", saved_count=len(saved), skipped_count=skipped)
         return 0
     except LoginRequired as error:
+        record_failure(args, error, "login")
         category = classify(error).category
         evidence['failure'] = category if category in {'login_required', 'login_expired'} else 'login_required'
         login_guidance(args, domain, url, str(error))
         return 1
     except subprocess.TimeoutExpired as error:
+        record_failure(args, error, phase)
         evidence['failure'] = report_failure(error, phase=phase)
         return 1
     except (OSError, ValueError, RuntimeError) as error:
+        record_failure(args, error, phase)
         evidence['failure'] = report_failure(error, phase=phase)
         return 1
     except (KeyboardInterrupt, EOFError):

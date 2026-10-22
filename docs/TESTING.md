@@ -20,6 +20,7 @@ Covered behaviors include:
 - staged Photos originals, content-based filenames, repeated content, same-name different content, verified-copy cleanup, referenced/mismatched/symlink copy rejection, and import/copy failures;
 - folder collisions and duplicate handling, progress cleanup, bare `--folder`, and invalid command guidance;
 - batch input numbering, simultaneous download start for every link, independent failure continuation, partial-file preservation, invalid input, multiline sharing text, one-time setup, duplicate handling, cancellation, serialized Photos saves and login prompts on the calling thread without browser reads;
+- compact batch terminal rows in original order, Chinese title clipping by display width, width/height limits, resize cleanup, queued/cancelled items, serialized-import waiting, prompt suspension, full failure/recovery notices, retry numbering, `NO_COLOR` and plain `TERM=dumb`/redirected output;
 - exposed gallery-count completeness, exact per-item Live Photo pairs, missing motion, invalid format refusal, opt-in token-free reports and inconclusive quality comparisons;
 - Live Photo shared collision suffixes, repeated-export deduplication, partial-copy cleanup, retained-component races/content mismatches, persistent raw/paired resources and Photos file-count bookkeeping without accessing Photos;
 - saved destinations, dynamic current-directory defaults, fixed relative-path resolution, per-run overrides, and retaining account settings;
@@ -28,6 +29,24 @@ Covered behaviors include:
 The current [13-channel media corpus and acceptance protocol](MEDIA_VALIDATION.md) separates anonymous availability, quality references and visual watermark findings. Historical [eight-channel watermark findings](WATERMARKS.md) include authenticated samples and do not prove anonymous access. These checks are samples, not a guarantee for every post or network. On 2026-09-29, opt-in live checks verified eight sites with an authorized Chrome session; an invalid Weibo cookie was rejected. This does not verify other browsers or all account configurations. Ordinary automated tests do not read personal browser sessions.
 
 ## Manual acceptance needed
+
+### Compact batch terminal panel (2026-10-13)
+
+Source/Python 3.13 ran 313 tests successfully with five optional tests skipped. The locally patched Homebrew installation passed all 72 batch, terminal-panel, CLI, recovery and runtime tests. A real PTY smoke check using the Homebrew Python 3.14 runtime saved 41 generated JPEGs from four simulated posts through real ffprobe and folder-copy verification; every saved file matched its source bytes. Panel tests cover Chinese titles, terminal width/height limits and resize cleanup, serialized-import waiting, failures, queued-item cancellation, coordinator Ctrl-C, prompt suspension and original retry numbers. Evidence and the four previous installed modules are under `.local/media-validation/compact-panel/`.
+
+The local command remains version `0.2.1.dev20` with this presentation patch; no release was published. Applying the full source test suite to the installed package also found seven pre-existing reading-module errors. The same seven errors reproduced in 41 reading tests against the pre-patch installed baseline; `read_asr.py` and `toutiao.py` were not changed in this round. Follow-up is tracked in [Issue #6](https://github.com/Popcornnnnnnnn/linkget/issues/6). Ghostty screenshot inspection was unavailable through the UI tool. Actual website transfers and real Photos import were not run for this presentation change.
+
+### Installed reading-module sync (2026-10-13)
+
+The two installed reading modules were still at the revisions before `562b7ce` (Toutiao transfer bounds) and `40fb792` (ASR boundary clipping and checked checkpoint recovery). Only `toutiao.py` and `read_asr.py` were backed up and synchronized from the committed source. All installed package files now match the local source, including the compact batch panel; the local version remains `0.2.1.dev20` and nothing was published.
+
+The full suite against the actual Homebrew installation and its Python 3.14 runtime passed 313 tests with five optional skips, eliminating the seven earlier reading errors. The installed `linkget read --foreground` command transcribed 8.404 seconds of locally generated English speech with the existing Whisper model. Reprocessing the retained audio reused an unchanged chunk checkpoint: only ffprobe ran, with no new ffmpeg or Whisper invocation. The completed read also returned safely from command-line retry. Backups, file fingerprints, test logs and generated-content evidence are under `.local/media-validation/reading-sync/`. [Issue #6](https://github.com/Popcornnnnnnnn/linkget/issues/6) is resolved. This is local installation/recognition validation; a fresh live Toutiao website transfer was not run.
+
+### Batch elapsed-time correction (2026-10-13)
+
+The initial compact panel reset the row timer on every phase, then switched to the single-download total at completion. A controlled-clock reproduction showed Downloading 20s → Importing 0s → Done 30.0s. The row now uses one cumulative clock per attempt, includes waiting to save, excludes time queued before starting, and freezes on completion, failure or cancellation. The rightmost column always keeps its elapsed time visible when details are clipped; elapsed times have one decimal place, and the batch header freezes when finished. Retried/retained saves use their current attempt's clock.
+
+All 318 tests passed against the actual Homebrew package/Python 3.14, with five optional skips. Five controlled-clock regressions cover continuous stage timing, queue exclusion, terminal-result freezing, recovery saves and the header. A real PTY smoke with four simulated posts and 41 generated JPEGs confirmed nondecreasing row times and frozen completed rows. Only the installed `output.py` was backed up and replaced. Evidence is under `.local/media-validation/batch-timing/`; [Issue #7](https://github.com/Popcornnnnnnnn/linkget/issues/7) is resolved. The update remains local and unpublished.
 
 ### Task recovery and Live Photo follow-up (2026-10-07)
 
@@ -105,3 +124,9 @@ an offline upstream compatibility command. See [scope, verification and limits](
 [candidate review](FALLBACKS.md) and [compatibility commands](COMPATIBILITY.md).
 These checks do not arrange a real Photos acceptance run; the user reviews actual
 Photos results in normal use.
+
+## Batch/task integration (source only)
+
+The integration preserves all eight commits from the local batch/reader branch on top of main `4f85d68`. The installed dev21_1 package was compared byte for byte with `deeb111` / `67a174b`; every installed package file matched, so no installed-only implementation was omitted. The original dirty checkout remains separate. No release, tap, installation, live website or Photos change is part of this integration.
+
+Offline coverage includes bounded default workers, independent-site scheduling, known share aliases, one-site exclusion and delay, finite network retries, long Retry-After refusal, certificate/login/access/save/import exclusions, cancellation, native resource reuse with one final save, task-lock interruption detection, mixed task views, retained-size observation, symlink avoidance and source-token redaction. Existing ownership, media completeness and Neo lifecycle tests remain required.
