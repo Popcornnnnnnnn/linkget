@@ -45,7 +45,7 @@ function (expected) {
     // MediaSource blob would detach its split buffers, so only direct files
     // receive the one-time load request.
     player.muted = true;
-    player.loop = true;
+    if (!player.loop) player.loop = true;
     if (player.readyState === 0 && player.currentSrc?.startsWith('https://') && player.dataset.readerLoaded !== '1') {
         player.dataset.readerLoaded = '1';
         player.load();

@@ -184,10 +184,18 @@ article.__linkgetArticleScopeReady=f.scope_ready;
 article.querySelector=s=>s==='.ContentItem-time, .Post-Time'?leaf(f.publication):f.gated?{}:null;
 const player={currentSrc:f.src,duration:f.duration===null?NaN:f.duration,textTracks:[],dataset:{},readyState:1,
   paused:false,load:()=>{throw new Error('must not reload blob');}};
+let loop=false,loopWrites=0;
+Object.defineProperty(player,'loop',{get:()=>loop,set:value=>{
+  if (++loopWrites > (f.max_loop_writes ?? Infinity)) throw new Error('repeated reflected loop mutation');
+  loop=value;
+}});
 global.document={readyState:f.ready||'complete',documentElement:{dataset:{linkgetNeoReadOwner:f.owner}},querySelector:s=>s==='h1'?{innerText:f.title}:
   s==='h1.Post-Title'?leaf(f.title):s==='article'?article:s==='main'?pi:s==='video'?player:
   s==='article .RichText'?leaf(f.text):null};
-process.stdout.write(JSON.stringify((''' + source + r''')(f.expected||f.url)));
+const extract=(''' + source + r''');
+let value;
+for(let n=0;n<(f.repeat||1);n++) value=extract(f.expected||f.url);
+process.stdout.write(JSON.stringify(value));
 '''
         raw = subprocess.run([shutil.which('node'), '-e', harness], input=json.dumps(fixture), capture_output=True, text=True, check=True).stdout
         return json.loads(raw)
@@ -196,6 +204,9 @@ process.stdout.write(JSON.stringify((''' + source + r''')(f.expected||f.url)));
         fixture = dict(url=VIDEO, expected=VIDEO, title='展开\nFixture title',
                        src='blob:https://www.toutiao.com/fixture', duration=42, resources=list(PAIR.values()))
         return self.snapshot('toutiao_browser.js', {**fixture, **overrides})
+
+    def test_pending_blob_rechecks_do_not_repeat_reflected_player_mutations(self):
+        self.assertIsNone(self.toutiao(resources=[], repeat=3, max_loop_writes=1))
 
     def test_interactive_article_requires_this_reads_unchanged_quiet_paragraph_range(self):
         paragraphs = [('First actual paragraph. '*4).strip(), ('Second actual paragraph. '*4).strip()]
