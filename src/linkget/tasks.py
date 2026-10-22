@@ -77,7 +77,7 @@ def show_download(journal):
         failure = row.get('failure')
         if state.startswith(('failed', 'cancelled', 'interrupted')) and not isinstance(failure, dict):
             print('  Failure: No structured cause recorded; inspect the retained diagnostics.')
-        if isinstance(failure, dict):
+        if isinstance(failure, dict) and row['status'] != 'completed':
             print('  Failure: ' + display(failure.get('message', 'Unknown')))
             print('  Next: ' + display(failure.get('next_step', 'Inspect retained files.')))
         paths = list(staging.paths(row))

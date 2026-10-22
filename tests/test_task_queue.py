@@ -132,6 +132,16 @@ class TaskViewTests(unittest.TestCase):
                 self.assertNotIn('https://',text)
                 self.assertEqual(jobs.Journal.load(journal.identifier).data['items'][0]['status'],'running')
 
+    def test_completed_download_does_not_present_an_old_failure_as_current(self):
+        with tempfile.TemporaryDirectory() as root, patch.object(jobs, 'directory', return_value=Path(root)):
+            journal = jobs.Journal.create(['https://example.com/a'], argparse.Namespace(folder=Path(root)))
+            journal.update(1, status='completed', failure={'message':'historical failure', 'next_step':'historical retry'})
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                tasks.show_download(journal)
+            self.assertIn('completed', output.getvalue())
+            self.assertNotIn('historical', output.getvalue())
+
     def test_size_deduplicates_paths_and_does_not_follow_symlinks(self):
         with tempfile.TemporaryDirectory() as root:
             root=Path(root); folder=root/'data'; folder.mkdir(); (folder/'a').write_bytes(b'abc')
