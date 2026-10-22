@@ -975,7 +975,8 @@ def download(args, setup_results, records=None, media_consumer=None):
                     if current:
                         journal.update(index, rendered_backend=backend)
                     provenance = rendered_page.selection(backend=choice, browser=args.browser,
-                        backend_source='retained checkpoint' if frozen and choice == frozen and not (getattr(args,'_rendered_backend_override',False) or getattr(args,'_reader_browser_override',False)) else 'command option')
+                        backend_source='retained checkpoint' if (frozen and choice == frozen or getattr(args,'_journal',None)) and not (getattr(args,'_rendered_backend_override',False) or getattr(args,'_reader_browser_override',False)) else 'command option',
+                        browser_source='retained checkpoint' if getattr(args,'_journal',None) and not getattr(args,'_reader_browser_override',False) else 'command browser option')
                     status("Browser", "Reading the post in " + ("Neo" if backend == "neo" else "Chrome") + " · " + provenance['source'])
                     browser_item = batch_interaction(lambda: read_douyin_browser(url, backend=backend))
                     attempt += 1

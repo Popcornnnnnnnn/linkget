@@ -91,7 +91,7 @@ def read_videos(args):
     if getattr(args, 'page_data', None) and site != 'Toutiao':
         raise ValueError('--page-data is supported only for Toutiao.')
     rendered_backend = getattr(args, 'rendered_backend', None)
-    reader_choice = rendered_page.selection(rendered_backend, browser=args.browser, backend_source='retained checkpoint' if getattr(args,'resume',False) and not getattr(args,'_rendered_backend_override',False) else 'command option') if (site == 'Toutiao' or public_article) and not getattr(args,'page_data',None) else None
+    reader_choice = rendered_page.selection(rendered_backend, browser=args.browser, backend_source='retained checkpoint' if getattr(args,'resume',False) and not getattr(args,'_rendered_backend_override',False) else 'command option', browser_source='retained checkpoint' if getattr(args,'resume',False) else 'command browser option') if (site == 'Toutiao' or public_article) and not getattr(args,'page_data',None) else None
     if rendered_backend is not None and site != 'Toutiao' and not public_article:
         raise ValueError('--rendered-backend applies only to Toutiao and scoped public articles.')
     if (site == 'Toutiao' or public_article) and not getattr(args, 'page_data', None):

@@ -31,7 +31,7 @@ class ReaderBusy(BrowserUnavailable):
     """Another local read owns the serialized rendered-page reader."""
 
 
-def selection(backend=None, *, browser="auto", backend_source='command option'):
+def selection(backend=None, *, browser="auto", backend_source='command option', browser_source='command browser option'):
     """Explain selection without reading sessions, probing browsers or saving."""
     if __package__:
         from . import accounts
@@ -42,7 +42,7 @@ def selection(backend=None, *, browser="auto", backend_source='command option'):
     elif backend is not None:
         value, source = backend, backend_source
     elif browser != 'auto':
-        value, source = browser, 'command browser option'
+        value, source = browser, browser_source
     elif 'LINKGET_RENDERED_BACKEND' in os.environ:
         value, source = os.environ['LINKGET_RENDERED_BACKEND'], 'LINKGET_RENDERED_BACKEND'
     else:

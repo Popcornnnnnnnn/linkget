@@ -30,6 +30,7 @@ class InspectionTests(unittest.TestCase):
             self.assertEqual(rendered_page.selection(browser='chrome')['source'],'command browser option')
             self.assertEqual(rendered_page.selection('neo',browser='chrome')['browser'],'neo')
             self.assertEqual(rendered_page.selection('neo',backend_source='retained checkpoint')['source'],'retained checkpoint')
+            self.assertEqual(rendered_page.selection(browser='chrome',browser_source='retained checkpoint')['source'],'retained checkpoint')
             self.assertFalse(rendered_page.selection('neo',browser='none')['enabled'])
 
     def test_config_query_explains_separate_sources_without_credentials_or_writes(self):
