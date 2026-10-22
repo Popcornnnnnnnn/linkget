@@ -170,7 +170,7 @@ class BrowserDomTests(unittest.TestCase):
     def snapshot(self, script, fixture):
         source = Path(reader.__file__).with_name(script).read_text()
         harness = r'''
-const f=JSON.parse(process.argv[1]);
+const f=JSON.parse(require('fs').readFileSync(0, 'utf8'));
 global.location={href:f.url};
 global.performance={getEntriesByType:()=>f.resources.map(name=>({name}))};
 const leaf=(text='')=>({textContent:text,querySelector:()=>null,querySelectorAll:()=>[],cloneNode(){return this;}});
@@ -189,7 +189,7 @@ global.document={readyState:f.ready||'complete',documentElement:{dataset:{linkge
   s==='article .RichText'?leaf(f.text):null};
 process.stdout.write(JSON.stringify((''' + source + r''')(f.expected||f.url)));
 '''
-        raw = subprocess.run([shutil.which('node'), '-e', harness, json.dumps(fixture)], capture_output=True, text=True, check=True).stdout
+        raw = subprocess.run([shutil.which('node'), '-e', harness], input=json.dumps(fixture), capture_output=True, text=True, check=True).stdout
         return json.loads(raw)
 
     def toutiao(self, **overrides):

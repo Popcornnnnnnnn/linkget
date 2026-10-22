@@ -180,6 +180,7 @@ class TerminalBatchTests(unittest.TestCase):
         for label in ("Working...", "Destination", "Cleanup", "Quality", "Media count", "Progress"):
             self.assertNotIn(label, out)
 
+    @patch.object(cli.sys, "platform", "darwin")
     @patch.object(batch, "site_key", side_effect=lambda link: link)
     def test_photos_lock_waiting_is_visible_while_one_item_imports(self, _site_key):
         downloads = threading.Barrier(3)
