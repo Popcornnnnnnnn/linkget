@@ -31,7 +31,7 @@ if __package__:
     from .kuaishou import download as download_kuaishou, BrowserRequired as KuaishouBrowserRequired
     from .pixiv import download as download_pixiv, BrowserRequired as PixivBrowserRequired
     from .weibo import prefer_clean_images
-    from .media import DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
+    from .media import VIDEO, MEDIA, DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
     from .live import prepare_pairs, save_pairs
 else:  # Homebrew launches this file directly.
     import accounts, jobs, destinations, preflight, recovery, staging, transfers, ownership, rendered_page
@@ -51,11 +51,9 @@ else:  # Homebrew launches this file directly.
     from kuaishou import download as download_kuaishou, BrowserRequired as KuaishouBrowserRequired
     from pixiv import download as download_pixiv, BrowserRequired as PixivBrowserRequired
     from weibo import prefer_clean_images
-    from media import DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
+    from media import VIDEO, MEDIA, DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
     from live import prepare_pairs, save_pairs
 
-VIDEO = {".mp4", ".mov", ".m4v"}
-MEDIA = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".avif", ".tif", ".tiff"} | VIDEO
 SITES = "Instagram, X/Twitter, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, Weibo, Reddit, Lofter, Pixiv and Pinterest posts; YouTube videos and Shorts"
 
 
@@ -337,7 +335,7 @@ def installation_hint(missing):
     return "Missing tools: " + ", ".join(missing) + "\nInstall: brew install " + " ".join(formulae) + "\nNeed Homebrew? Visit https://brew.sh/, then run linkget doctor."
 
 
-def doctor():
+def doctor(args=None):
     missing = []
     print("  Tools\n")
     for name in ("gallery-dl", "yt-dlp", "ffmpeg", "ffprobe", "deno"):
@@ -360,7 +358,15 @@ def doctor():
     if missing:
         print()
         status("Setup needed", installation_hint(missing), "33")
-    return 1 if missing else 0
+    if __package__:
+        from . import diagnostics
+    else:
+        import diagnostics
+    rows, diagnostic_code = diagnostics.inspect(args)
+    print()
+    for label, detail in rows:
+        status(label, detail)
+    return 1 if missing else diagnostic_code
 
 
 def configured_destination():
@@ -394,7 +400,15 @@ def configure(args, parser):
         accounts.set_preferences(**changes)
     description = {"photos": "Photos", "cwd": "Current folder (where you run linkget)", "folder": setting.get("path")}[setting["mode"]]
     status("Default", description)
-    status("Page reader", accounts.preferences().get("reader_browser", "auto"))
+    preferences = accounts.preferences()
+    choice = rendered_page.selection()
+    status("Page preference", preferences.get("reader_browser", "auto"))
+    status("Effective reader", choice['browser'] + " · " + choice['source'] + ("" if choice['supported'] else " · controller unavailable"))
+    sources = preferences.get('sources', {})
+    names = sorted({value.split('/',1)[0].split(':',1)[0] for value in sources.values() if isinstance(value,str)})
+    status("Login browser sources", ", ".join(names) if names else preferences.get('browser') or "None configured")
+    status("Selection", "Page option > browser option > environment > personal reader > saved browser > system default")
+    status("Privacy", "Login refresh sources and page controller are separate; saved login validity was not checked.")
     if changed:
         status("Saved", "Used when no --folder or --photos is specified.")
     else:
@@ -418,6 +432,12 @@ def main(argv=None):
         except OSError:
             pass
     tokens = list(sys.argv[1:] if argv is None else argv)
+    if tokens and tokens[0] == 'version':
+        if __package__:
+            from .build_info import main as version_details
+        else:
+            from build_info import main as version_details
+        return version_details(tokens[1:])
     if tokens and tokens[0] == 'tasks':
         if __package__:
             from .tasks import main as task_status
@@ -436,6 +456,7 @@ def main(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Commands:
   help                 Show this help (also -h or --help)
+  version              Show detailed local build and source identity
   sites                List supported sites and media
   read URL --folder D  Read/transcribe in the background (read --help)
   read status [TASK]   Show background reading progress and results
@@ -497,6 +518,8 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                                      help="save to FOLDER, or the current folder if omitted; overrides the default")
     destination_options.add_argument("--photos", action="store_true", help="save to Photos; overrides the default")
     parser.add_argument("--browser", choices=["auto", "none", "chrome", "firefox", "safari", "edge", "brave"], default="auto", help="auto: public first, then saved login and browser refresh if needed; none: public only; specify a browser to use its login")
+    parser.add_argument("--probe-browser", choices=["neo", "chrome"], help="doctor only: explicitly inspect one browser connection or OS access without opening a page")
+    parser.add_argument("--check-session", choices=list(accounts.SITES), help="doctor only: explicitly verify one saved website session; no browser export")
     parser.add_argument("--reader-browser", choices=["auto", "chrome", "neo"], help="config only: save the page-reading preference; auto follows saved browser choice or system default")
     parser.add_argument("--rendered-backend", choices=["chrome", "neo"], help="override the page-reading controller for this download; credentials are unchanged")
     parser.add_argument("--profile", help="path to the selected browser profile")
@@ -513,7 +536,18 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     for index in range(len(tokens) - 2, -1, -1):
         if tokens[index] == "--folder" and tokens[index + 1].startswith(("http://", "https://")):
             tokens.insert(index + 1, ".")
+    if __package__:
+        from . import command_help
+    else:
+        import command_help
+    if command_help.show(parser,tokens):
+        return 0
+    for action in parser._actions:
+        if action.dest in {'reader_browser','probe_browser','check_session','verify','item','redownload'}:
+            action.help=argparse.SUPPRESS
     args = parser.parse_intermixed_args(tokens)
+    if (args.probe_browser or args.check_session) and args.link != ["doctor"]:
+        parser.error("Live diagnostic checks require linkget doctor.")
     if args.reader_browser is not None and args.link != ["config"]:
         parser.error("--reader-browser is saved with linkget config only.")
     if args.page_data:
@@ -604,7 +638,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         parser.error("Unknown command. Use linkget sites, linkget auth, linkget config, or linkget help. To download, paste a post URL.")
     args.link = " ".join(args.link)
     if args.link == "doctor":
-        code = doctor()
+        code = doctor(args)
         if args.folder is not None or args.photos or args.live_photos:
             if args.folder is True:
                 args.folder = Path.cwd()
@@ -940,7 +974,10 @@ def download(args, setup_results, records=None, media_consumer=None):
                     backend = rendered_page.selected_backend(choice, browser=args.browser)
                     if current:
                         journal.update(index, rendered_backend=backend)
-                    status("Browser", "Reading the post in " + ("Neo" if backend == "neo" else "Chrome (explicit selection)"))
+                    provenance = rendered_page.selection(backend=choice, browser=args.browser,
+                        backend_source='retained checkpoint' if (frozen and choice == frozen or getattr(args,'_journal',None)) and not (getattr(args,'_rendered_backend_override',False) or getattr(args,'_reader_browser_override',False)) else 'command option',
+                        browser_source='retained checkpoint' if getattr(args,'_journal',None) and not getattr(args,'_reader_browser_override',False) else 'command browser option')
+                    status("Browser", "Reading the post in " + ("Neo" if backend == "neo" else "Chrome") + " · " + provenance['source'])
                     browser_item = batch_interaction(lambda: read_douyin_browser(url, backend=backend))
                     attempt += 1
                     continue

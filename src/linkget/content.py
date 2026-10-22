@@ -91,6 +91,7 @@ def read_videos(args):
     if getattr(args, 'page_data', None) and site != 'Toutiao':
         raise ValueError('--page-data is supported only for Toutiao.')
     rendered_backend = getattr(args, 'rendered_backend', None)
+    reader_choice = rendered_page.selection(rendered_backend, browser=args.browser, backend_source='retained checkpoint' if getattr(args,'resume',False) and not getattr(args,'_rendered_backend_override',False) else 'command option', browser_source='retained checkpoint' if getattr(args,'resume',False) else 'command browser option') if (site == 'Toutiao' or public_article) and not getattr(args,'page_data',None) else None
     if rendered_backend is not None and site != 'Toutiao' and not public_article:
         raise ValueError('--rendered-backend applies only to Toutiao and scoped public articles.')
     if (site == 'Toutiao' or public_article) and not getattr(args, 'page_data', None):
@@ -338,6 +339,7 @@ def read_videos(args):
                     consume([local], [{}], DownloadResult(expected_count=1), url, site, {})
                 return 0
             if public_article:
+                cli.status('Page reader', reader_choice['browser']+' · '+reader_choice['source'], stream=sys.stderr)
                 item = rendered_page.read_public(url, backend=rendered_backend)
                 item = rendered_page.validate_public_page(item, url)
                 finish({**item, 'site': site, 'reference': source_reference(url),
@@ -350,6 +352,8 @@ def read_videos(args):
             if site == 'Toutiao':
                 if args.browser not in {'auto', 'chrome'} and not args.page_data or args.profile:
                     raise ValueError('Toutiao uses the selected rendered reader; --page-data accepts connector content without browser access.')
+                if not args.page_data:
+                    cli.status('Page reader', reader_choice['browser']+' · '+reader_choice['source'], stream=sys.stderr)
                 page = read_store.read_json(args.page_data) if args.page_data else toutiao.read_browser(url, backend=rendered_backend)
                 item = toutiao.validate_page(url, page)
                 if item['kind'] == 'article':
