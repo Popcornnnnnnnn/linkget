@@ -31,31 +31,42 @@ class ReaderBusy(BrowserUnavailable):
     """Another local read owns the serialized rendered-page reader."""
 
 
-def selected_backend(backend=None, *, browser="auto"):
-    """Resolve page automation independently of credential-source preferences."""
+def selection(backend=None, *, browser="auto", backend_source='command option'):
+    """Explain selection without reading sessions, probing browsers or saving."""
     if __package__:
         from . import accounts
     else:
         import accounts
-    if backend is not None:
-        value = backend
+    if browser == 'none':
+        value, source = 'none', 'browser disabled by command option'
+    elif backend is not None:
+        value, source = backend, backend_source
     elif browser != 'auto':
-        value = browser
+        value, source = browser, 'command browser option'
     elif 'LINKGET_RENDERED_BACKEND' in os.environ:
-        value = os.environ['LINKGET_RENDERED_BACKEND']
+        value, source = os.environ['LINKGET_RENDERED_BACKEND'], 'LINKGET_RENDERED_BACKEND'
     else:
         settings = accounts.preferences()
-        value = settings.get('reader_browser', 'auto')
+        value, source = settings.get('reader_browser', 'auto'), 'personal reader preference'
         if value == 'auto':
-            value = settings.get('browser') or accounts.default_browser()
-    if value not in ('chrome', 'neo'):
+            value, source = settings.get('browser'), 'saved browser choice'
+            if not value:
+                value, source = accounts.default_browser(), 'system default'
+    value = value if isinstance(value, str) else 'unknown'
+    return {'browser': value, 'source': source, 'supported': value in ('chrome','neo'),
+            'enabled': value != 'none'}
+
+
+def selected_backend(backend=None, *, browser="auto"):
+    choice = selection(backend, browser=browser)
+    if not choice['supported']:
         if backend is not None or 'LINKGET_RENDERED_BACKEND' in os.environ:
             raise ValueError('The rendered content backend must be chrome or neo.')
         raise BrowserUnavailable(
-            'Page reading has no supported browser controller for ' + str(value or 'the unknown system default') +
+            'Page reading has no supported browser controller for ' + choice['browser'] +
             '. Chrome and BrowserOS Neo are supported. Choose linkget config --reader-browser chrome '
             'or --reader-browser neo; no other browser was opened.')
-    return value
+    return choice['browser']
 
 
 def public_article_url(url):

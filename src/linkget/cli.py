@@ -394,7 +394,15 @@ def configure(args, parser):
         accounts.set_preferences(**changes)
     description = {"photos": "Photos", "cwd": "Current folder (where you run linkget)", "folder": setting.get("path")}[setting["mode"]]
     status("Default", description)
-    status("Page reader", accounts.preferences().get("reader_browser", "auto"))
+    preferences = accounts.preferences()
+    choice = rendered_page.selection()
+    status("Page preference", preferences.get("reader_browser", "auto"))
+    status("Effective reader", choice['browser'] + " · " + choice['source'] + ("" if choice['supported'] else " · controller unavailable"))
+    sources = preferences.get('sources', {})
+    names = sorted({value.split('/',1)[0].split(':',1)[0] for value in sources.values() if isinstance(value,str)})
+    status("Login sources", ", ".join(names) if names else preferences.get('browser') or "None configured")
+    status("Selection", "Page option > browser option > environment > personal reader > saved browser > system default")
+    status("Privacy", "Page controller and login sources are separate; no credentials were read.")
     if changed:
         status("Saved", "Used when no --folder or --photos is specified.")
     else:
@@ -940,7 +948,9 @@ def download(args, setup_results, records=None, media_consumer=None):
                     backend = rendered_page.selected_backend(choice, browser=args.browser)
                     if current:
                         journal.update(index, rendered_backend=backend)
-                    status("Browser", "Reading the post in " + ("Neo" if backend == "neo" else "Chrome (explicit selection)"))
+                    provenance = rendered_page.selection(backend=choice, browser=args.browser,
+                        backend_source='retained checkpoint' if frozen and choice == frozen and not (getattr(args,'_rendered_backend_override',False) or getattr(args,'_reader_browser_override',False)) else 'command option')
+                    status("Browser", "Reading the post in " + ("Neo" if backend == "neo" else "Chrome") + " · " + provenance['source'])
                     browser_item = batch_interaction(lambda: read_douyin_browser(url, backend=backend))
                     attempt += 1
                     continue
