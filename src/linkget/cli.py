@@ -337,7 +337,7 @@ def installation_hint(missing):
     return "Missing tools: " + ", ".join(missing) + "\nInstall: brew install " + " ".join(formulae) + "\nNeed Homebrew? Visit https://brew.sh/, then run linkget doctor."
 
 
-def doctor():
+def doctor(args=None):
     missing = []
     print("  Tools\n")
     for name in ("gallery-dl", "yt-dlp", "ffmpeg", "ffprobe", "deno"):
@@ -360,7 +360,15 @@ def doctor():
     if missing:
         print()
         status("Setup needed", installation_hint(missing), "33")
-    return 1 if missing else 0
+    if __package__:
+        from . import diagnostics
+    else:
+        import diagnostics
+    rows, diagnostic_code = diagnostics.inspect(args)
+    print()
+    for label, detail in rows:
+        status(label, detail)
+    return 1 if missing else diagnostic_code
 
 
 def configured_destination():
@@ -400,9 +408,9 @@ def configure(args, parser):
     status("Effective reader", choice['browser'] + " · " + choice['source'] + ("" if choice['supported'] else " · controller unavailable"))
     sources = preferences.get('sources', {})
     names = sorted({value.split('/',1)[0].split(':',1)[0] for value in sources.values() if isinstance(value,str)})
-    status("Login sources", ", ".join(names) if names else preferences.get('browser') or "None configured")
+    status("Login browser sources", ", ".join(names) if names else preferences.get('browser') or "None configured")
     status("Selection", "Page option > browser option > environment > personal reader > saved browser > system default")
-    status("Privacy", "Page controller and login sources are separate; no credentials were read.")
+    status("Privacy", "Login refresh sources and page controller are separate; saved login validity was not checked.")
     if changed:
         status("Saved", "Used when no --folder or --photos is specified.")
     else:
@@ -505,6 +513,8 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                                      help="save to FOLDER, or the current folder if omitted; overrides the default")
     destination_options.add_argument("--photos", action="store_true", help="save to Photos; overrides the default")
     parser.add_argument("--browser", choices=["auto", "none", "chrome", "firefox", "safari", "edge", "brave"], default="auto", help="auto: public first, then saved login and browser refresh if needed; none: public only; specify a browser to use its login")
+    parser.add_argument("--probe-browser", choices=["neo", "chrome"], help="doctor only: explicitly test one browser connection/control interface without opening a page")
+    parser.add_argument("--check-session", choices=list(accounts.SITES), help="doctor only: explicitly verify one saved website session; no browser export")
     parser.add_argument("--reader-browser", choices=["auto", "chrome", "neo"], help="config only: save the page-reading preference; auto follows saved browser choice or system default")
     parser.add_argument("--rendered-backend", choices=["chrome", "neo"], help="override the page-reading controller for this download; credentials are unchanged")
     parser.add_argument("--profile", help="path to the selected browser profile")
@@ -522,6 +532,8 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         if tokens[index] == "--folder" and tokens[index + 1].startswith(("http://", "https://")):
             tokens.insert(index + 1, ".")
     args = parser.parse_intermixed_args(tokens)
+    if (args.probe_browser or args.check_session) and args.link != ["doctor"]:
+        parser.error("Live diagnostic checks require linkget doctor.")
     if args.reader_browser is not None and args.link != ["config"]:
         parser.error("--reader-browser is saved with linkget config only.")
     if args.page_data:
@@ -612,7 +624,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         parser.error("Unknown command. Use linkget sites, linkget auth, linkget config, or linkget help. To download, paste a post URL.")
     args.link = " ".join(args.link)
     if args.link == "doctor":
-        code = doctor()
+        code = doctor(args)
         if args.folder is not None or args.photos or args.live_photos:
             if args.folder is True:
                 args.folder = Path.cwd()

@@ -83,7 +83,7 @@ class AccountTests(unittest.TestCase):
             browser.assert_not_called()
             for expected in ("Tools", "gallery-dl", "yt-dlp", "ffmpeg", "ffprobe"):
                 self.assertIn(expected, text)
-            for removed in ("Logins", "Connected", "instagram", "bilibili", "Browser", "Photos"):
+            for removed in ("Logins", "Connected", "Photos"):
                 self.assertNotIn(removed, text)
 
     def test_default_public_success_never_reads_browser_or_saved_login(self):
