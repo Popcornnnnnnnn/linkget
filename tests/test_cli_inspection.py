@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from linkget import accounts, cli, rendered_page, diagnostics
+from linkget import accounts, cli, rendered_page, diagnostics, build_info
 
 class InspectionTests(unittest.TestCase):
     def setUp(self):
@@ -85,3 +85,32 @@ class InspectionTests(unittest.TestCase):
             state,detail=diagnostics.browser_probe('chrome')
         self.assertEqual(state,'control responded');self.assertIn('not tested',detail)
         self.assertIn('javascript "1"',control.call_args.args[0][-1])
+
+    def test_build_identity_is_local_validated_and_whitelisted(self):
+        package=self.root/'keg/libexec/linkget';package.mkdir(parents=True)
+        info=package.parent.parent/'BUILD_IDENTITY.json'
+        data={'version':cli.VERSION,'homebrew_revision':7,'source_commit':'a'*40,'reviewed_head':'b'*40,'secret':'do-not-output'}
+        info.write_text(json.dumps(data))
+        with patch.object(build_info,'__file__',str(package/'build_info.py')):
+            actual=build_info.describe()
+            self.assertEqual(actual['build_revision'],7);self.assertEqual(actual['source_commit'],'a'*40)
+            self.assertNotIn('secret',actual)
+            data['version']='wrong';info.write_text(json.dumps(data))
+            self.assertIsNone(build_info.describe()['source_commit'])
+            info.unlink();info.symlink_to(self.root/'private')
+            self.assertIsNone(build_info.describe()['source_commit'])
+
+    def test_source_and_wheel_identity_have_honest_unknown_commit_and_short_version_stays(self):
+        for relative,expected in [('source/src/linkget','source tree'),('env/lib/python/site-packages/linkget','Python package')]:
+            package=self.root/relative;package.mkdir(parents=True)
+            if expected=='source tree':(package.parent.parent/'pyproject.toml').write_text('fixture')
+            with patch.object(build_info,'__file__',str(package/'build_info.py')):
+                data=build_info.describe()
+            self.assertEqual(data['installation'],expected);self.assertIsNone(data['source_commit'])
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out),self.assertRaises(SystemExit) as result:
+            cli.main(['--version'])
+        self.assertEqual(result.exception.code,0);self.assertEqual(out.getvalue().strip(),'linkget '+cli.VERSION)
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):self.assertEqual(cli.main(['version','--json']),0)
+        self.assertEqual(json.loads(out.getvalue())['version'],cli.VERSION)

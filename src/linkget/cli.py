@@ -434,6 +434,12 @@ def main(argv=None):
         except OSError:
             pass
     tokens = list(sys.argv[1:] if argv is None else argv)
+    if tokens and tokens[0] == 'version':
+        if __package__:
+            from .build_info import main as version_details
+        else:
+            from build_info import main as version_details
+        return version_details(tokens[1:])
     if tokens and tokens[0] == 'tasks':
         if __package__:
             from .tasks import main as task_status
@@ -452,6 +458,7 @@ def main(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Commands:
   help                 Show this help (also -h or --help)
+  version              Show detailed local build and source identity
   sites                List supported sites and media
   read URL --folder D  Read/transcribe in the background (read --help)
   read status [TASK]   Show background reading progress and results
