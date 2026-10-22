@@ -2,9 +2,11 @@
 
 ## Unreleased
 
+- Confirm asynchronous Neo tab closure with bounded read-only physical-identity observations; never replay the close, creation or content read.
+
 - Add a shared user page-reading preference (`config --reader-browser auto|neo|chrome`) across Douyin fallback, scoped reads, batches and workers. Auto follows saved/system browser choices, unsupported controllers fail clearly, and retained tasks preserve their choice unless explicitly overridden.
 
-- Route the automatic Douyin rendered fallback through the existing bounded Neo reader; preserve explicit Chrome, public-only and logout boundaries. Report incomplete browser state separately from unsupported websites.
+- Provide the bounded Neo controller for the user-selected Douyin rendered fallback; preserve explicit Chrome, public-only and logout boundaries. Report incomplete browser state separately from unsupported websites.
 
 - Integrate the local compact batch panel, continuous elapsed times, checked ASR chunk recovery, bounded Toutiao transfers, scoped rendered/Neo reader and Neo tab ownership fixes with the dev22 writer/checkpoint safeguards.
 - Bound batches to three workers by default and one task per known website, with a one-second gap; reuse the existing read-only policy for at most two temporary network/rate-limit retries before saving. Save, import and pairing failures are never automatically retried.

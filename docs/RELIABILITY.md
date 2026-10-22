@@ -1,4 +1,4 @@
-# Reliability in 0.2.1.dev22 (prerelease)
+# Reliability and recovery
 
 This release preserves the existing CLI while strengthening transfer recovery, diagnostics and file ownership. The boundaries below distinguish enabled behavior from preparatory interfaces.
 
@@ -13,10 +13,13 @@ and login guidance plus recovery failure messages redact credentials and signed
 URL query data. Native adapters retain their existing RuntimeError contracts,
 with bounded typed-cause inspection for disk/network evidence.
 
-`retry_delay` is a pure, opt-in read-only policy: at most two retries with 1/2-second
-backoff, respecting bounded Retry-After values. It does not run requests. No new
-automatic retry of an engine, download, save or Photos import has been enabled.
-Existing bounded site bootstrap/source alternatives remain separate behavior.
+`retry_delay` remains a pure policy helper. Batch downloads now use it for at most
+two eligible temporary network/rate-limit retries before saving, with 1/2-second
+backoff and bounded Retry-After values. Authentication, certificate, access, pairing,
+save and Photos import failures are not automatically retried. Default batches use
+three workers, at most one task per known website and a one-second site gap.
+Native resource checkpoints can reuse already verified transfers; existing site
+bootstrap/source alternatives remain separate behavior.
 
 ### 2. Per-resource native gallery recovery
 
