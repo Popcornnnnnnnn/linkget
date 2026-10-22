@@ -5,6 +5,7 @@ import os
 import re
 from pathlib import Path
 import shlex
+import time
 
 if __package__:
     from . import jobs, read_tasks, staging
@@ -97,7 +98,10 @@ def show_download(journal):
 
 def show_read(value):
     identifier = value['id']
-    print(f'Read {identifier}  {value["status"]}  ' + display(value.get('phase', value['kind'])))
+    state = value['status']
+    if state not in read_tasks.TERMINAL and not read_tasks.active(value) and (state == 'running' or time.time() - value.get('created', 0) > 10):
+        state = 'worker unconfirmed (recorded ' + state + ')'
+    print(f'Read {identifier}  {state}  ' + display(value.get('phase', value['kind'])))
     outputs = value.get('outputs', [])
     for path in outputs:
         print('Result: ' + display(path))
@@ -139,7 +143,7 @@ def main(argv):
             if args.task and path.stem != args.task:
                 continue
             try:
-                value = jobs.Journal.load(path.stem) if kind == 'download' else read_tasks.refresh(path.stem)
+                value = jobs.Journal.load(path.stem) if kind == 'download' else read_tasks.load(path.stem)
                 created = value.data.get('created_ns', 0) / 1e9 if kind == 'download' else value.get('created', 0)
                 entries.append((created, kind, value))
             except (OSError, ValueError, RuntimeError, KeyError, TypeError):

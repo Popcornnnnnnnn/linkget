@@ -121,10 +121,12 @@ class TaskViewTests(unittest.TestCase):
                 reads.mkdir()
                 (reads/(value['id']+'.json')).write_text('{}')
                 output = io.StringIO()
-                with patch.object(read_tasks, 'refresh', return_value=value), contextlib.redirect_stdout(output):
+                with patch.object(read_tasks, 'load', return_value=value), contextlib.redirect_stdout(output):
                     self.assertEqual(tasks.main([]), 0)
                 text=output.getvalue()
                 self.assertIn('interrupted (recorded running',text); self.assertIn('queued',text)
+                self.assertIn('worker unconfirmed',text)
+                self.assertEqual(value['status'], 'queued')
                 self.assertIn('123 B',text); self.assertIn('linkget retry',text)
                 self.assertNotIn('private-token',text)
                 self.assertNotIn('https://',text)
