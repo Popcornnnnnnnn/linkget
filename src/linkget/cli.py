@@ -668,12 +668,15 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
 def restore_options(args, journal, tokens):
     saved = journal.data["options"]
     args._rendered_backend_override = any(token.split("=", 1)[0] == "--rendered-backend" for token in tokens)
+    args._reader_browser_override = any(token.split("=", 1)[0] == "--browser" for token in tokens)
     for name in jobs.OPTIONS:
         flags = {"--" + name.replace("_", "-")}
         if name == "folder":
             flags.add("--photos")
         if not any(token.split("=", 1)[0] in flags for token in tokens) and name in saved:
             setattr(args, name, saved[name])
+    if args._reader_browser_override and not args._rendered_backend_override:
+        args.rendered_backend = None
     if args.photos:
         args.folder = None
     elif args.folder is True:
@@ -932,7 +935,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                     tried_douyin_page = True
                     frozen = journal.data["items"][index - 1].get("rendered_backend") if current else None
                     choice = getattr(args, "rendered_backend", None)
-                    if args.browser == "auto" and frozen and not getattr(args, "_rendered_backend_override", False):
+                    if frozen and not (getattr(args, "_rendered_backend_override", False) or getattr(args, "_reader_browser_override", False)):
                         choice = frozen
                     backend = rendered_page.selected_backend(choice, browser=args.browser)
                     if current:

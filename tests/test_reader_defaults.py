@@ -71,7 +71,7 @@ class DefaultReaderTests(unittest.TestCase):
         journal=jobs.select(None)
         self.assertEqual(journal.data['items'][0]['rendered_backend'],'chrome')
         accounts.set_preferences(reader_browser='chrome')
-        for flags,expected in [([], 'chrome'),(['--rendered-backend','neo'],'neo'),([], 'neo')]:
+        for flags,expected in [([], 'chrome'),(['--rendered-backend','neo'],'neo'),([], 'neo'),(['--browser','chrome'],'chrome')]:
             with patch.object(cli,'download_douyin',side_effect=douyin.MediaUnavailable('fixture')),patch.object(accounts,'copy_saved',return_value=False),patch.object(cli,'read_douyin_browser',side_effect=RuntimeError('fixture')) as reader,contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(cli.main(['retry',journal.identifier,*flags]),1)
                 reader.assert_called_once_with('https://www.douyin.com/video/123',backend=expected)
