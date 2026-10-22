@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from linkget import accounts, cli, rendered_page, diagnostics, build_info
+from linkget import accounts, cli, rendered_page, diagnostics, build_info, jobs, ownership, retention, staging, tasks
 
 class InspectionTests(unittest.TestCase):
     def setUp(self):
@@ -76,15 +76,26 @@ class InspectionTests(unittest.TestCase):
         client.initialize.assert_called_once();client.call.assert_not_called()
         self.assertEqual(state,'connected');self.assertIn('not tested',detail)
 
-    def test_chrome_probe_requires_nonprompt_permission_confirmation(self):
-        with patch.object(diagnostics,'chrome_automation_access',return_value='unknown'),patch.object(diagnostics.subprocess,'run') as control:
-            state,detail=diagnostics.browser_probe('chrome')
-        self.assertEqual(state,'not checked');control.assert_not_called()
-        from subprocess import CompletedProcess
-        with patch.object(diagnostics,'chrome_automation_access',return_value='granted'),patch.object(diagnostics.subprocess,'run',return_value=CompletedProcess([],0,'1','')) as control:
-            state,detail=diagnostics.browser_probe('chrome')
-        self.assertEqual(state,'control responded');self.assertIn('not tested',detail)
-        self.assertIn('javascript "1"',control.call_args.args[0][-1])
+    def test_chrome_probe_never_sends_events_even_when_os_access_is_granted(self):
+        for access,expected in [('unknown','not checked'),('granted','OS access checked')]:
+            with patch.object(diagnostics,'chrome_automation_access',return_value=access),patch.object(cli.subprocess,'run',side_effect=AssertionError('no control sender')):
+                state,detail=diagnostics.browser_probe('chrome')
+            self.assertEqual(state,expected);self.assertIn('no ',detail)
+
+    def test_mac_automation_descriptor_matches_sdk_packed_abi(self):
+        import ctypes
+        with patch.object(diagnostics.sys,'platform','darwin'),patch.object(diagnostics.ctypes,'CDLL') as load:
+            api=load.return_value
+            def create(code,target,size,descriptor):
+                self.assertEqual(ctypes.sizeof(descriptor._obj),12)
+                self.assertEqual(type(descriptor._obj).dataHandle.offset,4)
+                return 0
+            api.AECreateDesc.side_effect=create
+            api.AEDeterminePermissionToAutomateTarget.return_value=0
+            self.assertEqual(diagnostics.chrome_automation_access(),'granted')
+            self.assertIs(api.AECreateDesc.restype,ctypes.c_int16)
+            self.assertIs(api.AEDisposeDesc.restype,ctypes.c_int16)
+            self.assertFalse(api.AEDeterminePermissionToAutomateTarget.call_args.args[-1])
 
     def test_build_identity_is_local_validated_and_whitelisted(self):
         package=self.root/'keg/libexec/linkget';package.mkdir(parents=True)
@@ -124,3 +135,68 @@ class InspectionTests(unittest.TestCase):
         out=io.StringIO()
         with contextlib.redirect_stdout(out):self.assertEqual(cli.main(['help','doctor']),0)
         self.assertIn('--check-session',out.getvalue())
+
+    def retained_journal(self):
+        from types import SimpleNamespace
+        stage=tempfile.TemporaryDirectory(prefix='linkget-');self.addCleanup(stage.cleanup);root=Path(stage.name).resolve()
+        records=[]
+        for name in ['working.tmp','media.jpg']:
+            with ownership.Writer(root/name,register=True) as writer:writer.write(b'original fixture bytes')
+            records.append(writer.proof.record())
+        destination=self.root/'saved';destination.mkdir()
+        copy=destination/'copy.tmp';copy.write_bytes(b'original fixture bytes')
+        journal=jobs.Journal.create(['https://example.invalid/private?token=secret'],SimpleNamespace(folder=str(destination)))
+        journal.update(1,status='completed',stage=str(root),stage_identity=staging.identity(root),owned_files=records,
+            destination_files=[ownership.FileProof.observe(copy).record()])
+        with jobs.item(journal,1):staging.remember(root,staging.identity(root))
+        return journal,root
+
+    def test_preview_uses_existing_proofs_and_never_mutates_or_candidates_media(self):
+        journal,root=self.retained_journal()
+        before={p: (p.read_bytes(),p.stat().st_mtime_ns) for p in [*root.iterdir(),journal.path]}
+        with patch.object(ownership.FileProof,'remove',side_effect=AssertionError('delete')),patch.object(ownership.FileProof,'observe',side_effect=AssertionError('new ownership')):
+            entries=retention.preview(journal,1)
+        by_name={Path(e['path']).name:e for e in entries}
+        self.assertEqual(by_name['working.tmp']['classification'],'candidate')
+        self.assertEqual(by_name['media.jpg']['classification'],'must keep')
+        self.assertEqual(before,{p:(p.read_bytes(),p.stat().st_mtime_ns) for p in before})
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):self.assertEqual(tasks.main([journal.identifier,'--cleanup-preview']),0)
+        self.assertIn('Read-only cleanup preview',out.getvalue());self.assertIn('Retained because:',out.getvalue())
+        self.assertNotIn('token=secret',out.getvalue())
+
+    def test_preview_preserves_failed_photos_legacy_changed_and_shared_stages(self):
+        journal,root=self.retained_journal()
+        for changes,expected in [({'status':'failed'},'must keep'),({'receipt':{'staged':[]}},'must keep'),({'stage_snapshots':{}},'unknown'),({'protected_stages':[str(root)]},'must keep')]:
+            original=dict(journal.data['items'][0]);journal.data['items'][0].update(changes)
+            self.assertTrue(all(e['classification']==expected for e in retention.preview(journal,1)))
+            journal.data['items'][0]=original
+        (root/'working.tmp').write_bytes(b'changed')
+        result=retention.preview(journal,1)
+        self.assertTrue(all(e['classification']!='candidate' for e in result))
+        self.assertTrue(any('Changed' in e['reason'] for e in result))
+
+    def test_preview_requires_a_single_task_and_read_results_are_never_candidates(self):
+        with contextlib.redirect_stderr(io.StringIO()),self.assertRaises(SystemExit) as error:
+            tasks.main(['--cleanup-preview'])
+        self.assertEqual(error.exception.code,2)
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):tasks.show_read({'id':'fixture','kind':'read','status':'completed','outputs':[str(self.root)]},preview=True)
+        self.assertIn('must keep',out.getvalue())
+
+    def test_preview_excludes_shared_stages_and_configured_profiles(self):
+        from types import SimpleNamespace
+        journal,root=self.retained_journal()
+        other=jobs.Journal.create(['https://example.invalid/other'],SimpleNamespace(folder=str(self.root/'elsewhere')))
+        other.update(1,stage=str(root))
+        self.assertTrue(all(e['classification']=='must keep' for e in retention.preview(journal,1)))
+        other.update(1,stage=None)
+        accounts.set_preferences(profile=str(root/'browser-profile'))
+        self.assertTrue(all(e['classification']=='must keep' for e in retention.preview(journal,1)))
+
+    def test_preview_rejects_copy_proofs_outside_destination_without_reading_them(self):
+        journal,root=self.retained_journal()
+        journal.data['options']['folder']=str(self.root/'different-destination')
+        with patch.object(ownership.FileProof,'verify',side_effect=AssertionError('out-of-scope copy read')):
+            entries=retention.preview(journal,1)
+        self.assertTrue(all(e['classification']=='unknown' for e in entries))

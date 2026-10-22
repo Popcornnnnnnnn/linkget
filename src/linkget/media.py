@@ -25,6 +25,8 @@ class DownloadResult:
     source_transport: dict = field(default_factory=dict)
 
 
+VIDEO = {".mp4", ".mov", ".m4v"}
+MEDIA = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".avif", ".tif", ".tiff"} | VIDEO
 AUDIO = {'.m4a', '.mp3', '.aac', '.opus', '.ogg', '.wav', '.flac', '.webm'}
 
 

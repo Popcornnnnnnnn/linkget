@@ -1,6 +1,5 @@
 """Read-only diagnostics; live checks require one explicit target."""
 from datetime import datetime, timezone
-import subprocess
 import os
 import sys
 import ctypes
@@ -19,12 +18,16 @@ def chrome_automation_access():
     if sys.platform != 'darwin':
         return 'unavailable'
     class Descriptor(ctypes.Structure):
+        # The macOS SDK AEDataModel.h uses pragma pack(push,2).
+        _layout_='ms'
+        _pack_=2
         _fields_=[('descriptorType',ctypes.c_uint32),('dataHandle',ctypes.c_void_p)]
     try:
         library=ctypes.CDLL('/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices')
         library.AECreateDesc.argtypes=[ctypes.c_uint32,ctypes.c_void_p,ctypes.c_long,ctypes.POINTER(Descriptor)]
-        library.AECreateDesc.restype=ctypes.c_int32
+        library.AECreateDesc.restype=ctypes.c_int16
         library.AEDisposeDesc.argtypes=[ctypes.POINTER(Descriptor)]
+        library.AEDisposeDesc.restype=ctypes.c_int16
         library.AEDeterminePermissionToAutomateTarget.argtypes=[ctypes.POINTER(Descriptor),ctypes.c_uint32,ctypes.c_uint32,ctypes.c_ubyte]
         library.AEDeterminePermissionToAutomateTarget.restype=ctypes.c_int32
         descriptor=Descriptor();target=b'com.google.Chrome'
@@ -34,7 +37,7 @@ def chrome_automation_access():
             result=library.AEDeterminePermissionToAutomateTarget(ctypes.byref(descriptor),int.from_bytes(b'****','big'),int.from_bytes(b'****','big'),False)
         finally:
             library.AEDisposeDesc(ctypes.byref(descriptor))
-        return 'granted' if result==0 else 'not granted' if result in {-1743,-1744} else 'unknown'
+        return 'granted' if result==0 else 'not granted' if result in {-1743,-1744} else 'target not running' if result==-600 else 'unknown'
     except (OSError,AttributeError,TypeError,ctypes.ArgumentError):
         return 'unknown'
 
@@ -54,22 +57,10 @@ def browser_probe(name):
             return 'unavailable', redact(error)+' Check the existing Neo MCP connection; no Chrome fallback was attempted.'
     if name == 'chrome':
         access=chrome_automation_access()
-        if access!='granted':
-            return 'not checked', 'Existing Chrome automation access is '+access+'; no consent request or control script was sent.'
-        script = '''if application "Google Chrome" is not running then return "not_running"
-tell application "Google Chrome"
- if (count windows) is 0 then return "no_window"
- return execute active tab of front window javascript "1"
-end tell'''
-        try:
-            result = subprocess.run(['osascript','-e',script],capture_output=True,text=True,timeout=8)
-            if result.returncode == 0 and result.stdout.strip() == '1':
-                return 'control responded', 'Constant JavaScript returned; article/site access and owned-tab lifecycle not tested.'
-            if result.returncode == 0:
-                return 'not ready', 'Chrome reports '+result.stdout.strip()+'. Open the existing browser/window before an explicit check.'
-            return 'control failed', 'The existing Chrome interface failed. Inspect Chrome and retry this check; permissions were not changed.'
-        except (OSError, subprocess.SubprocessError):
-            return 'control unavailable', 'Chrome interface could not run; check the local macOS browser interface. No permission cause was inferred.'
+        if access=='granted':
+            return 'OS access checked', ('The OS reports automation access for this CLI process. '
+                'The separate Chrome controller sender, JavaScript and site access were not exercised; no event or permission request was sent.')
+        return 'not checked', 'Existing CLI automation access is '+access+'; no consent request or control script was sent.'
     return 'unsupported controller', 'Only Chrome and Neo have page controllers; choose config --reader-browser chrome or neo.'
 
 
@@ -101,7 +92,7 @@ def inspect(args=None):
         else:
             state,detail=browser_probe(probe)
             rows.append((probe+' check',state+' · '+detail))
-            code=int(state not in {'connected','control responded'})
+            code=int(state not in {'connected','OS access checked'})
     site=getattr(args,'check_session',None)
     if site:
         domain=accounts.SITES[site]

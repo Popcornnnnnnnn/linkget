@@ -8,11 +8,11 @@ import shlex
 import time
 
 if __package__:
-    from . import jobs, read_tasks, staging
+    from . import jobs, read_tasks, staging, retention
     from .failures import redact
     from .output import format_size
 else:
-    import jobs, read_tasks, staging
+    import jobs, read_tasks, staging, retention
     from failures import redact
     from output import format_size
 
@@ -61,7 +61,7 @@ def claimed(journal):
         os.close(fd)
 
 
-def show_download(journal):
+def show_download(journal, *, preview=False):
     active = claimed(journal)
     rows = journal.data['items']
     complete = sum(row['status'] == 'completed' for row in rows)
@@ -84,9 +84,15 @@ def show_download(journal):
         receipt = row.get('receipt') or {}
         paths.extend(resource['path'] for resource in receipt.get('staged', []) if isinstance(resource, dict) and isinstance(resource.get('path'), str))
         if paths:
+            for reason in retention.reasons(row,active):
+                print('  Retained because: '+display(reason))
             print('  Retained size (observed): ' + retained_size(paths))
             for path in dict.fromkeys(paths):
                 print('  Files: ' + display(path))
+        if preview:
+            for entry in retention.preview(journal,index,active):
+                print('  Preview '+entry['classification']+': '+display(entry['path'])+' · '+retained_size([entry['path']]))
+                print('  Reason: '+display(entry['reason']))
         if row.get('receipt'):
             print(f'  Next: linkget recover {journal.identifier} --item {index} --verify')
         elif row.get('ready'):
@@ -96,7 +102,7 @@ def show_download(journal):
     print('')
 
 
-def show_read(value):
+def show_read(value, *, preview=False):
     identifier = value['id']
     state = value['status']
     if state not in read_tasks.TERMINAL and not read_tasks.active(value) and (state == 'running' or time.time() - value.get('created', 0) > 10):
@@ -111,6 +117,9 @@ def show_read(value):
         retained.append(source)
         print('Source/checkpoints: ' + display(source))
     if retained:
+        print('Retained because: User results and retry/checkpoints are preserved; reading files are not cleanup candidates.')
+        if preview:
+            print('Preview must keep: All read outputs, source media and checkpoints; no deletion or ownership inference.')
         print('Retained size (observed): ' + retained_size(retained))
     if value['status'] in {'failed', 'interrupted', 'cancelled'}:
         print('Failure: ' + display(value.get('failure') or 'No structured failure recorded; inspect the private log.'))
@@ -130,9 +139,12 @@ def show_read(value):
 def main(argv):
     parser = argparse.ArgumentParser(prog='linkget tasks', description='View download and read tasks without retrying, saving or removing files. No source links or share tokens are displayed.')
     parser.add_argument('task', nargs='?')
+    parser.add_argument('--cleanup-preview',action='store_true',help='Read-only preview for one task; media/results/profile/installers are excluded. No deletion.')
     parser.add_argument('--kind', choices=['download', 'read'])
     parser.add_argument('--limit', type=int, default=20, help='Latest tasks across both kinds; default: 20')
     args = parser.parse_args(argv)
+    if args.cleanup_preview and not args.task:
+        parser.error('Select one task: linkget tasks TASK --cleanup-preview.')
     if not 1 <= args.limit <= 1000:
         parser.error('--limit must be between 1 and 1000.')
     entries = []
@@ -148,8 +160,10 @@ def main(argv):
                 entries.append((created, kind, value))
             except (OSError, ValueError, RuntimeError, KeyError, TypeError):
                 print(f'Unreadable {kind} receipt; retained files were not touched.')
+    if args.cleanup_preview:
+        print('Read-only cleanup preview: no files or receipts are changed. Candidates are observations, not new ownership or deletion authority.')
     for _, kind, value in sorted(entries, key=lambda row: row[0], reverse=True)[:args.limit]:
-        (show_download if kind == 'download' else show_read)(value)
+        (show_download if kind == 'download' else show_read)(value,preview=args.cleanup_preview)
     if not entries:
         print('No matching tasks.' if args.task else 'No tasks.')
     return int(bool(args.task) and not entries)

@@ -39,6 +39,7 @@ def show(parser,tokens):
     elif command=='batch':focused.add_argument('links',nargs='*',metavar='LINK')
     elif command in {'auth','logout'}:focused.add_argument('site',nargs='?' if command=='auth' else None,metavar='SITE')
     elif command=='compare':focused.add_argument('reports',nargs=2,metavar='REPORT')
+    destination=focused.add_mutually_exclusive_group() if {'folder','photos'}<=options else None
     for action in parser._actions:
         if action.dest in options:
             selected=copy(action)
@@ -52,6 +53,6 @@ def show(parser,tokens):
                           'browser':'Preview selection; none disables live diagnostic checks.'},
                 'auth':{'browser':'Select a login source for an explicit connection; none prevents browser export.'}}
             selected.help=overrides.get(command,{}).get(action.dest,action.help)
-            focused._add_action(selected)
+            (destination if destination is not None and action.dest in {'folder','photos'} else focused)._add_action(selected)
     focused.print_help()
     return True

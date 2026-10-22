@@ -31,7 +31,7 @@ if __package__:
     from .kuaishou import download as download_kuaishou, BrowserRequired as KuaishouBrowserRequired
     from .pixiv import download as download_pixiv, BrowserRequired as PixivBrowserRequired
     from .weibo import prefer_clean_images
-    from .media import DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
+    from .media import VIDEO, MEDIA, DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
     from .live import prepare_pairs, save_pairs
 else:  # Homebrew launches this file directly.
     import accounts, jobs, destinations, preflight, recovery, staging, transfers, ownership, rendered_page
@@ -51,11 +51,9 @@ else:  # Homebrew launches this file directly.
     from kuaishou import download as download_kuaishou, BrowserRequired as KuaishouBrowserRequired
     from pixiv import download as download_pixiv, BrowserRequired as PixivBrowserRequired
     from weibo import prefer_clean_images
-    from media import DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
+    from media import VIDEO, MEDIA, DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
     from live import prepare_pairs, save_pairs
 
-VIDEO = {".mp4", ".mov", ".m4v"}
-MEDIA = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".avif", ".tif", ".tiff"} | VIDEO
 SITES = "Instagram, X/Twitter, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, Weibo, Reddit, Lofter, Pixiv and Pinterest posts; YouTube videos and Shorts"
 
 
