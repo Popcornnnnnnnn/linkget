@@ -66,12 +66,12 @@ class DefaultReaderTests(unittest.TestCase):
         from linkget import douyin, jobs
         folder=self.root/'download'
         with patch.object(cli,'download_douyin',side_effect=douyin.MediaUnavailable('fixture')),patch.object(accounts,'copy_saved',return_value=False),patch.object(cli,'read_douyin_browser',side_effect=RuntimeError('fixture')) as reader,contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(cli.main(['https://www.douyin.com/video/123','--folder',str(folder)]),1)
-            reader.assert_called_once_with('https://www.douyin.com/video/123',backend='neo')
+            self.assertEqual(cli.main(['https://www.douyin.com/video/123','--folder',str(folder),'--rendered-backend','chrome']),1)
+            reader.assert_called_once_with('https://www.douyin.com/video/123',backend='chrome')
         journal=jobs.select(None)
-        self.assertEqual(journal.data['items'][0]['rendered_backend'],'neo')
+        self.assertEqual(journal.data['items'][0]['rendered_backend'],'chrome')
         accounts.set_preferences(reader_browser='chrome')
-        for flags,expected in [([], 'neo'),(['--rendered-backend','chrome'],'chrome')]:
+        for flags,expected in [([], 'chrome'),(['--rendered-backend','neo'],'neo'),([], 'neo')]:
             with patch.object(cli,'download_douyin',side_effect=douyin.MediaUnavailable('fixture')),patch.object(accounts,'copy_saved',return_value=False),patch.object(cli,'read_douyin_browser',side_effect=RuntimeError('fixture')) as reader,contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(cli.main(['retry',journal.identifier,*flags]),1)
                 reader.assert_called_once_with('https://www.douyin.com/video/123',backend=expected)

@@ -667,6 +667,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
 
 def restore_options(args, journal, tokens):
     saved = journal.data["options"]
+    args._rendered_backend_override = any(token.split("=", 1)[0] == "--rendered-backend" for token in tokens)
     for name in jobs.OPTIONS:
         flags = {"--" + name.replace("_", "-")}
         if name == "folder":
@@ -931,7 +932,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                     tried_douyin_page = True
                     frozen = journal.data["items"][index - 1].get("rendered_backend") if current else None
                     choice = getattr(args, "rendered_backend", None)
-                    if choice is None and args.browser == "auto":
+                    if args.browser == "auto" and frozen and not getattr(args, "_rendered_backend_override", False):
                         choice = frozen
                     backend = rendered_page.selected_backend(choice, browser=args.browser)
                     if current:
