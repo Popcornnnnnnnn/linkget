@@ -427,6 +427,9 @@ def retry_delay(failure, attempt, *, operation, retry_after=None):
             or not failure.retryable or operation != 'read'
             or type(attempt) is not int or attempt not in {1, 2}):
         return None
+    # Certificate/configuration errors need intervention, not another request.
+    if re.search(r'certificate_verify_failed|certificate verify failed|certificate has expired|self.signed certificate', failure.message, re.I):
+        return None
     delay = float(2 ** (attempt - 1))
     if retry_after is not None:
         if type(retry_after) is bool:

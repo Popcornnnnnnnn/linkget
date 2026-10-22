@@ -12,13 +12,13 @@ import uuid
 from urllib.parse import parse_qs, urlsplit
 
 if __package__:
-    from . import toutiao, read_store, read_formats, read_asr, read_ocr, read_tasks
+    from . import toutiao, rendered_page, read_store, read_formats, read_asr, read_ocr, read_tasks
     from .engines import route
     from .links import normalize_link
     from .media import reference, AUDIO, DownloadResult
     from .preflight import writable_directory
 else:
-    import toutiao, read_store, read_formats, read_asr, read_ocr, read_tasks
+    import toutiao, rendered_page, read_store, read_formats, read_asr, read_ocr, read_tasks
     from engines import route
     from links import normalize_link
     from media import reference, AUDIO, DownloadResult
@@ -63,7 +63,7 @@ def read_videos(args):
         vad_model = vad_model.expanduser().resolve()
     if not 30 <= chunk_seconds <= 1800:
         raise ValueError('Chunk length must be between 30 and 1800 seconds.')
-    local = None
+    local, public_article = None, False
     if not re.search(r'https?://', args.url):
         local = Path(args.url).expanduser().resolve()
         retained = getattr(args, 'resume', False) and getattr(args, 'folder', None) and (args.folder / '.read-inputs.json').is_file()
@@ -75,6 +75,10 @@ def read_videos(args):
         candidate = supplied[0].rstrip('.,;!）)') if len(supplied) == 1 else args.url
         if urlsplit(candidate).hostname in toutiao.HOSTS:
             url, site = toutiao.canonical(candidate), 'Toutiao'
+        elif urlsplit(candidate).hostname in {'www.raspberrypi.com', 'zhuanlan.zhihu.com'}:
+            url, _ = rendered_page.public_article_url(candidate)
+            site = 'Raspberry Pi' if url.startswith('https://www.raspberrypi.com/') else 'Zhihu'
+            public_article = True
         else:
             url = normalize_link(args.url)
             site, _, domain = route(url)
@@ -86,6 +90,14 @@ def read_videos(args):
                 raise ValueError('Read requires one LOFTER post, not a profile.')
     if getattr(args, 'page_data', None) and site != 'Toutiao':
         raise ValueError('--page-data is supported only for Toutiao.')
+    rendered_backend = getattr(args, 'rendered_backend', None)
+    if rendered_backend is not None and site != 'Toutiao' and not public_article:
+        raise ValueError('--rendered-backend applies only to Toutiao and scoped public articles.')
+    if site == 'Toutiao' or public_article:
+        rendered_backend = rendered_page.selected_backend(rendered_backend)
+    if public_article and (args.browser not in {'auto', 'chrome'} or args.profile):
+        raise ValueError('This scoped article uses the selected rendered reader; --browser none disables '
+                         'browser access, and another credential profile is not supported.')
     if site == 'Toutiao' and not getattr(args, 'language', None) and not config.get('language'):
         language = 'zh'
     folder_option = getattr(args, 'folder', None)
@@ -106,6 +118,7 @@ def read_videos(args):
                    'formats': ','.join(formats), 'subtitles': subtitle_mode, 'ocr': ocr,
                    'chunk_seconds': chunk_seconds, 'vad_model': str(vad_model) if vad_model else None,
                    'browser': args.browser, 'profile': args.profile,
+                   'rendered_backend': rendered_backend,
                    'keep_media': args.keep_media, 'page_data': str(args.page_data) if getattr(args, 'page_data', None) else None}
         if resume:
             job = read_store.read_json(folder / '.read-job.json')
@@ -127,6 +140,8 @@ def read_videos(args):
             source_key = str(local) + ':' + identity
         else:
             source_key = source_reference(url)
+        if rendered_backend == 'neo':
+            source_key += ':rendered-reader:neo'
         key = read_store.cache_key(source_key, language, model, subtitle_mode, ocr, chunk_seconds, vad_model)
         completed = False
 
@@ -143,6 +158,14 @@ def read_videos(args):
             completed = True
             print(json.dumps({'status': 'content_ready', 'content': str(output), 'send_enabled': False}, ensure_ascii=False))
 
+        def content_metadata(metadata):
+            fields = read_formats.source_metadata(metadata or {})
+            if site == 'Toutiao':
+                for name in ('duration', 'duration_basis', 'media_binding', 'media_selection',
+                             'transfer_evidence', 'paired_media_evidence', 'reader_backend', 'browser_controller', 'article_dom_proof'):
+                    if name in (metadata or {}): fields[name] = metadata[name]
+            return fields
+
         def video_result(items, metadata=None, evidence=None, image_text=None):
             result = {'reference': local.name if local else source_reference(url), 'site': site,
                       'kind': 'video' if items else 'post', 'acquisition': 'local_file' if local else 'existing_media_downloader',
@@ -153,7 +176,7 @@ def read_videos(args):
                       'limitations': ['Source text and speech recognition may contain errors; visual-only events are not described.']}
             if site == 'Toutiao':
                 result['url'] = url
-            result.update(read_formats.source_metadata(metadata or {}))
+            result.update(content_metadata(metadata))
             if image_text:
                 result['images'] = image_text
                 image_body = '\n\n'.join(i['text'] for i in image_text if i.get('text'))
@@ -218,9 +241,10 @@ def read_videos(args):
                             shutil.copyfile(path, dest)
                         image_entries.append({'path': str(dest.relative_to(folder)), 'sha256': read_store.digest(dest)})
                 read_store.write_json(inputs_path, {'audio': entries, 'images': image_entries,
-                                                    'metadata': read_formats.source_metadata(metadata),
+                                                    'metadata': content_metadata(metadata),
                                                     'duration': metadata.get('duration'), 'motion_count': len(motion),
-                                                    'image_count': len(image_files), 'expected_count': evidence.expected_count})
+                                                    'image_count': len(image_files), 'expected_count': evidence.expected_count,
+                                                    'source_transport': evidence.source_transport})
             items = []
             for index, (path, record) in enumerate(audio_files, 1):
                 working = media_root / f'video-{index:03d}'
@@ -235,9 +259,37 @@ def read_videos(args):
                     asr_options['chunk_seconds'] = chunk_seconds
                 if vad_model:
                     asr_options['vad_model'] = vad_model
-                recognized = toutiao.transcribe(video, working, model, expected, **asr_options)
+                recognized = {**toutiao.transcribe(video, working, model, expected, **asr_options)}
                 stored = read_store.read_json(inputs_path)
-                original_name = stored['audio'][index - 1]['original_name']
+                retained = stored['audio'][index - 1]
+                original_name = retained['original_name']
+                transport = stored.get('source_transport') or {}
+                if transport:
+                    transfer = transport.get('files', {}).get(original_name)
+                    actual_sha = read_store.digest(video)
+                    actual_size = video.stat().st_size
+                    if (transport.get('schema') != 'linkget.xiaohongshu.transport.v1' or
+                            not isinstance(transfer, dict) or transfer.get('file') != original_name or
+                            transfer.get('batch_id') != transport.get('batch_id') or
+                            transfer.get('note_id') != transport.get('note_id') or
+                            transfer.get('sha256') != actual_sha or
+                            transfer.get('actual_bytes') != actual_size or retained['sha256'] != actual_sha or
+                            record.get('sha256') != actual_sha or record.get('bytes') != actual_size):
+                        raise ValueError('Downloaded source transport does not match the recognized file.')
+                    duration = float(record['duration'])
+                    source_bound = (transport.get('note_id') == transport.get('requested_note_id') and
+                                    bool(transfer.get('final_host')) and bool(transfer.get('final_url_sha256')))
+                    complete = (type(transfer.get('expected_bytes')) is int and
+                                transfer['expected_bytes'] == actual_size and actual_size > 0 and
+                                transfer.get('http_status') == 200 and transfer.get('range_present') is False)
+                    recognized['media_evidence'] = {**recognized.get('media_evidence', {}),
+                        'transfer': transfer, 'full_video_download': complete,
+                        'source_binding_verified': source_bound,
+                        'probe_evidence': {'duration': duration, 'audio': record['audio'],
+                                           'probe_ok': record['probe_ok'], 'sha256': actual_sha,
+                                           'bytes': actual_size}}
+                    recognized.update(source_file_sha256=actual_sha, source_file_bytes=actual_size,
+                                      download_batch_id=transport['batch_id'])
                 items.append({'index': index, 'source_file': original_name, **recognized})
             image_text = []
             if image_files and (ocr or not audio_files):
@@ -248,6 +300,8 @@ def read_videos(args):
             stored = read_store.read_json(inputs_path)
             result.update(ignored_image_count=stored['image_count'] if audio_files and not ocr else 0,
                           ignored_motion_count=stored['motion_count'])
+            if stored.get('source_transport'):
+                result['source_transport'] = stored['source_transport']
             finish(result)
 
         try:
@@ -269,7 +323,8 @@ def read_videos(args):
                 meta = inputs['metadata']
                 if inputs.get('duration') is not None:
                     meta['duration'] = inputs['duration']
-                evidence = DownloadResult(expected_count=inputs.get('expected_count'))
+                evidence = DownloadResult(expected_count=inputs.get('expected_count'),
+                                          source_transport=inputs.get('source_transport') or {})
                 consume(files, records, evidence, url, site, meta)
                 return 0
             if local:
@@ -280,10 +335,20 @@ def read_videos(args):
                 else:
                     consume([local], [{}], DownloadResult(expected_count=1), url, site, {})
                 return 0
+            if public_article:
+                item = rendered_page.read_public(url, backend=rendered_backend)
+                item = rendered_page.validate_public_page(item, url)
+                finish({**item, 'site': site, 'reference': source_reference(url),
+                        'acquisition': 'browseros_neo_rendered_page' if rendered_backend == 'neo' else 'chrome_rendered_page',
+                        'content_basis': 'complete_browseros_neo_scoped_article_dom' if rendered_backend == 'neo' else 'complete_daily_chrome_scoped_article_dom',
+                        'read_scope': 'scoped_public_article_rendered_text_only',
+                        'limitations': ['Only this scoped article DOM was read; HTTP transfer completeness, '
+                                        'linked documents and embedded media were not verified.']})
+                return 0
             if site == 'Toutiao':
                 if args.browser not in {'auto', 'chrome'} and not args.page_data or args.profile:
-                    raise ValueError('Toutiao reads daily Chrome; --page-data accepts connector content without browser access.')
-                page = read_store.read_json(args.page_data) if args.page_data else toutiao.read_browser(url)
+                    raise ValueError('Toutiao uses the selected rendered reader; --page-data accepts connector content without browser access.')
+                page = read_store.read_json(args.page_data) if args.page_data else toutiao.read_browser(url, backend=rendered_backend)
                 item = toutiao.validate_page(url, page)
                 if item['kind'] == 'article':
                     finish({**item, 'site': site, 'reference': source_reference(url)})
@@ -292,14 +357,29 @@ def read_videos(args):
                         raise ValueError('The Toutiao player did not expose complete source subtitles.')
                     if model is None:
                         raise RuntimeError('Toutiao video speech requires an existing local model.')
+                    if not all(cli.find_tool(t) for t in ('ffmpeg', 'ffprobe', 'whisper-cli')):
+                        raise RuntimeError('Toutiao video speech requires the existing local ffmpeg, ffprobe and whisper-cli tools.')
                     temporary = folder / '.toutiao-download'
                     temporary.mkdir(mode=0o700)
                     try:
                         video = temporary / 'source.mp4'
-                        toutiao.download_video(item['media_url'], video)
+                        if 'media_streams' in item:
+                            evidence = toutiao.merge_tracks(item['media_streams'], temporary, item['duration'])
+                            item['paired_media_evidence'] = evidence
+                            if item['duration'] is None:
+                                item.update(duration=evidence['duration'], duration_basis='complete_paired_download_ffprobe')
+                        else:
+                            evidence = toutiao.download_video(item['media_url'], video)
+                            if isinstance(evidence, dict): item['transfer_evidence'] = evidence
+                        actual_duration, audio_present = read_asr.probe(video)
+                        if not audio_present or (item['duration'] is not None and
+                                abs(actual_duration - item['duration']) > max(1, item['duration'] * .02)):
+                            raise RuntimeError('The complete Toutiao media duration/audio does not match its bound page evidence.')
+                        if item['duration'] is None:
+                            item.update(duration=actual_duration, duration_basis='complete_download_ffprobe')
                         records = cli.inspect_files([video])
                         consume([video], records, DownloadResult(expected_count=1), url, site,
-                                {'title': item['title'], 'description': item['description'], 'duration': item['duration']})
+                                content_metadata(item))
                     finally:
                         shutil.rmtree(temporary)
                 return 0
@@ -413,6 +493,8 @@ An enabled AI fallback switches on provider outages; config --help lists options
     parser.add_argument('--refresh', action='store_true', help='Bypass the 24-hour complete-content cache')
     parser.add_argument('--keep-media', action='store_true')
     parser.add_argument('--page-data', type=Path, help='Toutiao only: content-only page JSON')
+    parser.add_argument('--rendered-backend', choices=['chrome', 'neo'],
+                        help='Scoped rendered pages: daily Chrome or the dedicated BrowserOS neo MCP')
     parser.add_argument('--browser', choices=['auto', 'none', 'chrome', 'firefox', 'safari', 'edge', 'brave'], default='auto')
     parser.add_argument('--profile')
     parser.add_argument('--foreground', action='store_true', help='Wait for completion instead of running in the background')
@@ -484,6 +566,7 @@ def main(argv):
             try:
                 code = read_videos(item)
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+                read_tasks.failure(error)
                 print(str(error), file=sys.stderr)
                 code = 1
             if code == 130:
@@ -493,6 +576,7 @@ def main(argv):
         print(f'{len(links) - len(failed)} completed; failed items: {failed}')
         return 1 if failed else 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        read_tasks.failure(error)
         print('Content read stopped: ' + str(error), file=sys.stderr)
         return 1
     except (KeyboardInterrupt, EOFError):

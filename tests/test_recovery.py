@@ -398,7 +398,8 @@ class RecoveryTests(unittest.TestCase):
             with jobs.Journal.load(task.identifier).claim():
                 pass
 
-    def test_optional_concurrency_limit_and_progress(self):
+    @patch.object(batch, "site_key", side_effect=lambda link: link)
+    def test_optional_concurrency_limit_and_progress(self, _site_key):
         active = maximum = 0
         lock = threading.Lock()
         def download(url, folder, cookies):
@@ -416,7 +417,7 @@ class RecoveryTests(unittest.TestCase):
             code, out, _ = self.run_cli("batch", *[URL + str(i) for i in range(5)], "--jobs", "2", "--folder", str(self.root / "out"), "--browser", "none")
         self.assertEqual(code, 0)
         self.assertEqual(maximum, 2)
-        self.assertIn("3 queued", out)
+        self.assertIn("2 download slots · one per website · 5 posts", out)
         self.assertIn("Downloading · 1.0 KB", out)
 
     def test_bad_destination_and_options_fail_before_browser_setup(self):

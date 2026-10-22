@@ -145,6 +145,6 @@ def download(url, directory, cookie_path=None):
             partial.rename(path)
         return DownloadResult(expected_count=1, variants={path.name: "exposed_stream"})
     except HTTPError as error:
-        raise RuntimeError(f"Kuaishou request failed (HTTP {error.code}). Open the post in your browser and check access.") from None
+        raise RuntimeError(f"Kuaishou request failed (HTTP {error.code}). Open the post in your browser and check access.") from error
     except (URLError, OSError):
         raise RuntimeError("Kuaishou download interrupted. Check your connection and retry.") from None

@@ -54,7 +54,7 @@ def transcribe(video, folder, model, duration=None, language='zh', chunk_seconds
         raise ValueError('Chunk length must be between 30 and 1800 seconds.')
     identity = [read_store.digest(video), read_store.digest(model), language, chunk_seconds,
                 read_store.digest(vad_model) if vad_model else None, read_store.SCHEMA]
-    chunks, recognized_language = [], None
+    chunks, recognized_language, timestamp_adjustments = [], None, []
     count = math.ceil(actual / chunk_seconds)
     for index in range(count):
         start, length = index * chunk_seconds, min(chunk_seconds, actual - index * chunk_seconds)
@@ -68,6 +68,7 @@ def transcribe(video, folder, model, duration=None, language='zh', chunk_seconds
                 start <= s['start'] < s['end'] <= start + length for s in saved['segments'])
             if saved.get('key') == key and saved.get('length') == length and valid:
                 chunks.extend(saved['segments'])
+                timestamp_adjustments.extend(saved.get('timestamp_adjustments',[]))
                 recognized_language = saved.get('language') or recognized_language
                 continue
         working = folder if count == 1 else folder / f'chunk-{index:04d}'
@@ -90,21 +91,25 @@ def transcribe(video, folder, model, duration=None, language='zh', chunk_seconds
             segments = [{'text': s['text'].strip(), 'start': s['offsets']['from'] / 1000,
                          'end': s['offsets']['to'] / 1000} for s in data.get('transcription', []) if s.get('text', '').strip()]
             if any(not math.isfinite(s['start']) or not math.isfinite(s['end']) or
-                   (not 0 <= s['start'] < min(s['end'], length) <= length or s['end'] > length + 1) for s in segments):
+                   (not 0 <= s['start'] < min(s['end'], length) <= length or s['end'] > length + 2) for s in segments):
                 raise ValueError()
         except (ValueError, KeyError, TypeError):
             raise RuntimeError('Recognition returned invalid text/timestamps.') from None
         recognized_language = data.get('result', {}).get('language') or recognized_language
         # Empty chunks can be silence; only the whole recording must contain readable speech.
-        global_segments = [{**s, 'start': start + s['start'], 'end': min(actual, start + s['end'])} for s in segments]
+        adjustments=[{'chunk_index':index,'segment_index':i,'raw_end':start+s['end'],
+                      'clipped_end':start+length} for i,s in enumerate(segments) if s['end']>length]
+        global_segments = [{**s, 'start': start + s['start'], 'end': min(start + length, start + s['end'])} for s in segments]
         read_store.write_json(record, {'key': key, 'length': length, 'segments': global_segments,
-                                      'language': recognized_language})
+                                      'language': recognized_language,'timestamp_adjustments':adjustments})
         chunks.extend(global_segments)
+        timestamp_adjustments.extend(adjustments)
         if count > 1:
             shutil.rmtree(working)
     suspicious = quality(chunks)
     return {'text': '\n'.join(s['text'] for s in chunks), 'segments': chunks, 'language': recognized_language or language,
             'content_complete': True, 'content_basis': 'full_video_local_asr', 'recognition_verified': False,
             'suspicious_segments': suspicious, 'chunks_processed': count,
+            'timestamp_adjustments':timestamp_adjustments,
             'media_evidence': {'duration': actual, 'audio': True, 'full_audio_processed': True},
             'limitations': ['Recognition may contain errors; check names, numbers and flagged repeated phrases.']}

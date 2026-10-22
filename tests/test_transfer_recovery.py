@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 from urllib.error import URLError
 
-from linkget import accounts, cli, douyin, jobs, media, staging, transfers, xiaohongshu
+from linkget import accounts, batch, cli, douyin, jobs, media, staging, transfers, xiaohongshu
 from media_stub import uninspected
 
 NOTE = 'a' * 24
@@ -74,7 +74,7 @@ class GalleryRecoveryTests(unittest.TestCase):
 
     def command(self, *args):
         out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        with patch.object(batch, 'retry_wait'), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             result = cli.main(list(args))
         return result, out.getvalue() + err.getvalue()
 
@@ -106,13 +106,31 @@ class GalleryRecoveryTests(unittest.TestCase):
         old = Path(task.data['items'][0]['stage'])
         self.calls.clear()
         self.assertEqual(self.command('retry', task.identifier)[0], 1)
-        self.assertEqual([url.rsplit('/', 1)[-1] for url in self.calls], [NOTE, 'two'])
+        self.assertEqual([url.rsplit('/', 1)[-1] for url in self.calls], [NOTE, 'two'] * 3)
         self.assertTrue(old.exists())
         self.calls.clear()
         self.failed_urls.clear()
         self.assertEqual(self.command('retry', task.identifier)[0], 0)
         self.assertEqual([url.rsplit('/', 1)[-1] for url in self.calls], [NOTE, 'two'])
         self.assertFalse(old.exists())
+
+    def test_automatic_retry_reuses_checked_resources_and_saves_once(self):
+        task = self.begin()
+        self.calls.clear()
+        original = self.request
+        def fail_once(request, **kwargs):
+            try:
+                return original(request, **kwargs)
+            except URLError:
+                self.failed_urls.clear()
+                raise
+        with patch.object(xiaohongshu.build_opener.return_value, 'open', side_effect=fail_once):
+            code, output = self.command('retry', task.identifier)
+        self.assertEqual(code, 0)
+        self.assertEqual([url.rsplit('/', 1)[-1] for url in self.calls], [NOTE, 'two'] * 2)
+        self.assertEqual(len(list((self.root/'saved').iterdir())), 3)
+        self.assertIn('Retrying', output)
+        self.assertEqual(jobs.Journal.load(task.identifier).incomplete(), [])
 
     def test_failed_format_probe_redownloads_only_rejected_resource(self):
         self.failed_urls.clear()

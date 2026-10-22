@@ -9,13 +9,16 @@ import unittest
 from unittest.mock import patch
 from media_stub import uninspected
 
-from linkget import accounts, cli, links
+from linkget import accounts, cli, links, batch
 
 URL = "https://www.pixiv.net/artworks/"
 
 
 class BatchTests(unittest.TestCase):
     def setUp(self):
+        interval = patch.object(batch, "SITE_INTERVAL", 0)
+        interval.start()
+        self.addCleanup(interval.stop)
         probe = patch.object(cli, "inspect_files", side_effect=uninspected)
         probe.start()
         self.addCleanup(probe.stop)
@@ -127,7 +130,8 @@ class BatchTests(unittest.TestCase):
         self.assertIn("2 not completed", out)
         self.assertIn("Files kept", err)
 
-    def test_every_link_downloads_concurrently_and_photos_imports_are_serial(self):
+    @patch.object(batch, "site_key", side_effect=lambda link: link)
+    def test_every_link_downloads_concurrently_and_photos_imports_are_serial(self, _site_key):
         downloads = threading.Barrier(4)
         importing = threading.Lock()
         imported = []
@@ -146,11 +150,12 @@ class BatchTests(unittest.TestCase):
                 importing.release()
 
         with patch.object(cli.sys, "platform", "darwin"), patch.object(cli, "download_pixiv", side_effect=download), patch.object(cli, "import_photos", side_effect=save), contextlib.redirect_stdout(io.StringIO()):
-            result = cli.main(["batch", *[URL + str(n) for n in range(4)], "--photos", "--browser", "none"])
+            result = cli.main(["batch", *[URL + str(n) for n in range(4)], "--photos", "--browser", "none", "--jobs", "4"])
         self.assertEqual(result, 0)
         self.assertCountEqual(imported, [(URL + str(n)).encode() for n in range(4)])
 
-    def test_login_requests_run_serially_on_the_calling_thread(self):
+    @patch.object(batch, "site_key", side_effect=lambda link: link)
+    def test_login_requests_run_serially_on_the_calling_thread(self, _site_key):
         downloads = threading.Barrier(3)
         caller = threading.get_ident()
         requested = []
@@ -169,9 +174,10 @@ class BatchTests(unittest.TestCase):
             result, out, _ = self.run_batch([URL + str(n) for n in range(3)], None)
         self.assertEqual(result, 0)
         self.assertEqual(len(requested), 3)
-        self.assertIn("3 downloads running in parallel", out)
+        self.assertIn("3 download slots", out)
 
-    def test_cancelling_login_releases_waiting_downloads(self):
+    @patch.object(batch, "site_key", side_effect=lambda link: link)
+    def test_cancelling_login_releases_waiting_downloads(self, _site_key):
         downloads = threading.Barrier(2)
 
         def download(args, setup, records):
