@@ -53,7 +53,10 @@ class BackgroundReadTests(unittest.TestCase):
         for path in read_tasks.directory().glob('*.json'):
             value = read_tasks.load(path.stem)
             if read_tasks.active(value):
-                os.killpg(value['pid'], signal.SIGINT)
+                try:
+                    os.killpg(value['pid'], signal.SIGINT)
+                except ProcessLookupError:
+                    pass  # The worker can exit after the active-process check.
                 self.wait_terminal(value['id'])
 
     def wait_terminal(self, identity, timeout=5):
