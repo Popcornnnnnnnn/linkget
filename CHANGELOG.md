@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Route the automatic Douyin rendered fallback through the existing bounded Neo reader; preserve explicit Chrome, public-only and logout boundaries. Report incomplete browser state separately from unsupported websites.
+
 - Integrate the local compact batch panel, continuous elapsed times, checked ASR chunk recovery, bounded Toutiao transfers, scoped rendered/Neo reader and Neo tab ownership fixes with the dev22 writer/checkpoint safeguards.
 - Bound batches to three workers by default and one task per known website, with a one-second gap; reuse the existing read-only policy for at most two temporary network/rate-limit retries before saving. Save, import and pairing failures are never automatically retried.
 - Add `linkget tasks [TASK]` to inspect download and background reading status, results, failures, observed retained sizes and existing recovery commands without showing source links.

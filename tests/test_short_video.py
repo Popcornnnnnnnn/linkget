@@ -58,10 +58,18 @@ class ShortVideoTests(unittest.TestCase):
                 with patch.object(cli, "download_douyin", side_effect=download), patch.object(cli, "read_douyin_browser", return_value=item) as reader, patch.object(accounts, "default_browser", return_value="chrome"), patch.object(accounts, "copy_saved") as cookies, patch.object(cli, "prepare_session") as export, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     code = cli.main(["https://www.douyin.com/video/123", "--folder", str(root), "--browser", "chrome"])
                 self.assertEqual(code, 0)
-                reader.assert_called_once_with("https://www.douyin.com/video/123")
+                reader.assert_called_once_with("https://www.douyin.com/video/123", backend="chrome")
                 cookies.assert_not_called()
                 export.assert_not_called()
                 self.assertEqual((root / "video.mp4").read_bytes(), b"video")
+
+    def test_auto_fallback_uses_neo_even_when_default_browser_is_chrome(self):
+        for default in ('chrome', 'safari'):
+            with self.subTest(default=default), tempfile.TemporaryDirectory() as directory, patch.object(accounts, 'default_browser', return_value=default), patch.object(accounts, 'copy_saved', return_value=False), patch.object(cli, 'download_douyin', side_effect=douyin.MediaUnavailable('missing')), patch.object(cli, 'read_douyin_browser', side_effect=RuntimeError('Neo fixture stopped')) as reader, contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(cli.main(['https://www.douyin.com/video/123', '--folder', directory, '--browser', 'auto']), 1)
+            reader.assert_called_once_with('https://www.douyin.com/video/123', backend='neo')
+            self.assertIn('Reading the post in Neo', out.getvalue())
+            self.assertNotIn('daily Chrome', out.getvalue())
 
     def test_browser_fallback_stops_after_one_browser_source_failure(self):
         with tempfile.TemporaryDirectory() as temporary, patch.object(cli, "download_douyin", side_effect=douyin.MediaUnavailable("missing")) as downloader, patch.object(cli, "read_douyin_browser", return_value={"aweme_id": "123", "video": {}}) as reader, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -70,7 +78,7 @@ class ShortVideoTests(unittest.TestCase):
         reader.assert_called_once()
 
     def test_douyin_missing_public_metadata_uses_only_an_allowed_saved_session(self):
-        for mode in ("auto", "none", "blocked", "signed_unavailable"):
+        for mode in ("auto", "none", "firefox", "blocked", "signed_unavailable"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 settings = root / "settings" / "sessions"
@@ -84,7 +92,7 @@ class ShortVideoTests(unittest.TestCase):
                         accounts.set_preferences(blocked=["douyin.com"])
                     calls = []
 
-                    def download(url, folder, cookie_path=None):
+                    def download(url, folder, cookie_path=None, *, browser_item=None):
                         calls.append(cookie_path is not None)
                         if cookie_path is None or mode == "signed_unavailable":
                             raise douyin.MediaUnavailable("Douyin did not expose this post's media.")
@@ -95,10 +103,10 @@ class ShortVideoTests(unittest.TestCase):
                     def stage(*args, **kwargs):
                         return real_mkdtemp(dir=root, prefix=kwargs.get("prefix", "tmp"))
 
-                    with patch.object(cli, "download_douyin", side_effect=download), patch.object(cli.tempfile, "tempdir", str(root)), patch.object(cli.tempfile, "mkdtemp", side_effect=stage), patch.object(cli, "recover_login") as recover, patch.object(accounts, "import_auto") as browser, patch("builtins.input") as prompt, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                        code = cli.main(["https://www.douyin.com/video/123", "--folder", str(root / "output"), "--browser", "none" if mode == "none" else "auto"])
+                    with patch.object(cli, "read_douyin_browser", return_value=None), patch.object(cli, "download_douyin", side_effect=download), patch.object(cli.tempfile, "tempdir", str(root)), patch.object(cli.tempfile, "mkdtemp", side_effect=stage), patch.object(cli, "recover_login") as recover, patch.object(accounts, "import_auto") as browser, patch("builtins.input") as prompt, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                        code = cli.main(["https://www.douyin.com/video/123", "--folder", str(root / "output"), "--browser", mode if mode in {"none", "firefox"} else "auto"])
                     self.assertEqual(code, 0 if mode == "auto" else 1)
-                    self.assertEqual(calls, [False, True] if mode in {"auto", "signed_unavailable"} else [False])
+                    self.assertEqual(calls, [False, False, True] if mode in {"auto", "signed_unavailable"} else [False])
                     recover.assert_not_called()
                     browser.assert_not_called()
                     prompt.assert_not_called()

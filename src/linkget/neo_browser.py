@@ -76,6 +76,7 @@ def _content_url(value):
             parts.query or parts.fragment):
         raise ValueError('Neo reads only the existing authorized HTTPS content scope.')
     allowed = (
+        parts.hostname == 'www.douyin.com' and re.fullmatch(r'/(video|note)/[0-9]{1,20}', parts.path) or
         parts.hostname == 'www.toutiao.com' and re.fullmatch(r'/(article|video)/[0-9]+/', parts.path) or
         parts.hostname == 'www.raspberrypi.com' and parts.path == '/products/raspberry-pi-5/' or
         parts.hostname == 'zhuanlan.zhihu.com' and re.fullmatch(r'/p/[0-9]{1,20}', parts.path)
@@ -351,7 +352,8 @@ def _read_script(url, javascript, token, wait_ms, page_id):
     # The SDK's evaluate result defaults to 5000 inline bytes. Only the small
     # ownership proof is evaluated here; content uses the explicit evaluate RPC.
     parts = urlsplit(url)
-    selector = ('article .ContentItem-time, article .Post-Time' if parts.hostname == 'zhuanlan.zhihu.com' else
+    selector = ('[data-e2e="player-container"]' if parts.hostname == 'www.douyin.com' else
+                'article .ContentItem-time, article .Post-Time' if parts.hostname == 'zhuanlan.zhihu.com' else
                 'main h1 img[alt]' if parts.hostname == 'www.raspberrypi.com' else
                 'video' if parts.path.startswith('/video/') else 'article')
     marker = url + '#linkget-neo-' + token
