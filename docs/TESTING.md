@@ -130,3 +130,9 @@ Photos results in normal use.
 The integration preserves all eight commits from the local batch/reader branch on top of main `4f85d68`. The installed dev21_1 package was compared byte for byte with `deeb111` / `67a174b`; every installed package file matched, so no installed-only implementation was omitted. The original dirty checkout remains separate. No release, tap, installation, live website or Photos change is part of this integration.
 
 Offline coverage includes bounded default workers, independent-site scheduling, known share aliases, one-site exclusion and delay, finite network retries, long Retry-After refusal, certificate/login/access/save/import exclusions, cancellation, native resource reuse with one final save, task-lock interruption detection, mixed task views, retained-size observation, symlink avoidance and source-token redaction. Existing ownership, media completeness and Neo lifecycle tests remain required.
+
+## Douyin automatic Neo routing
+
+Offline regressions cover Neo selection independently of the system default browser, explicit Chrome compatibility, public-only/logout boundaries, exact Douyin URL/player scope and no AppleScript fallback on Neo errors. The original gallery/motion extractor and source-completeness requirements remain unchanged.
+
+A controlled public-metadata miss exercised automatic Neo acquisition and real native transfers into an isolated folder: nine current-post images, zero exposed motion tracks, nine valid saved WebP files totaling 1,215,162 bytes. The existing Neo lifecycle reported verified tab closure and no credential export. No AppleScript or Photos import ran; the old failed Photos task was not retried. This validates that one accessible gallery; it does not establish every Douyin post or Photos playback. Signed media URLs and downloaded images remain in ignored local evidence.

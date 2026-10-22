@@ -4,10 +4,55 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+from subprocess import CompletedProcess
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from linkget.douyin_browser import load_item
+from linkget.douyin_browser import load_item, read_item
+from linkget import neo_browser, douyin_browser
+from linkget.failures import BrowserReadError, classify
+
+
+class BrowserRoutingTests(unittest.TestCase):
+    def test_default_neo_uses_existing_lifecycle_and_content_only_result(self):
+        item = {'aweme_id':'123', 'images':[{'live_photo_type':0, 'url_list':['https://cdn.example/image.jpg']}],
+                'browser_controller':{'kind':'browseros_neo_mcp'}}
+        with patch.object(neo_browser, 'read_dom', return_value=item) as neo, patch.object(douyin_browser.subprocess, 'run') as chrome:
+            result = read_item('https://www.douyin.com/note/123')
+        self.assertNotIn('browser_controller', result)
+        neo.assert_called_once()
+        self.assertEqual(neo.call_args.args[0], 'https://www.douyin.com/note/123')
+        self.assertIn('live_photo_type', neo.call_args.args[1])
+        chrome.assert_not_called()
+
+    def test_explicit_chrome_keeps_legacy_path_without_neo(self):
+        item = {'aweme_id':'123', 'images':[{'live_photo_type':0, 'url_list':['https://cdn.example/image.jpg']}]}
+        with patch.object(neo_browser, 'read_dom') as neo, patch.object(douyin_browser.subprocess, 'run', return_value=CompletedProcess([], 0, json.dumps(item), '')) as chrome:
+            self.assertEqual(read_item('https://www.douyin.com/note/123', backend='chrome'), item)
+        chrome.assert_called_once()
+        neo.assert_not_called()
+
+    def test_neo_failure_does_not_fall_back_to_applescript_or_claim_unsupported(self):
+        with patch.object(neo_browser, 'read_dom', side_effect=neo_browser.NeoBrowserError('complete media unavailable: unsupported layout')), patch.object(douyin_browser.subprocess, 'run') as chrome:
+            with self.assertRaises(BrowserReadError) as failure:
+                read_item('https://www.douyin.com/note/123')
+        chrome.assert_not_called()
+        reason = classify(failure.exception)
+        self.assertEqual(reason.category, 'browser_state')
+        self.assertIn('Neo', reason.next_step)
+        self.assertNotIn('linkget sites', reason.next_step)
+        self.assertFalse(reason.retryable)
+
+    def test_neo_scope_and_wrong_post_are_rejected(self):
+        for url in ['https://www.douyin.com/note/123', 'https://www.douyin.com/video/123']:
+            self.assertIn(json.dumps('[data-e2e="player-container"]'), neo_browser._read_script(url, 'function snapshot() {}', 'fixture', 1000, 17))
+            self.assertEqual(neo_browser._content_url(url), url)
+        for url in ['https://www.douyin.com/user/123', 'https://www.douyin.com/note/123?token=private', 'https://www.douyin.com/note/123#other']:
+            with self.assertRaises(ValueError): neo_browser._content_url(url)
+        for item in [{'aweme_id':'456','images':[{}]}, {'aweme_id':'123','images':['invalid']}, {'aweme_id':'123','video':'invalid'}]:
+            with patch.object(neo_browser, 'read_dom', return_value=item):
+                with self.assertRaises(BrowserReadError): read_item('https://www.douyin.com/note/123')
 
 
 class ConnectorDataTests(unittest.TestCase):

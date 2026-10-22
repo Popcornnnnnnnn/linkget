@@ -24,6 +24,13 @@ class Failure:
     retryable: bool = False
 
 
+class BrowserReadError(RuntimeError):
+    """A browser-state failure is not proof of an unsupported site."""
+    def __init__(self, message, next_step):
+        super().__init__(message)
+        self.next_step = next_step
+
+
 _URL = re.compile(r'https?://[^\s<>"\']+', re.I)
 _HEADER = re.compile(r'\b(authorization|proxy-authorization|cookies?|set-cookie)["\']?\s*[:=]\s*[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*', re.I)
 _SECRET_KEY = (
@@ -362,6 +369,9 @@ def classify(error, *, phase=None):
     message = redact(error) or 'The operation failed without diagnostic details.'
     signals, flags, denied = _evidence(error)
     chain = list(_typed_chain(error))
+    browser_error = next((cause for cause in chain if isinstance(cause, BrowserReadError)), None)
+    if browser_error is not None:
+        return Failure('browser_state', 'Browser state', message, redact(browser_error.next_step))
     disk_full = any(isinstance(cause, OSError) and cause.errno in {errno.ENOSPC, errno.EDQUOT} for cause in chain)
     if disk_full or phase in {'save', 'import', 'pair', 'postprocess'}:
         next_step = 'Keep retained media. Fix the named tool or destination error, then use the printed retry or recovery command.'

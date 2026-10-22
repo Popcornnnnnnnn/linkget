@@ -904,14 +904,6 @@ def download(args, setup_results, records=None, media_consumer=None):
                     raise RuntimeError(f"Incomplete media set: {len(files)} / {download_info.expected_count} files. Files have been kept.")
                 break
             except (DouyinMediaUnavailable, DouyinDownloadInterrupted):
-                if (not tried_douyin_page and args.browser != "none"
-                        and domain not in accounts.preferences().get("blocked", [])
-                        and (args.browser == "chrome" or args.browser == "auto" and accounts.default_browser() == "chrome")):
-                    tried_douyin_page = True
-                    status("Browser", "Reading the post in daily Chrome")
-                    browser_item = batch_interaction(lambda: read_douyin_browser(url))
-                    attempt += 1
-                    continue
                 # A missing public response can still work with an already
                 # authorized session. Do not infer expiry or prompt for login.
                 if (args.browser == "auto" and not tried_saved
@@ -924,6 +916,14 @@ def download(args, setup_results, records=None, media_consumer=None):
                         cookie_path = candidate
                         attempt += 1
                         continue
+                if (not tried_douyin_page and args.browser in {"auto", "chrome"}
+                        and domain not in accounts.preferences().get("blocked", [])):
+                    tried_douyin_page = True
+                    backend = "chrome" if args.browser == "chrome" else "neo"
+                    status("Browser", "Reading the post in " + ("Neo" if backend == "neo" else "Chrome (explicit selection)"))
+                    browser_item = batch_interaction(lambda: read_douyin_browser(url, backend=backend))
+                    attempt += 1
+                    continue
                 raise
             except LoginRequired as failure:
                 if args.browser == "none":
