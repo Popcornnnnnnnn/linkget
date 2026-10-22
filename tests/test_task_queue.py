@@ -8,9 +8,9 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
-from linkget import batch, cli, jobs, read_tasks, tasks
+from linkget import batch, cli, jobs, read_tasks, tasks, pixiv, kuaishou
 from linkget.failures import classify, retry_delay
 
 
@@ -74,6 +74,22 @@ class QueueTests(unittest.TestCase):
         cli.record_failure(args, error, 'download')
         self.assertIsNone(retry_delay(args._retry_failure, 1, operation='read', retry_after=args._retry_after))
         self.assertIsNone(retry_delay(classify('CERTIFICATE_VERIFY_FAILED'), 1, operation='read'))
+
+    def test_native_network_wrappers_preserve_retry_and_header_evidence(self):
+        for adapter, url in [(pixiv, 'https://www.pixiv.net/artworks/123'),
+                             (kuaishou, 'https://www.kuaishou.com/short-video/abc')]:
+            for failure in [URLError(TimeoutError('timed out')),
+                            HTTPError(url, 429, 'limit', {'Retry-After': '31'}, None)]:
+                with patch.object(adapter, 'build_opener') as opener:
+                    opener.return_value.open.side_effect = failure
+                    with self.assertRaises(RuntimeError) as caught:
+                        adapter.download(url, self.root)
+                args = argparse.Namespace()
+                cli.record_failure(args, caught.exception, 'download')
+                expected = 'rate_limit' if isinstance(failure, HTTPError) else 'network'
+                self.assertEqual(args._retry_failure.category, expected)
+                if expected == 'rate_limit':
+                    self.assertEqual(args._retry_after, '31')
 
     def test_site_gap_and_independent_sites(self):
         gate = batch.SiteGate()
