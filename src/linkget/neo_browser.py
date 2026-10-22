@@ -371,8 +371,11 @@ try {
     (item.pageId === created.pageId || (item.tabId === created.tabId && item.targetId === created.targetId &&
       Number.isSafeInteger(item.tabId) && typeof item.targetId === 'string')));
   if (!initial) throw new Error('Owned creation identity was not confirmed.');
+  const groups = [...new Set(pages.filter(item => item.tabId === initial.tabId && item.targetId === initial.targetId)
+    .map(item => item.groupId).filter(Boolean))];
+  if (groups.length !== 1) throw new Error('Owned physical group identity was not confirmed.');
   identity = {pageId:initial.pageId,tabId:initial.tabId,targetId:initial.targetId,
-    groupId:initial.groupId || created.groupId,ownerAgentId:initial.ownerAgentId};
+    groupId:groups[0],ownerAgentId:initial.ownerAgentId};
   if (initial.url !== marker) throw new Error('Created page navigated before extraction.');
   page = browser.page(initial.pageId);
   // tabs new already requested this exact marked URL. Waiting for goto's full
@@ -460,7 +463,9 @@ if (receipt && physical(receipt,receipt)) {
   candidate = pages.find(item => item.ownership === 'mine' &&
     (item.pageId === created.pageId || physical(item,created)));
   if (!candidate) return {cleanup:'unknown_cleanup'};
-  groupId = candidate.groupId || created.groupId;
+  const groups = [...new Set(pages.filter(item => physical(item,candidate)).map(item => item.groupId).filter(Boolean))];
+  if (groups.length !== 1) return {cleanup:'unknown_cleanup'};
+  groupId = groups[0];
   creationProven = true;
 } else {
   const markers = pages.filter(item => item.ownership !== 'user' && item.url === marker);

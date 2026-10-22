@@ -496,6 +496,23 @@ new AsyncFunction('browser','console',code)(browser,{log:()=>{}}).then(value=>pr
         self.assertEqual(read['value']['identity']['tabId'], 101)
         self.assertEqual(read['value']['identity']['pageId'], 18)
 
+    def test_creation_alias_without_group_uses_unique_physical_group(self):
+        records=[self.tab(groupId=None,url=URL+'#linkget-neo-fixture-token'),
+                 self.tab(pageId=18,ownership='user',ownerAgentId=None)]
+        read=self.run_code(neo._read_script(URL,EXTRACTOR,'fixture-token',100,17),{'pages':records})
+        self.assertTrue(read['value']['ok'])
+        self.assertEqual(read['value']['identity']['groupId'],'group-101')
+        for receipt in (None,read['value']['identity']):
+            cleaned=self.run_code(neo._cleanup_script('fixture-token',URL,17,identity=receipt),{'pages':records})
+            self.assertEqual(cleaned['value']['cleanup'],'closed')
+            self.assertEqual(cleaned['closeIds'],[17])
+        records.append(self.tab(pageId=19,ownership='user',groupId='changed-group'))
+        read=self.run_code(neo._read_script(URL,EXTRACTOR,'fixture-token',100,17),{'pages':records})
+        self.assertFalse(read['value']['ok'])
+        cleaned=self.run_code(neo._cleanup_script('fixture-token',URL,17),{'pages':records})
+        self.assertEqual(cleaned['value']['cleanup'],'unknown_cleanup')
+        self.assertFalse(cleaned['closed'])
+
     def test_closure_checks_physical_alias_not_only_removed_page_id(self):
         result = self.run_code(neo._cleanup_script('fixture-token', URL, 17),
             {'pages': [self.tab()], 'afterClosePages': [self.tab(pageId=18)]})
