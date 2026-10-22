@@ -215,7 +215,7 @@ def read_page(url, timeout=MAX_READ_SECONDS, *, backend=None):
         if result.get('kind') == 'article':
             result['text_sha256'] = hashlib.sha256(result['text'].encode()).hexdigest()
         return result
-    expression = ('(()=>{const value=(' + javascript + ')(' + json.dumps(expected) + ');'
+    expression = ('(()=>{if(location.href==="about:blank"||location.href==="")return"null";const value=(' + javascript + ')(' + json.dumps(expected) + ');'
                   'const text=JSON.stringify(value);return new TextEncoder().encode(text).length>'
                   + str(MAX_RESULT_BYTES) + '?JSON.stringify({diagnostic:{reason:"article_scope_size_out_of_bounds"}}):text;})()')
     deadline, owner = time.monotonic() + timeout, None

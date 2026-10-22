@@ -22,15 +22,17 @@ on run argv
                 error messageText number messageNumber
             end try
         end if
-        set windowID to item 2 of argv as integer
-        set tabID to item 3 of argv as integer
+        -- Chrome versions expose IDs as either text or integer. Validate the
+        -- supplied numeric identity, then compare a single canonical text type.
+        set windowID to (item 2 of argv as integer) as text
+        set tabID to (item 3 of argv as integer) as text
         set browserWindow to missing value
         set temporaryTab to missing value
         repeat with candidateWindow in windows
-            if id of candidateWindow is windowID then
+            if (id of candidateWindow as text) is windowID then
                 set browserWindow to contents of candidateWindow
                 repeat with candidateTab in tabs of browserWindow
-                    if id of candidateTab is tabID then
+                    if (id of candidateTab as text) is tabID then
                         set temporaryTab to contents of candidateTab
                         exit repeat
                     end if
@@ -44,16 +46,16 @@ on run argv
         end if
         if actionName is "close" then
             if temporaryTab is missing value then return "closed"
-            set previousID to item 4 of argv as integer
+            set previousID to (item 4 of argv as integer) as text
             set expectedURL to item 5 of argv
             set tabURL to URL of temporaryTab
             -- Do not close a tab the user has navigated to unrelated work.
             if tabURL is not expectedURL and tabURL does not start with (expectedURL & "?") then return "preserved_navigated_tab"
-            if id of active tab of browserWindow is tabID then
+            if (id of active tab of browserWindow as text) is tabID then
                 set candidateIndex to 0
                 repeat with candidateTab in tabs of browserWindow
                     set candidateIndex to candidateIndex + 1
-                    if id of candidateTab is previousID then
+                    if (id of candidateTab as text) is previousID then
                         set active tab index of browserWindow to candidateIndex
                         exit repeat
                     end if

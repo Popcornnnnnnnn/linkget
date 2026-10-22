@@ -46,6 +46,22 @@ class RenderedPageTests(unittest.TestCase):
         bad={**raw,'browser_controller':{**raw['browser_controller'],'temporary_tab_cleanup':'unknown'}}
         with self.assertRaises(ValueError):reader.validate_public_page(bad,ZH)
 
+    @unittest.skipUnless(shutil.which('node'), 'Node is needed for the real reader expression')
+    def test_chrome_initial_blank_waits_but_other_pages_remain_rejected(self):
+        raw=self.fixture_public()
+        expression=[]
+        def control(action,*args,**kwargs):
+            if action=='open':return '1:2:3'
+            if action=='close':return 'closed'
+            expression.append(args[2])
+            return json.dumps(raw)
+        with patch.object(reader,'controller',side_effect=control):
+            reader.read_public(ZH,backend='chrome')
+        for url,expected in [('about:blank',None),('',None),('https://example.org/',{'diagnostic':{'reason':'public_article_mismatch'}})]:
+            script='global.location={href:'+json.dumps(url)+'};process.stdout.write('+expression[0]+');'
+            result=subprocess.run([shutil.which('node'),'-e',script],capture_output=True,text=True,check=True)
+            self.assertEqual(json.loads(result.stdout),expected)
+
     def test_backend_selection_rejects_unknown_or_implicit_fallback(self):
         self.assertEqual(reader.selected_backend('neo'),'neo')
         with self.assertRaises(ValueError):reader.selected_backend('unknown')
@@ -159,7 +175,7 @@ class RenderedPageTests(unittest.TestCase):
     def test_temp_controller_never_reuses_or_closes_unrelated_tabs(self):
         code = Path(reader.__file__).with_name('rendered_page.applescript').read_text()
         self.assertIn('make new tab', code)
-        self.assertIn('id of candidateTab is tabID', code)
+        self.assertIn('(id of candidateTab as text) is tabID', code)
         self.assertIn('preserved_navigated_tab', code)
         self.assertNotIn('activate', code.replace('not activated', ''))
         self.assertNotIn('Allow JavaScript', code)
