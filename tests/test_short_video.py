@@ -13,6 +13,7 @@ from unittest.mock import patch
 from media_stub import uninspected
 from urllib.error import HTTPError, URLError
 
+from linkget.failures import BrowserReadError
 from linkget import accounts, cli, douyin, links, session
 
 
@@ -103,10 +104,11 @@ class ShortVideoTests(unittest.TestCase):
                     def stage(*args, **kwargs):
                         return real_mkdtemp(dir=root, prefix=kwargs.get("prefix", "tmp"))
 
-                    with patch.object(cli, "read_douyin_browser", return_value=None), patch.object(cli, "download_douyin", side_effect=download), patch.object(cli.tempfile, "tempdir", str(root)), patch.object(cli.tempfile, "mkdtemp", side_effect=stage), patch.object(cli, "recover_login") as recover, patch.object(accounts, "import_auto") as browser, patch("builtins.input") as prompt, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    with patch.object(cli, "read_douyin_browser", side_effect=BrowserReadError("Neo fixture unavailable", "Check Neo")) as reader, patch.object(cli, "download_douyin", side_effect=download), patch.object(cli.tempfile, "tempdir", str(root)), patch.object(cli.tempfile, "mkdtemp", side_effect=stage), patch.object(cli, "recover_login") as recover, patch.object(accounts, "import_auto") as browser, patch("builtins.input") as prompt, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                         code = cli.main(["https://www.douyin.com/video/123", "--folder", str(root / "output"), "--browser", mode if mode in {"none", "firefox"} else "auto"])
                     self.assertEqual(code, 0 if mode == "auto" else 1)
-                    self.assertEqual(calls, [False, False, True] if mode in {"auto", "signed_unavailable"} else [False])
+                    self.assertEqual(calls, [False, True] if mode in {"auto", "signed_unavailable"} else [False])
+                    self.assertEqual(reader.call_count, 1 if mode == "signed_unavailable" else 0)
                     recover.assert_not_called()
                     browser.assert_not_called()
                     prompt.assert_not_called()
