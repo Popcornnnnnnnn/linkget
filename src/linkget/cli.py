@@ -14,7 +14,7 @@ import tempfile
 import time
 
 if __package__:
-    from . import accounts, jobs, destinations, preflight, recovery, staging, transfers, ownership
+    from . import accounts, jobs, destinations, preflight, recovery, staging, transfers, ownership, rendered_page
     from .runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from .output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity
     from .batch import run_batch
@@ -34,7 +34,7 @@ if __package__:
     from .media import DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
     from .live import prepare_pairs, save_pairs
 else:  # Homebrew launches this file directly.
-    import accounts, jobs, destinations, preflight, recovery, staging, transfers, ownership
+    import accounts, jobs, destinations, preflight, recovery, staging, transfers, ownership, rendered_page
     from runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity
     from batch import run_batch
@@ -104,7 +104,7 @@ def login_result(site, state, saved=False, public_summary=False):
             status(site, "Public access unverified", "1;33")
             return
         if domain == "douyin.com":
-            status(site, "Public access · Chrome assist when needed", "1")
+            status(site, "Public access · configured page reader when needed", "1")
             return
         if domain in accounts.PUBLIC_ACCESS and domain != "bilibili.com":
             status(site, "Public access", "1")
@@ -373,7 +373,7 @@ def configured_destination():
 
 
 def configure(args, parser):
-    if args.link != ["config"] or args.browser != "auto" or args.profile or args.date_now:
+    if args.link != ["config"] or args.browser != "auto" or args.profile or args.date_now or args.rendered_backend:
         parser.error("Use linkget config, linkget config --photos, or linkget config --folder [PATH].")
     if args.photos:
         setting = {"mode": "photos"}
@@ -387,15 +387,21 @@ def configure(args, parser):
     else:
         setting = configured_destination()
     changed = args.photos or args.folder is not None
-    if changed:
-        accounts.set_preferences(destination=setting)
+    changes = {"destination": setting} if changed else {}
+    if args.reader_browser is not None:
+        changes["reader_browser"] = args.reader_browser
+    if changes:
+        accounts.set_preferences(**changes)
     description = {"photos": "Photos", "cwd": "Current folder (where you run linkget)", "folder": setting.get("path")}[setting["mode"]]
     status("Default", description)
+    status("Page reader", accounts.preferences().get("reader_browser", "auto"))
     if changed:
         status("Saved", "Used when no --folder or --photos is specified.")
     else:
         print("\n  Change default:\n")
         for command, detail in [
+            ("linkget config --reader-browser neo", "Use BrowserOS Neo for page reading"),
+            ("linkget config --reader-browser auto", "Follow saved/system browser for page reading"),
             ("linkget config --photos", "Photos"),
             ("linkget config --folder", "Current folder on each run"),
             ("linkget config --folder ~/Downloads", "Fixed folder; replace with your path"),
@@ -491,6 +497,8 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                                      help="save to FOLDER, or the current folder if omitted; overrides the default")
     destination_options.add_argument("--photos", action="store_true", help="save to Photos; overrides the default")
     parser.add_argument("--browser", choices=["auto", "none", "chrome", "firefox", "safari", "edge", "brave"], default="auto", help="auto: public first, then saved login and browser refresh if needed; none: public only; specify a browser to use its login")
+    parser.add_argument("--reader-browser", choices=["auto", "chrome", "neo"], help="config only: save the page-reading preference; auto follows saved browser choice or system default")
+    parser.add_argument("--rendered-backend", choices=["chrome", "neo"], help="override the page-reading controller for this download; credentials are unchanged")
     parser.add_argument("--profile", help="path to the selected browser profile")
     parser.add_argument("--date-now", action="store_true", help="set the date of newly imported Photos items to now")
     parser.add_argument("--report", type=Path, help="write download evidence to a new JSON file for comparison")
@@ -506,6 +514,8 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         if tokens[index] == "--folder" and tokens[index + 1].startswith(("http://", "https://")):
             tokens.insert(index + 1, ".")
     args = parser.parse_intermixed_args(tokens)
+    if args.reader_browser is not None and args.link != ["config"]:
+        parser.error("--reader-browser is saved with linkget config only.")
     if args.page_data:
         args.page_data = args.page_data.expanduser().resolve()
         if args.browser != "none" or len(args.link) not in {1, 2}:
@@ -610,7 +620,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     if args.link == "sites":
         for site, content in [("Instagram", "Photos, videos and reels"), ("X / Twitter", "Post photos and videos"), ("Bilibili", "BV/av videos and Opus media"), ("TikTok", "Post photos and videos; share links"), ("Douyin", "Post photos and videos; share links"), ("Kuaishou", "Post videos; image galleries not supported"), ("Xiaohongshu", "Note photos and videos; xhslink shares"), ("Weibo", "Post photos and videos; t.cn shares"), ("YouTube", "Videos and Shorts; youtu.be links"), ("Reddit", "Post photos and videos"), ("Lofter", "Post photos and videos (trial)"), ("Pixiv", "Artwork images (trial); Ugoira not supported"), ("Pinterest", "Pins and boards")]:
             status(site, content)
-        status("Toutiao", "Article text / local video transcription via linkget read; Chrome page required")
+        status("Toutiao", "Article text / local video transcription via linkget read; configured page reader; Chrome and Neo supported")
         print("\n  Use linkget read for video speech on these channels, or Toutiao article text.\n  Pixiv is image-only. Availability varies by URL; read --help shows transcription options.")
         return 0
     if args.profile and args.browser in {"auto", "none"}:
@@ -657,12 +667,16 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
 
 def restore_options(args, journal, tokens):
     saved = journal.data["options"]
+    args._rendered_backend_override = any(token.split("=", 1)[0] == "--rendered-backend" for token in tokens)
+    args._reader_browser_override = any(token.split("=", 1)[0] == "--browser" for token in tokens)
     for name in jobs.OPTIONS:
         flags = {"--" + name.replace("_", "-")}
         if name == "folder":
             flags.add("--photos")
         if not any(token.split("=", 1)[0] in flags for token in tokens) and name in saved:
             setattr(args, name, saved[name])
+    if args._reader_browser_override and not args._rendered_backend_override:
+        args.rendered_backend = None
     if args.photos:
         args.folder = None
     elif args.folder is True:
@@ -919,7 +933,13 @@ def download(args, setup_results, records=None, media_consumer=None):
                 if (not tried_douyin_page and args.browser in {"auto", "chrome"}
                         and domain not in accounts.preferences().get("blocked", [])):
                     tried_douyin_page = True
-                    backend = "chrome" if args.browser == "chrome" else "neo"
+                    frozen = journal.data["items"][index - 1].get("rendered_backend") if current else None
+                    choice = getattr(args, "rendered_backend", None)
+                    if frozen and not (getattr(args, "_rendered_backend_override", False) or getattr(args, "_reader_browser_override", False)):
+                        choice = frozen
+                    backend = rendered_page.selected_backend(choice, browser=args.browser)
+                    if current:
+                        journal.update(index, rendered_backend=backend)
                     status("Browser", "Reading the post in " + ("Neo" if backend == "neo" else "Chrome (explicit selection)"))
                     browser_item = batch_interaction(lambda: read_douyin_browser(url, backend=backend))
                     attempt += 1

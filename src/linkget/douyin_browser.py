@@ -33,7 +33,12 @@ def _validated_item(item, url):
     return item
 
 
-def read_item(url, backend='neo'):
+def read_item(url, backend=None):
+    if __package__:
+        from .rendered_page import selected_backend
+    else:
+        from rendered_page import selected_backend
+    backend = selected_backend(backend)
     if not re.fullmatch(r"https://www\.douyin\.com/(?:video|note)/\d+", url):
         raise ValueError("Expected a single Douyin post.")
     if backend not in {'neo', 'chrome'}:

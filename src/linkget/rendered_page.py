@@ -28,13 +28,33 @@ class BrowserUnavailable(RuntimeError):
 
 
 class ReaderBusy(BrowserUnavailable):
-    """Another local read owns the serialized daily-Chrome reader."""
+    """Another local read owns the serialized rendered-page reader."""
 
 
-def selected_backend(backend=None):
-    value = backend if backend is not None else os.environ.get('LINKGET_RENDERED_BACKEND', 'chrome')
+def selected_backend(backend=None, *, browser="auto"):
+    """Resolve page automation independently of credential-source preferences."""
+    if __package__:
+        from . import accounts
+    else:
+        import accounts
+    if backend is not None:
+        value = backend
+    elif browser != 'auto':
+        value = browser
+    elif 'LINKGET_RENDERED_BACKEND' in os.environ:
+        value = os.environ['LINKGET_RENDERED_BACKEND']
+    else:
+        settings = accounts.preferences()
+        value = settings.get('reader_browser', 'auto')
+        if value == 'auto':
+            value = settings.get('browser') or accounts.default_browser()
     if value not in ('chrome', 'neo'):
-        raise ValueError('The rendered content backend must be chrome or neo.')
+        if backend is not None or 'LINKGET_RENDERED_BACKEND' in os.environ:
+            raise ValueError('The rendered content backend must be chrome or neo.')
+        raise BrowserUnavailable(
+            'Page reading has no supported browser controller for ' + str(value or 'the unknown system default') +
+            '. Chrome and BrowserOS Neo are supported. Choose linkget config --reader-browser chrome '
+            'or --reader-browser neo; no other browser was opened.')
     return value
 
 
@@ -163,7 +183,6 @@ def read_page(url, timeout=MAX_READ_SECONDS, *, backend=None):
         raise ValueError('The rendered reader timeout must be between 1 and 45 seconds.')
     if not isinstance(url, str) or len(url) > 2048:
         raise ValueError('A bounded normal HTTPS content URL is required.')
-    backend = selected_backend(backend)
     if __package__:
         from . import toutiao
     else:
@@ -174,6 +193,7 @@ def read_page(url, timeout=MAX_READ_SECONDS, *, backend=None):
     except ValueError:
         expected, _ = public_article_url(url)
         script_name, public = 'public_browser.js', True
+    backend = selected_backend(backend)
     javascript = Path(__file__).with_name(script_name).read_text()
     if backend == 'neo':
         if __package__:
@@ -195,7 +215,7 @@ def read_page(url, timeout=MAX_READ_SECONDS, *, backend=None):
         if result.get('kind') == 'article':
             result['text_sha256'] = hashlib.sha256(result['text'].encode()).hexdigest()
         return result
-    expression = ('(()=>{const value=(' + javascript + ')(' + json.dumps(expected) + ');'
+    expression = ('(()=>{if(location.href==="about:blank"||location.href==="")return"null";const value=(' + javascript + ')(' + json.dumps(expected) + ');'
                   'const text=JSON.stringify(value);return new TextEncoder().encode(text).length>'
                   + str(MAX_RESULT_BYTES) + '?JSON.stringify({diagnostic:{reason:"article_scope_size_out_of_bounds"}}):text;})()')
     deadline, owner = time.monotonic() + timeout, None

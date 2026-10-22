@@ -1,7 +1,7 @@
 """Toutiao rendered-page intake and optional local video transcription.
 
 Page evidence can come from the configured browser connector (--page-data),
-or LinkGet's existing daily-Chrome page controller. No credential export.
+or LinkGet's selected rendered-page controller (user configured). No credential export.
 """
 import argparse
 import json
@@ -180,8 +180,8 @@ def validate_page(url, page):
 
 
 def read_browser(url, *, backend=None):
-    # Douyin keeps its existing controller. This helper owns one temporary tab,
-    # bounds page reads, and cleans it without exporting credentials.
+    # Reuse the selected bounded renderer and its owned-tab cleanup without
+    # exporting browser credentials.
     if __package__:
         from .rendered_page import read_page
     else:
@@ -279,14 +279,14 @@ def prepare_checkpoint_resume(folder):
         child.rmdir()
 
 
-def read(url, folder, page=None, model=None, keep_media=False, language='zh',resume_checkpoints=False):
+def read(url, folder, page=None, model=None, keep_media=False, language='zh',resume_checkpoints=False, rendered_backend=None):
     url = canonical(url)
     if folder.exists() and not resume_checkpoints:
         raise ValueError('The content folder already exists; choose a new folder to preserve prior evidence.')
     if page is not None:
         item = validate_page(url, page)
     else:
-        item = read_browser(url)
+        item = read_browser(url, backend=rendered_backend)
     if item['kind'] == 'video' and model is None:
         raise ValueError('Videos need --transcribe --whisper-model; title-only content is not summary-ready.')
     if item['kind'] == 'video' and (not model.is_file() or not all(shutil.which(t) for t in ('ffmpeg', 'ffprobe', 'whisper-cli'))):
@@ -328,7 +328,8 @@ def main(argv):
     parser = argparse.ArgumentParser(prog='linkget read', description='Read one Toutiao post for summarization, without Photos import or sending.')
     parser.add_argument('url')
     parser.add_argument('--folder', required=True, type=Path, help='New content folder; never overwrite existing evidence')
-    parser.add_argument('--page-data', type=Path, help='Content-only JSON from the authorized Chrome connector')
+    parser.add_argument('--page-data', type=Path, help='Content-only JSON from an authorized connector; no browser access')
+    parser.add_argument('--rendered-backend', choices=['neo', 'chrome'], help='Default: Neo; explicit chrome keeps the existing daily-Chrome reader')
     parser.add_argument('--transcribe', action='store_true', help='Transcribe the complete video locally')
     parser.add_argument('--whisper-model', type=Path, help='Existing whisper.cpp model; nothing is downloaded automatically')
     parser.add_argument('--keep-media', action='store_true', help='Temporarily retain media for manual recognition review; clean after review')
@@ -340,7 +341,7 @@ def main(argv):
         page = json.loads(args.page_data.read_text()) if args.page_data else None
         output = read(args.url, args.folder.expanduser().resolve(), page,
                       args.whisper_model.expanduser().resolve() if args.whisper_model else None,
-                      keep_media=args.keep_media, language=args.language)
+                      keep_media=args.keep_media, language=args.language, rendered_backend=args.rendered_backend)
         print(json.dumps({'status': 'content_ready', 'content': str(output), 'send_enabled': False}, ensure_ascii=False))
         return 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:

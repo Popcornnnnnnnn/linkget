@@ -249,14 +249,15 @@ def main(argv):
             if source.get('content_complete') is not True or not source.get('text'):
                 raise ValueError('AI processing requires complete source text.')
         elif kind == 'retry':
-            if len(argv) > 2:
-                raise ValueError('Use linkget read retry [FOLDER].')
-            pending = read_store.unfinished() if len(argv) == 1 else []
-            folder = Path(argv[1]).expanduser().resolve() if len(argv) == 2 else Path(pending[0]['folder']) if pending else None
+            retry = content.retry_parser().parse_args(argv[1:])
+            pending = read_store.unfinished() if retry.folder is None else []
+            folder = retry.folder.expanduser().resolve() if retry.folder else Path(pending[0]['folder']) if pending else None
             if folder is None:
                 raise ValueError('No unfinished read was found.')
             read_store.read_json(folder / '.read-job.json')
             argv = ['retry', str(folder)]
+            if retry.rendered_backend is not None:
+                argv += ['--rendered-backend', retry.rendered_backend]
         else:
             batch = kind == 'batch'
             parser = content.read_parser(batch)
