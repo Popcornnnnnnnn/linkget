@@ -93,8 +93,8 @@ def read_videos(args):
     rendered_backend = getattr(args, 'rendered_backend', None)
     if rendered_backend is not None and site != 'Toutiao' and not public_article:
         raise ValueError('--rendered-backend applies only to Toutiao and scoped public articles.')
-    if site == 'Toutiao' or public_article:
-        rendered_backend = rendered_page.selected_backend(rendered_backend)
+    if (site == 'Toutiao' or public_article) and not getattr(args, 'page_data', None):
+        rendered_backend = rendered_page.selected_backend(rendered_backend, browser=args.browser)
     if public_article and (args.browser not in {'auto', 'chrome'} or args.profile):
         raise ValueError('This scoped article uses the selected rendered reader; --browser none disables '
                          'browser access, and another credential profile is not supported.')
@@ -128,6 +128,8 @@ def read_videos(args):
                 cli.status('Done', 'This read is already complete')
                 return 0
             job['status'] = 'running'
+            if getattr(args, '_rendered_backend_override', False):
+                job['options']['rendered_backend'] = rendered_backend
             read_store.save_job(folder, job)
         else:
             job = read_store.checkpoint(folder, args.url, options)
@@ -494,10 +496,18 @@ An enabled AI fallback switches on provider outages; config --help lists options
     parser.add_argument('--keep-media', action='store_true')
     parser.add_argument('--page-data', type=Path, help='Toutiao only: content-only page JSON')
     parser.add_argument('--rendered-backend', choices=['chrome', 'neo'],
-                        help='Scoped rendered pages: daily Chrome or the dedicated BrowserOS neo MCP')
-    parser.add_argument('--browser', choices=['auto', 'none', 'chrome', 'firefox', 'safari', 'edge', 'brave'], default='auto')
+                        help='Scoped page reader override; otherwise use the environment or saved reader-browser preference (auto follows saved/system browser)')
+    parser.add_argument('--browser', choices=['auto', 'none', 'chrome', 'firefox', 'safari', 'edge', 'brave'], default='auto', help='Existing login source; scoped pages: chrome selects Chrome, none disables browser access; other explicit browsers are not substituted')
     parser.add_argument('--profile')
     parser.add_argument('--foreground', action='store_true', help='Wait for completion instead of running in the background')
+    return parser
+
+
+def retry_parser():
+    parser = argparse.ArgumentParser(prog='linkget read retry', description='Resume retained checkpoints. Preserve the recorded browser/backend unless explicitly overridden.')
+    parser.add_argument('folder', nargs='?', type=Path, help='Unfinished read folder; omit for the latest unfinished read')
+    parser.add_argument('--foreground', action='store_true', help='Wait for completion and return its exit code')
+    parser.add_argument('--rendered-backend', choices=['chrome', 'neo'], help='Explicitly override the retained scoped reader choice; does not enable a disabled browser')
     return parser
 
 
@@ -519,10 +529,7 @@ def main(argv):
                 from read_ai import main as ai_main
             return ai_main(argv)
         if argv and argv[0] == 'retry':
-            parser = argparse.ArgumentParser(prog='linkget read retry', description='Resume retained media and recognition checkpoints in the background; preserves completed chunks.')
-            parser.add_argument('folder', nargs='?', type=Path, help='Unfinished read folder; omit to select the latest unfinished read')
-            parser.add_argument('--foreground', action='store_true', help='Wait for completion and return its exit code')
-            retry = parser.parse_args(argv[1:])
+            retry = retry_parser().parse_args(argv[1:])
             pending = read_store.unfinished()
             folder = retry.folder.expanduser().resolve() if retry.folder else Path(pending[0]['folder']) if pending else None
             if folder is None:
@@ -530,6 +537,9 @@ def main(argv):
             record = read_store.read_json(folder / '.read-job.json')
             args = argparse.Namespace(**record['options'], url=record.get('source') or '', folder=folder,
                                       resume=True, refresh=False, transcribe=True)
+            if retry.rendered_backend is not None:
+                args.rendered_backend = retry.rendered_backend
+                args._rendered_backend_override = True
             for field in ('whisper_model', 'vad_model', 'page_data'):
                 value = getattr(args, field, None)
                 setattr(args, field, Path(value) if value else None)

@@ -69,7 +69,8 @@ def default_browser():
         with path.open("rb") as source:
             handlers = plistlib.load(source).get("LSHandlers", [])
         names = {"com.google.chrome": "chrome", "org.mozilla.firefox": "firefox",
-                 "com.microsoft.edgemac": "edge", "com.apple.safari": "safari"}
+                 "com.microsoft.edgemac": "edge", "com.apple.safari": "safari",
+                 "com.browseros.browserclaw": "neo"}
         for scheme in ("https", "http"):
             for item in handlers:
                 if item.get("LSHandlerURLScheme") == scheme:

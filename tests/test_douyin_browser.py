@@ -19,7 +19,7 @@ class BrowserRoutingTests(unittest.TestCase):
         item = {'aweme_id':'123', 'images':[{'live_photo_type':0, 'url_list':['https://cdn.example/image.jpg']}],
                 'browser_controller':{'kind':'browseros_neo_mcp'}}
         with patch.object(neo_browser, 'read_dom', return_value=item) as neo, patch.object(douyin_browser.subprocess, 'run') as chrome:
-            result = read_item('https://www.douyin.com/note/123')
+            result = read_item('https://www.douyin.com/note/123', backend='neo')
         self.assertNotIn('browser_controller', result)
         neo.assert_called_once()
         self.assertEqual(neo.call_args.args[0], 'https://www.douyin.com/note/123')
@@ -36,7 +36,7 @@ class BrowserRoutingTests(unittest.TestCase):
     def test_neo_failure_does_not_fall_back_to_applescript_or_claim_unsupported(self):
         with patch.object(neo_browser, 'read_dom', side_effect=neo_browser.NeoBrowserError('complete media unavailable: unsupported layout')), patch.object(douyin_browser.subprocess, 'run') as chrome:
             with self.assertRaises(BrowserReadError) as failure:
-                read_item('https://www.douyin.com/note/123')
+                read_item('https://www.douyin.com/note/123', backend='neo')
         chrome.assert_not_called()
         reason = classify(failure.exception)
         self.assertEqual(reason.category, 'browser_state')
@@ -52,7 +52,7 @@ class BrowserRoutingTests(unittest.TestCase):
             with self.assertRaises(ValueError): neo_browser._content_url(url)
         for item in [{'aweme_id':'456','images':[{}]}, {'aweme_id':'123','images':['invalid']}, {'aweme_id':'123','video':'invalid'}]:
             with patch.object(neo_browser, 'read_dom', return_value=item):
-                with self.assertRaises(BrowserReadError): read_item('https://www.douyin.com/note/123')
+                with self.assertRaises(BrowserReadError): read_item('https://www.douyin.com/note/123', backend='neo')
 
 
 class ConnectorDataTests(unittest.TestCase):

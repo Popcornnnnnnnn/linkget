@@ -129,10 +129,10 @@ class RenderedPageTests(unittest.TestCase):
                 return '11:22:33' if action == 'open' else 'closed' if action == 'close' else json.dumps(raw)
             with patch.object(reader, 'reader_lock', return_value=nullcontext()), patch.object(reader, 'controller', side_effect=control):
                 if succeeds:
-                    result = reader.read_public(ZH)
+                    result = reader.read_public(ZH, backend='chrome')
                     self.assertEqual(result['browser_controller']['temporary_tab_cleanup'], 'closed')
                 else:
-                    with self.assertRaises(ValueError): reader.read_public(ZH)
+                    with self.assertRaises(ValueError): reader.read_public(ZH, backend='chrome')
             self.assertEqual([call[0] for call in calls], ['open', 'read', 'close'])
             self.assertEqual(calls[-1][1], ('11', '22', '33', ZH))
 
@@ -144,11 +144,11 @@ class RenderedPageTests(unittest.TestCase):
                 if action == 'read': raise exception
                 return '11:22:33' if action == 'open' else 'closed'
             with patch.object(reader, 'reader_lock', return_value=nullcontext()), patch.object(reader, 'controller', side_effect=control):
-                with self.assertRaises(reader.BrowserUnavailable): reader.read_public(ZH)
+                with self.assertRaises(reader.BrowserUnavailable): reader.read_public(ZH, backend='chrome')
             self.assertEqual(calls, ['open', 'read', 'close'])
         with patch.object(reader, 'reader_lock', return_value=nullcontext()), patch.object(reader, 'controller',
                 side_effect=['11:22:33', json.dumps(self.fixture_public()), 'unverified']):
-            with self.assertRaises(reader.BrowserUnavailable): reader.read_public(ZH)
+            with self.assertRaises(reader.BrowserUnavailable): reader.read_public(ZH, backend='chrome')
 
     def test_lock_serializes_and_is_bounded_without_opening_tabs(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(reader, 'lock_path', return_value=Path(tmp)/'browser/reader.lock'):

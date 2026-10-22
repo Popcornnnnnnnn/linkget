@@ -136,3 +136,8 @@ Offline coverage includes bounded default workers, independent-site scheduling, 
 Offline regressions cover Neo selection independently of the system default browser, explicit Chrome compatibility, public-only/logout boundaries, exact Douyin URL/player scope and no AppleScript fallback on Neo errors. The original gallery/motion extractor and source-completeness requirements remain unchanged.
 
 A controlled public-metadata miss exercised automatic Neo acquisition and real native transfers into an isolated folder: nine current-post images, zero exposed motion tracks, nine valid saved WebP files totaling 1,215,162 bytes. The existing Neo lifecycle reported verified tab closure and no credential export. No AppleScript or Photos import ran; the old failed Photos task was not retried. This validates that one accessible gallery; it does not establish every Douyin post or Photos playback. Signed media URLs and downloaded images remain in ignored local evidence.
+
+
+### Personal page-reader preference (2026-10-22)
+
+The complete source suite passed 559 tests with five optional extractor skips; wheel and source-distribution builds passed. Fourteen focused tests cover clean-user auto resolution, saved/system browser choices, personal Neo selection, explicit/environment priority, configuration preservation, download and read checkpoint freezing/override, batch/worker transport, browser-off and offline paths, cancellation, and no silent Neo-to-Chrome fallback. Browser controller support remains limited to Chrome and Neo. Live platform availability and account state are separate acceptance layers.

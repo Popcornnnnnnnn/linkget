@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a shared user page-reading preference (`config --reader-browser auto|neo|chrome`) across Douyin fallback, scoped reads, batches and workers. Auto follows saved/system browser choices, unsupported controllers fail clearly, and retained tasks preserve their choice unless explicitly overridden.
+
 - Route the automatic Douyin rendered fallback through the existing bounded Neo reader; preserve explicit Chrome, public-only and logout boundaries. Report incomplete browser state separately from unsupported websites.
 
 - Integrate the local compact batch panel, continuous elapsed times, checked ASR chunk recovery, bounded Toutiao transfers, scoped rendered/Neo reader and Neo tab ownership fixes with the dev22 writer/checkpoint safeguards.
