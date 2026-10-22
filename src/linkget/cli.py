@@ -538,6 +538,15 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     for index in range(len(tokens) - 2, -1, -1):
         if tokens[index] == "--folder" and tokens[index + 1].startswith(("http://", "https://")):
             tokens.insert(index + 1, ".")
+    if __package__:
+        from . import command_help
+    else:
+        import command_help
+    if command_help.show(parser,tokens):
+        return 0
+    for action in parser._actions:
+        if action.dest in {'reader_browser','probe_browser','check_session','verify','item','redownload'}:
+            action.help=argparse.SUPPRESS
     args = parser.parse_intermixed_args(tokens)
     if (args.probe_browser or args.check_session) and args.link != ["doctor"]:
         parser.error("Live diagnostic checks require linkget doctor.")

@@ -114,3 +114,13 @@ class InspectionTests(unittest.TestCase):
         out=io.StringIO()
         with contextlib.redirect_stdout(out):self.assertEqual(cli.main(['version','--json']),0)
         self.assertEqual(json.loads(out.getvalue())['version'],cli.VERSION)
+
+    def test_command_help_is_focused_and_never_inspects_user_data(self):
+        for command,present,absent in [('config','--reader-browser','--jobs'),('doctor','--probe-browser','--jobs'),('retry','--redownload','--reader-browser'),('recover','--verify','--redownload'),('batch','--jobs','--check-session')]:
+            out=io.StringIO()
+            with patch.object(accounts,'preferences',side_effect=AssertionError('config read')),contextlib.redirect_stdout(out):
+                self.assertEqual(cli.main([command,'--help']),0)
+            self.assertIn('linkget '+command,out.getvalue());self.assertIn(present,out.getvalue());self.assertNotIn(absent,out.getvalue())
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):self.assertEqual(cli.main(['help','doctor']),0)
+        self.assertIn('--check-session',out.getvalue())
