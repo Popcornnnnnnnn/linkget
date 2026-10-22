@@ -269,14 +269,26 @@ class ReadDomTests(unittest.TestCase):
         self.assertIn('"ownerAgentId": "reader-101"', cleanup)
         self.assertEqual(client.initializations, 2)
 
-    def test_closing_alias_gets_one_refresh_and_physical_verification_without_reclosing(self):
-        for verified in ('closed', 'unknown_cleanup'):
+    def test_closing_alias_uses_bounded_read_only_confirmation_without_reclosing(self):
+        for observations in (['closed'], ['unknown_cleanup','closed'], ['unknown_cleanup']*3):
             client = FakeClient(neo.DEFAULT_ENDPOINT, time.monotonic() + 45)
             client.results = [run_result({'cleanup': 'closing', 'identity': {'tabId': 101, 'targetId': 'target-101'}}),
-                              run_result({'cleanup': verified})]
-            self.assertEqual(neo._recover_cleanup(client, 'fixture-token', URL, 17), verified)
-            self.assertEqual([name for name, _, _ in client.calls], ['run', 'tabs', 'run'])
-            self.assertNotIn('.close()', client.calls[-1][1]['code'])
+                              *[run_result({'cleanup': state}) for state in observations]]
+            expected='closed' if 'closed' in observations else 'unknown_cleanup'
+            self.assertEqual(neo._recover_cleanup(client, 'fixture-token', URL, 17),expected)
+            self.assertEqual([name for name, _, _ in client.calls], ['run']+['tabs','run']*len(observations))
+            for name,args,_ in client.calls[1:]:
+                if name=='run':self.assertNotIn('.close()',args['code'])
+
+    def test_delayed_close_keeps_valid_dom_without_reopening_or_reading_again(self):
+        output,client=self.read([run_result({'ok':True,'dom':DOM}),
+            run_result({'cleanup':'closing','identity':{'tabId':101,'targetId':'target-101'}}),
+            run_result({'cleanup':'unknown_cleanup'}),run_result({'cleanup':'closed'})])
+        self.assertEqual(output['text'],DOM['text'])
+        self.assertEqual(output['browser_controller']['temporary_tab_cleanup'],'closed')
+        self.assertEqual(sum(name=='evaluate' for name,_,_ in client.calls),1)
+        self.assertEqual(sum(name=='tabs' and args.get('action')=='new' for name,args,_ in client.calls),1)
+        self.assertEqual(sum('.close()' in args.get('code','') for name,args,_ in client.calls),1)
 
     def test_known_read_run_timeout_uses_confirmed_id_without_reopening(self):
         client = FakeClient(neo.DEFAULT_ENDPOINT, time.monotonic() + 45)

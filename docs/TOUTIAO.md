@@ -24,9 +24,13 @@ Videos always require local transcription. The command downloads only the render
 
 Use `--keep-media` only when checking uncertain recognition against the video. After review call `linkget.toutiao.cleanup_media(Path(folder))`; it removes only `source.mp4`, `audio.wav`, `transcript.txt` and `transcript.json`, refuses symlink substitutions, and preserves summaries, text evidence and models. The caller remains responsible for its temporary page-input JSON and review frames. Blob-backed players require exposed direct or paired media resources with the existing transfer and timing evidence; a title or player surface alone is not readable video content.
 
-For an article, `kind: "article"`, `title`, `text` and `content_complete: true` can be supplied after reading the rendered `article` element. Title-only and very short snippets are refused. Article support has unit coverage, but a live article has not been validated in this checkpoint.
+For an article, `kind: "article"`, `title`, `text` and `content_complete: true` can be supplied after reading the rendered `article` element. Title-only and very short snippets are refused. A live public article was validated on 2026-10-22 through the installed default Neo reader; this is sampled acceptance, not a guarantee for every post.
 
-## Verified 2026-10-08
+## Verified 2026-10-22
+
+The installed default Neo reader completed one publicly sourced article. The existing public video sample exposed a delayed close-confirmation race; after the bounded read-only cleanup-confirmation fix, the normal CLI completed its 38.383991-second video with a full 3,439,671-byte HTTP response, full local audio transcription and 12 timed segments. The reader confirmed closed cleanup without credential export. `recognition_verified` remains false: transfer/audio coverage does not prove word accuracy. Test media were retained with `--keep-media`; no Photos import was involved.
+
+## Historical verification 2026-10-08
 
 - The daily Chrome connector visibly showed the existing Toutiao login; no new login or browser credential export was performed.
 - The group-shared video `7693844463388655644` was read through that connector. Automatic playback later navigated to another post, confirming the need for exact post-identity checks; it was returned to the requested post before capturing the final evidence. The temporary task tab was closed.

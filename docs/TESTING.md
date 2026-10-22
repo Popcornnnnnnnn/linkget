@@ -2,6 +2,14 @@
 
 Automated tests use temporary directories, synthetic sessions and mocked Photos calls. They never read personal browser stores or open Photos.
 
+## Current acceptance (2026-10-22)
+
+The reviewed personal-reader build passed 561 source, isolated-wheel and installed tests (five optional skips); required-extractor compatibility and eleven CLI/formula-equivalent checks passed. The normal installed default Neo background reader and explicit Chrome reader both completed the public PI5 article. Neo cleanup and Chrome active-tab restoration were verified. Product default remains user-level `auto`, with Chrome/Neo as the implemented DOM controllers. The separate Safari/Edge/Firefox boundary checks do not claim DOM implementation or authenticated-profile extraction.
+
+One real Bilibili Live Photo pair passed import to the user's daily Photos library, byte-identical verification of both managed originals and user-confirmed normal playback. Read-only checks later reused the same asset through the actual duplicate lookup and reverified both resources; a guarded duplicate-control-flow test reached no mutation handler. No second import occurred. This does not establish real repeated-import behavior, broader gallery import, or every platform's motion pairing.
+
+Existing saved-session checks used the installed normal validators without refreshing/exporting credentials or modifying snapshots. Some sessions were accepted, others rejected or inconclusive; these are current saved-session results, not proof of fresh browser extraction or a named human account. Native `brew test` still stops at Homebrew's dependency-version prerequisite; its formula-equivalent assertions passed, and no unrelated dependency upgrade was performed. Follow-up source validation passed 562 tests (five optional skips), including delayed-close confirmation without replaying creation, DOM evaluation or close. Live Toutiao article/video reads passed through the normal Neo paths; full video-audio coverage retains recognition_verified=false. Fresh-machine permissions, long-term website changes and unsupported DOM controllers remain explicit limits. Current follow-up is [Issue #18](https://github.com/Popcornnnnnnnn/linkget/issues/18). The dated entries below retain their original checkpoint scope.
+
 Covered behaviors include:
 
 - Same-item retry cleanup after repeated partial failures, complete-set recovery and verified Photos originals; cancelled/failed saves, corrupt destination copies, edited/added files, symbolic links, replaced/outside roots, another task's sources and nested destinations retain their files;
@@ -28,7 +36,7 @@ Covered behaviors include:
 
 The current [13-channel media corpus and acceptance protocol](MEDIA_VALIDATION.md) separates anonymous availability, quality references and visual watermark findings. Historical [eight-channel watermark findings](WATERMARKS.md) include authenticated samples and do not prove anonymous access. These checks are samples, not a guarantee for every post or network. On 2026-09-29, opt-in live checks verified eight sites with an authorized Chrome session; an invalid Weibo cookie was rejected. This does not verify other browsers or all account configurations. Ordinary automated tests do not read personal browser sessions.
 
-## Manual acceptance needed
+## Historical acceptance checkpoints
 
 ### Compact batch terminal panel (2026-10-13)
 

@@ -516,14 +516,19 @@ def _confirmed_cleanup(client, result):
     if (not isinstance(identity, dict) or type(identity.get('tabId')) is not int or
             not _opaque(identity.get('targetId'))):
         return 'unknown_cleanup'
-    # Neo may return a stale page alias immediately after close. Refresh once,
-    # then verify the physical tab in a separate RPC; never repeat the close.
-    client.call('tabs', {'action': 'list'}, timeout=2)
+    # Closing is asynchronous: both inventory RPCs can briefly retain aliases.
+    # Refresh only the physical-identity observation, at most three times within
+    # the existing cleanup deadline. Never repeat close, creation or DOM reads.
     code = '''const identity = IDENTITY;
 return {cleanup:(await browser.pages.list()).some(page =>
   page.tabId === identity.tabId || page.targetId === identity.targetId) ? 'unknown_cleanup' : 'closed'};'''.replace(
         'IDENTITY', json.dumps({'tabId': identity['tabId'], 'targetId': identity['targetId']}))
-    return _run_value(client.call('run', {'code': code, 'timeout': 2000}, timeout=3)).get('cleanup', 'unknown_cleanup')
+    for _ in range(3):
+        client.call('tabs', {'action': 'list'}, timeout=2)
+        observed = _run_value(client.call('run', {'code': code, 'timeout': 2000}, timeout=3)).get('cleanup', 'unknown_cleanup')
+        if observed == 'closed':
+            return observed
+    return 'unknown_cleanup'
 
 
 def _recover_cleanup(client, token, url, page_id=None, reconnect=False, identity=None):
