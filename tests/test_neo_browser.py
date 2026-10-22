@@ -195,12 +195,12 @@ class FakeClient:
             return self.creation
         if name != 'run':
             if name == 'evaluate':
-                if isinstance(self.evaluate_reply, Exception):
+                if isinstance(self.evaluate_reply, BaseException):
                     raise self.evaluate_reply
                 return self.evaluate_reply or {'structuredContent': {'dom': self.dom, 'owner': True, 'url': URL, 'stage': 'complete'}}
             return {}
         value = self.results.pop(0) if self.results else run_result({'cleanup': 'closed'})
-        if isinstance(value, Exception):
+        if isinstance(value, BaseException):
             raise value
         payload = value.get('structuredContent', {}).get('value', {})
         if isinstance(payload, dict) and 'dom' in payload:
@@ -236,6 +236,19 @@ class ReadDomTests(unittest.TestCase):
         self.assertIn('MutationObserver', evaluation['code'])
         self.assertEqual(evaluation['maxChars'], 200000)
         self.assertLess(evaluation['timeout'], 30000)
+
+    def test_cancellation_uses_owned_cleanup_and_reraises(self):
+        for stage in ('run', 'evaluate'):
+            client = FakeClient(neo.DEFAULT_ENDPOINT, time.monotonic() + 45)
+            client.results = [KeyboardInterrupt()] if stage == 'run' else [run_result({'ok': True})]
+            if stage == 'evaluate':
+                client.evaluate_reply = KeyboardInterrupt()
+            with patch.object(neo, '_RPCClient', return_value=client), patch.object(neo, '_recover_cleanup', return_value='closed') as cleanup:
+                with self.assertRaises(KeyboardInterrupt):
+                    neo.read_dom(URL, EXTRACTOR)
+            cleanup.assert_called_once()
+            self.assertEqual(cleanup.call_args.args[3], 17)
+            self.assertEqual(sum(name == 'tabs' and args.get('action') == 'new' for name, args, _ in client.calls), 1)
 
     def test_user_navigation_is_preserved(self):
         output, _ = self.read([run_result({'ok': True, 'dom': DOM}), run_result({'cleanup': 'preserved_navigated_tab'})])

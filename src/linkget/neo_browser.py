@@ -612,6 +612,11 @@ def read_dom(url, javascript, timeout=45):
         if cleanup not in ('closed', 'preserved_navigated_tab'):
             raise NeoBrowserError('Neo content read failed at stage: cleanup_unconfirmed.')
         confirmed_cleanup = cleanup
+    except (KeyboardInterrupt, EOFError):
+        # Cancellation still owns the one-shot tab creation receipt. Use the
+        # same identity/navigation checks, then preserve the interruption.
+        _recover_cleanup(client, token, url, page_id, identity=identity)
+        raise
     except NeoBrowserError as error:
         cleanup = confirmed_cleanup or _recover_cleanup(client, token, url, page_id,
                                                         reconnect=isinstance(error, _SessionLost), identity=identity)
