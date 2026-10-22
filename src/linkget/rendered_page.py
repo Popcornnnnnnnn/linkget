@@ -183,7 +183,6 @@ def read_page(url, timeout=MAX_READ_SECONDS, *, backend=None):
         raise ValueError('The rendered reader timeout must be between 1 and 45 seconds.')
     if not isinstance(url, str) or len(url) > 2048:
         raise ValueError('A bounded normal HTTPS content URL is required.')
-    backend = selected_backend(backend)
     if __package__:
         from . import toutiao
     else:
@@ -194,6 +193,7 @@ def read_page(url, timeout=MAX_READ_SECONDS, *, backend=None):
     except ValueError:
         expected, _ = public_article_url(url)
         script_name, public = 'public_browser.js', True
+    backend = selected_backend(backend)
     javascript = Path(__file__).with_name(script_name).read_text()
     if backend == 'neo':
         if __package__:
