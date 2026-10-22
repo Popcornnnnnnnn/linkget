@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Explain effective page-controller provenance separately from login-browser sources; add layered metadata-only diagnostics and explicit single-target checks.
+- Add detailed local build identity, focused command help, retained-file reasons and a strictly read-only cleanup preview. Preserve existing overrides, checkpoints and all user files; media/results and browser materials are never cleanup candidates.
+
 - Confirm asynchronous Neo tab closure with bounded read-only physical-identity observations; never replay the close, creation or content read.
 
 - Add a shared user page-reading preference (`config --reader-browser auto|neo|chrome`) across Douyin fallback, scoped reads, batches and workers. Auto follows saved/system browser choices, unsupported controllers fail clearly, and retained tasks preserve their choice unless explicitly overridden.

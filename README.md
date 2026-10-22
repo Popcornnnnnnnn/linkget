@@ -37,7 +37,8 @@ Use straight ASCII quotes (`'` or `"`) around command-line URLs. Shells interpre
 
 | Command | Purpose |
 | --- | --- |
-| `linkget help` | Commands, options and examples |
+| `linkget help` / `linkget COMMAND --help` | Overview or focused command options and examples |
+| `linkget version [--json]` | Detailed local build identity; short `--version` stays unchanged |
 | `linkget sites` | Supported websites and post types |
 | `linkget read URL --folder NEW_DIR` | Read subtitles, local speech and post/image text in the background; [reading options](docs/READ.md) |
 | `linkget read batch URL1 URL2` | Read multiple posts; retry unfinished reads |
@@ -46,11 +47,14 @@ Use straight ASCII quotes (`'` or `"`) around command-line URLs. Shells interpre
 | `linkget read retry FOLDER --rendered-backend neo` | Explicitly change a retained scoped read to Neo; otherwise retries preserve its recorded choice |
 | `linkget read status [TASK]` | Show progress, completion and result paths |
 | `linkget read logs TASK` / `linkget read cancel TASK` | Inspect or cancel a background read task |
-| `linkget doctor` | Check download tools, without account requests |
-| `linkget config` | View or change the default save destination |
+| `linkget doctor` | Tools, effective page controller and saved-session metadata; no default network/browser checks |
+| `linkget doctor --probe-browser neo` | Explicit MCP connection check; no page is opened |
+| `linkget doctor --check-session SITE` | Explicitly check one existing saved session, without browser export |
+| `linkget config` | Read-only defaults, effective page controller/source and separate login-browser sources |
 | `linkget batch URL1 URL2` | Download all supplied posts concurrently |
 | `linkget batch` | Paste one link or sharing text per line; a blank line starts downloads |
-| `linkget tasks [TASK]` | View download and background read tasks together; add `--kind download` or `--kind read` |
+| `linkget tasks [TASK]` | Status, retained sizes and reasons across download/read tasks |
+| `linkget tasks TASK --cleanup-preview` | Read-only eligibility preview for one task; never deletes files |
 | `linkget retry [TASK]` | Retry only unfinished items from the latest or specified task |
 | `linkget recover` | List retained files and tasks needing recovery |
 | `linkget recover TASK` | Save a complete retained download without downloading again |
@@ -144,6 +148,16 @@ linkget config --folder ~/Downloads  # default to a fixed folder
 Relative folder paths supplied to `config --folder PATH` are resolved when saved. Bare `config --folder` follows your working directory on each subsequent download. Configuration does not create the destination folder; it is created when downloading.
 
 Download options override the saved default for that run only. The `Destination` line shows the actual resolved destination. Updating the default preserves your browser choice and saved website sessions.
+
+## Inspect configuration and retained files
+
+`config` reports the effective page controller and why it was selected, alongside the separate login refresh sources. It does not read credentials or verify login validity. Page options, explicit browser options, environment, personal preference, saved browser choice and system default retain their existing priority; disabled/logout boundaries and frozen retry choices still apply. Actual rendered acquisitions also report their selection source.
+
+`doctor` defaults to local tools and metadata. Saved sessions show modification time and `validity unknown`, not a guessed fresh login state. `--check-session SITE` explicitly checks only that website using its existing saved session; it preserves snapshots and never exports a browser profile. `--probe-browser neo` checks only the existing MCP handshake, not DOM or website availability. `--probe-browser chrome` uses the OS's nonprompt access query for the calling CLI process; it does not send AppleEvents or claim that a separate Chrome control sender, JavaScript or a website was tested. Neither path asks for new permissions or opens a page.
+
+`version --json` reads validated adjacent `BUILD_IDENTITY.json` in a local Homebrew build. Source trees and Python packages without embedded provenance report unknown commit/build fields rather than requiring Git or guessing from the version string. It never contacts a server or reads account data.
+
+`tasks` distinguishes retained retry data, unconfirmed Photos copies, uncertain legacy ownership and protected stages. Explicit `tasks TASK --cleanup-preview` checks existing task evidence and current saved copies without modifying any file or receipt. It labels transient working-file candidates, must-keep files and unknown evidence, with sizes and reasons. Media, user results/exports, browser apps/installers/profiles and read checkpoints are excluded from candidates. Candidates require persisted creation identity and matching current copies; observation grants no new ownership or deletion authority. No cleanup command, automatic purge or schedule is added. Existing recovery commands remain separate actions and can save or remove verified staging files.
 
 ## Supported posts
 

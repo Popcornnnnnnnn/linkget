@@ -200,3 +200,18 @@ class InspectionTests(unittest.TestCase):
         with patch.object(ownership.FileProof,'verify',side_effect=AssertionError('out-of-scope copy read')):
             entries=retention.preview(journal,1)
         self.assertTrue(all(e['classification']=='unknown' for e in entries))
+
+    def test_invalid_preview_metadata_never_inspects_or_reauthorizes_paths(self):
+        journal,root=self.retained_journal()
+        journal.data['items'][0]['previous_stages']='invalid'
+        with patch.object(staging,'_inventory',side_effect=AssertionError('invalid path inspected')):
+            result=retention.preview(journal,1)
+        self.assertEqual(result[0]['classification'],'unknown');self.assertIsNone(result[0]['path'])
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):tasks.show_download(journal,preview=True)
+        self.assertIn('Preview unknown',out.getvalue())
+        journal.data['items'][0]['previous_stages']=[]
+        journal.data['items'][0]['receipt']={'staged':None}
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):tasks.show_download(journal,preview=True)
+        self.assertIn('Preview unknown',out.getvalue())

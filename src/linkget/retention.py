@@ -55,9 +55,17 @@ def _protected(journal,index,root):
 
 def preview(journal,index,active=False):
     row=journal.data['items'][index-1]
-    paths=staging.paths(row)
+    try:
+        paths=staging.paths(row)
+    except (ValueError,TypeError):
+        return [{'path':None,'classification':'unknown','reason':'Invalid retained-path metadata; no directory was inspected.'}]
     receipt=row.get('receipt') or {}
-    paths+= [item['path'] for item in receipt.get('staged',[]) if isinstance(item,dict) and isinstance(item.get('path'),str)]
+    if not isinstance(receipt,dict):
+        return [{'path':None,'classification':'unknown','reason':'Invalid Photos receipt; no resource was inspected.'}]
+    staged=receipt.get('staged',[])
+    if not isinstance(staged,list):
+        return [{'path':None,'classification':'unknown','reason':'Invalid staged-resource metadata; no resource was inspected.'}]
+    paths+= [item['path'] for item in staged if isinstance(item,dict) and isinstance(item.get('path'),str)]
     entries=[]
     for name in dict.fromkeys(paths):
         path=Path(name)

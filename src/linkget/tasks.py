@@ -80,9 +80,20 @@ def show_download(journal, *, preview=False):
         if isinstance(failure, dict) and row['status'] != 'completed':
             print('  Failure: ' + display(failure.get('message', 'Unknown')))
             print('  Next: ' + display(failure.get('next_step', 'Inspect retained files.')))
-        paths = list(staging.paths(row))
+        try:
+            paths = list(staging.paths(row))
+        except (ValueError,TypeError):
+            paths=[]
+            print('  Retained because: Invalid path metadata; no file ownership can be inferred.')
         receipt = row.get('receipt') or {}
-        paths.extend(resource['path'] for resource in receipt.get('staged', []) if isinstance(resource, dict) and isinstance(resource.get('path'), str))
+        if not isinstance(receipt,dict):
+            receipt={}
+            print('  Retained because: Invalid import receipt; resources remain protected.')
+        resources=receipt.get('staged',[])
+        if not isinstance(resources,list):
+            resources=[]
+            print('  Retained because: Invalid staged-resource metadata; no resource was inspected.')
+        paths.extend(resource['path'] for resource in resources if isinstance(resource, dict) and isinstance(resource.get('path'), str))
         if paths:
             for reason in retention.reasons(row,active):
                 print('  Retained because: '+display(reason))
@@ -91,7 +102,7 @@ def show_download(journal, *, preview=False):
                 print('  Files: ' + display(path))
         if preview:
             for entry in retention.preview(journal,index,active):
-                print('  Preview '+entry['classification']+': '+display(entry['path'])+' · '+retained_size([entry['path']]))
+                print('  Preview '+entry['classification']+': '+display(entry['path'] or 'recorded files')+' · '+(retained_size([entry['path']]) if entry['path'] else 'size unknown'))
                 print('  Reason: '+display(entry['reason']))
         if row.get('receipt'):
             print(f'  Next: linkget recover {journal.identifier} --item {index} --verify')
