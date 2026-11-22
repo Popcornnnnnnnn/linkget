@@ -9,7 +9,7 @@ brew install Popcornnnnnnnn/tap/linkget
 linkget
 ```
 
-The tap currently distributes the `0.2.1.dev22` prerelease. It installs Python, gallery-dl, yt-dlp, ffmpeg and Deno as dependencies. Deno runs YouTube's JavaScript challenges. Homebrew may ask you to confirm trust in this third-party formula. After installation, `linkget` is available on PATH; follow Homebrew's shellenv instructions if `brew` itself is not on PATH.
+The tap currently distributes the `0.3.0` stable release. It installs Python, gallery-dl, yt-dlp, ffmpeg and Deno as dependencies. Deno runs YouTube's JavaScript challenges. Homebrew may ask you to confirm trust in this third-party formula. After installation, `linkget` is available on PATH; follow Homebrew's shellenv instructions if `brew` itself is not on PATH.
 
 To update linkget and its download engines:
 
@@ -50,8 +50,8 @@ Successful imports can retain additional originals when creation evidence or exc
 The GitHub release includes a wheel. Use an isolated installer:
 
 ```sh
-uv tool install ./linkget-0.2.1.dev22-py3-none-any.whl
-# or: pipx install ./linkget-0.2.1.dev22-py3-none-any.whl
+uv tool install ./linkget-0.3.0-py3-none-any.whl
+# or: pipx install ./linkget-0.3.0-py3-none-any.whl
 ```
 
 This installs linkget but not its external download engines. On macOS:

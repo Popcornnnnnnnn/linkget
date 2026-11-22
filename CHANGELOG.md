@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Nothing yet.
+
+## 0.3.0 (2026-11-22)
+
+First stable release. Everything below accumulated across the 0.2.1 development prereleases and the changes since dev22.
+
 - Explain effective page-controller provenance separately from login-browser sources; add layered metadata-only diagnostics and explicit single-target checks.
 - Add detailed local build identity, focused command help, retained-file reasons and a strictly read-only cleanup preview. Preserve existing overrides, checkpoints and all user files; media/results and browser materials are never cleanup candidates.
 

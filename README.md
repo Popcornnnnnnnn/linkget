@@ -5,6 +5,10 @@ A small command-line tool with English prompts, browser login reuse and no hoste
 
 **macOS command-line tool · MIT license**
 
+## Why
+
+Posts you like are easy to lose and awkward to keep: platform save buttons trap them inside the app, and web downloaders scatter files you never find again. linkget puts the photos and videos into your own macOS Photos library, or a folder you choose, from your own machine, with no hosted service in between. Downloads are checked for completeness before anything is imported, and interrupted jobs can be retried or recovered instead of starting over.
+
 ## Install
 
 With [Homebrew](https://brew.sh/):
@@ -14,7 +18,7 @@ brew install Popcornnnnnnnn/tap/linkget
 linkget
 ```
 
-The current release is **0.2.1.dev22**, a prerelease. The Homebrew tap follows these development releases; unreleased `main` changes may differ. Homebrew installs the download engines, Python and Deno (needed for YouTube). See [installation, updates and removal](docs/INSTALL.md) for details and the wheel alternative.
+The current release is **0.3.0**, the first stable release. The Homebrew tap follows stable releases; unreleased `main` changes may differ. Homebrew installs the download engines, Python and Deno (needed for YouTube). See [installation, updates and removal](docs/INSTALL.md) for details and the wheel alternative.
 
 ## Use
 
