@@ -997,6 +997,9 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             return 1
     if args.link == "sites":
         toutiao_entry = ("Toutiao", "Article text / local video transcription via linkget read; configured page reader; Chrome and Neo supported")
+        wechat_entry = ("WeChat Official Accounts", "Article text via linkget read (direct HTTP with optional Chrome/Neo /s/<id> fallback)")
+        web_entry = ("Web articles", "General public HTTPS/HTTP article extraction and plain/Markdown reads via linkget read")
+        extra_entries = [toutiao_entry, wechat_entry, web_entry]
         if args.json:
             agent_output.emit({
                 "schema_version": agent_output.SCHEMA_VERSION,
@@ -1009,14 +1012,15 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                         "audio_only": is_audio_only_site(site),
                         "supports_read": site != "Pixiv",
                     }
-                    for site, content in [*SUPPORTED_SITES, toutiao_entry]
+                    for site, content in [*SUPPORTED_SITES, *extra_entries]
                 ],
             })
             return 0
         for site, content in SUPPORTED_SITES:
             status(site, content)
-        status(*toutiao_entry)
-        print("\n  Use --audio (or --audio-format mp3|m4a|flac|wav|opus) to save audio from video posts to a folder.\n  Use linkget read for video speech on these channels, or Toutiao article text.\n  Pixiv is image-only. Availability varies by URL; read --help shows transcription options.")
+        for site, content in extra_entries:
+            status(site, content)
+        print("\n  Use --audio (or --audio-format mp3|m4a|flac|wav|opus) to save audio from video posts to a folder.\n  Use linkget read for video speech/keyframes, Toutiao, WeChat Official Accounts, or web articles.\n  Pixiv is image-only. Availability varies by URL; read --help shows options.")
         return 0
     if args.profile and args.browser in {"auto", "none"}:
         parser.error("--profile requires an explicit --browser, such as chrome or firefox.")

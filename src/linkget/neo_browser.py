@@ -79,7 +79,8 @@ def _content_url(value):
         parts.hostname == 'www.douyin.com' and re.fullmatch(r'/(video|note)/[0-9]{1,20}', parts.path) or
         parts.hostname == 'www.toutiao.com' and re.fullmatch(r'/(article|video)/[0-9]+/', parts.path) or
         parts.hostname == 'www.raspberrypi.com' and parts.path == '/products/raspberry-pi-5/' or
-        parts.hostname == 'zhuanlan.zhihu.com' and re.fullmatch(r'/p/[0-9]{1,20}', parts.path)
+        parts.hostname == 'zhuanlan.zhihu.com' and re.fullmatch(r'/p/[0-9]{1,20}', parts.path) or
+        parts.hostname == 'mp.weixin.qq.com' and re.fullmatch(r'/s/[A-Za-z0-9_-]{8,128}', parts.path)
     )
     if not allowed:
         raise ValueError('The page is outside the existing authorized content scope.')
@@ -355,6 +356,7 @@ def _read_script(url, javascript, token, wait_ms, page_id):
     selector = ('[data-e2e="player-container"]' if parts.hostname == 'www.douyin.com' else
                 'article .ContentItem-time, article .Post-Time' if parts.hostname == 'zhuanlan.zhihu.com' else
                 'main h1 img[alt]' if parts.hostname == 'www.raspberrypi.com' else
+                '#js_content, #activity-name, .weui-msg' if parts.hostname == 'mp.weixin.qq.com' else
                 'video' if parts.path.startswith('/video/') else 'article')
     marker = url + '#linkget-neo-' + token
     proof_code = ('if(location.href!==' + json.dumps(marker) + ')return {owned:false};'

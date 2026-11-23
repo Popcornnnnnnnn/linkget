@@ -7,12 +7,12 @@ import tempfile
 from urllib.parse import parse_qs, urlsplit
 
 if __package__:
-    from . import accounts, audio as audio_mod, engines, links, preflight, read_asr, rendered_page, toutiao
+    from . import accounts, audio as audio_mod, engines, links, preflight, read_asr, rendered_page, toutiao, web_article
     from .agent_output import classify_error
     from .media import AUDIO, VIDEO, reference
     from .runtime import run_process
 else:
-    import accounts, audio as audio_mod, engines, links, preflight, read_asr, rendered_page, toutiao
+    import accounts, audio as audio_mod, engines, links, preflight, read_asr, rendered_page, toutiao, web_article
     from agent_output import classify_error
     from media import AUDIO, VIDEO, reference
     from runtime import run_process
@@ -48,7 +48,7 @@ def _session_state(domain, supports_auth):
 
 
 def _required_tools(engine, domain, audio_mode):
-    if domain == "toutiao.com" or engine in {"article"}:
+    if domain == "toutiao.com" or engine in {"article", "web_article"}:
         return []
     required = [] if engine in {"douyin", "xiaohongshu", "kuaishou", "pixiv"} else [engine]
     if engine == "yt-dlp" or audio_mode:
@@ -203,13 +203,17 @@ def inspect_target(
         return {"ok": False, "supported": False, "error": classify_error(error)}
 
     try:
-        if parsed_raw.hostname in toutiao.HOSTS:
+        cand_host = (parsed_raw.hostname or "").lower().rstrip(".")
+        if cand_host in toutiao.HOSTS:
             url = toutiao.canonical(raw_url)
             site, engine, domain = "Toutiao", "rendered_page", "toutiao.com"
-        elif parsed_raw.hostname in PUBLIC_ARTICLE_HOSTS:
+        elif cand_host in PUBLIC_ARTICLE_HOSTS:
             url, _ = rendered_page.public_article_url(raw_url)
-            site = "Raspberry Pi" if parsed_raw.hostname == "www.raspberrypi.com" else "Zhihu"
-            engine, domain = "article", parsed_raw.hostname
+            site = "Raspberry Pi" if cand_host == "www.raspberrypi.com" else "Zhihu"
+            engine, domain = "article", cand_host
+        elif cand_host == web_article.WECHAT_HOST:
+            url, _ = web_article.canonical_wechat_url(raw_url)
+            site, engine, domain = "WeChat", "web_article", web_article.WECHAT_HOST
         elif no_network:
             url = links.canonical_post(raw_url) or raw_url
             if _is_short_url(url):
@@ -233,27 +237,41 @@ def inspect_target(
                     "Weibo": "gallery-dl",
                 }[site_guess]
                 site, engine, domain = site_guess, engine_guess, domain_guess
-            else:
+            elif web_article.is_known_media_host(cand_host):
                 site, engine, domain = engines.route(url)
-        else:
+            else:
+                url = web_article.validate_public_web_url(raw_url, resolve_dns=False)
+                site, engine, domain = cand_host or "Web", "web_article", cand_host or None
+        elif web_article.is_known_media_host(cand_host):
             url = links.normalize_link(raw_url)
-            resolved_host = urlsplit(url).hostname
-            if parsed_raw.hostname in toutiao.HOSTS or resolved_host in toutiao.HOSTS:
+            resolved_host = (urlsplit(url).hostname or "").lower().rstrip(".")
+            if cand_host in toutiao.HOSTS or resolved_host in toutiao.HOSTS:
                 url = toutiao.canonical(url)
                 site, engine, domain = "Toutiao", "rendered_page", "toutiao.com"
             elif resolved_host in PUBLIC_ARTICLE_HOSTS:
                 url, _ = rendered_page.public_article_url(url)
                 site = "Raspberry Pi" if resolved_host == "www.raspberrypi.com" else "Zhihu"
                 engine, domain = "article", resolved_host
+            elif resolved_host == web_article.WECHAT_HOST:
+                url, _ = web_article.canonical_wechat_url(url)
+                site, engine, domain = "WeChat", "web_article", web_article.WECHAT_HOST
             else:
                 site, engine, domain = engines.route(url)
+        else:
+            url = web_article.validate_public_web_url(raw_url, resolve_dns=False)
+            site, engine, domain = cand_host or "Web", "web_article", cand_host or None
     except (OSError, ValueError, RuntimeError) as error:
         return {"ok": False, "supported": False, "error": classify_error(error)}
 
     audio_only = engines.is_audio_only_site(site) or (parsed_raw.hostname in links.SOUNDCLOUD_SHORT_HOSTS)
     effective_audio = bool(audio or audio_only)
-    if effective_audio and engine == "pixiv":
-        err = ValueError("Pixiv artworks are images only and contain no audio.")
+    if effective_audio and engine in {"pixiv", "article", "web_article"}:
+        msg = (
+            "Pixiv artworks are images only and contain no audio."
+            if engine == "pixiv"
+            else "Article pages do not contain downloadable audio."
+        )
+        err = ValueError(msg)
         return {"ok": False, "supported": True, "site": site, "domain": domain, "canonical_url": url, "error": classify_error(err)}
 
     supports_auth = domain in accounts.SITES.values()

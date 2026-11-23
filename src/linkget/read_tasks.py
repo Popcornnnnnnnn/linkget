@@ -413,9 +413,9 @@ def main(argv):
         if argv and argv[0] in {'status', 'logs', 'cancel', 'show', 'wait'}:
             return {'status': status, 'logs': logs, 'cancel': cancel, 'show': show_content, 'wait': wait_task}[argv[0]](argv[1:])
         if __package__:
-            from . import content, read_ai
+            from . import content, read_ai, read_frames
         else:
-            import content, read_ai
+            import content, read_ai, read_frames
         if not argv or argv[0] in FAST or '-h' in argv or '--help' in argv or '--foreground' in argv or '--stdout' in argv:
             return content.main([arg for arg in argv if arg != '--foreground'])
         kind = argv[0] if argv[0] in {'translate', 'summarize', 'retry', 'batch'} else 'read'
@@ -442,6 +442,8 @@ def main(argv):
                 parser.error('--profile requires an explicit browser')
             if args.language and not re.fullmatch(r'auto|[a-z]{2,3}', args.language):
                 parser.error('Use auto or a Whisper language code')
+            if not read_frames.MIN_FRAMES <= args.max_frames <= read_frames.MAX_FRAMES:
+                parser.error(f'--max-frames must be between {read_frames.MIN_FRAMES} and {read_frames.MAX_FRAMES}.')
             if batch and not args.url:
                 if runtime.is_interactive():
                     print('Paste one link or local file per line; blank line submits the task.')
