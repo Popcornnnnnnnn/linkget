@@ -166,8 +166,11 @@ def route(url):
     host, path = parsed.hostname, parsed.path
     if host in {"instagram.com", "www.instagram.com"} and re.fullmatch(r"/(p|reel|tv)/[\w-]+/?", path):
         return "Instagram", "gallery-dl", "instagram.com"
-    if host in {"x.com", "www.x.com", "mobile.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"} and re.fullmatch(r"/(?:[\w]+|i/web)/status/\d+(?:/(?:photo|video)/\d+)?/?", path):
-        return "X", "gallery-dl", "x.com"
+    if host in {"x.com", "www.x.com", "mobile.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"}:
+        if re.fullmatch(r"/(?:[\w]+|i/web)/status/\d+(?:/(?:photo|video)/\d+)?/?", path):
+            return "X", "gallery-dl", "x.com"
+        if re.fullmatch(r"/(?:[A-Za-z0-9_]{1,32}|i)/article/\d+/?", path):
+            return "X Article", "x_article", "x.com"
     if host in {"bilibili.com", "www.bilibili.com"}:
         if re.fullmatch(r"/video/(?:BV[\w]+|av\d+)/?", path):
             return "Bilibili video", "yt-dlp", "bilibili.com"

@@ -30,6 +30,8 @@ linkget                                              # interactive prompt (defau
 linkget 'https://www.bilibili.com/video/BV1bK411W797/' --folder ~/Downloads
 linkget 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' --audio --folder ~/Music
 linkget 'https://soundcloud.com/artist/track'        # music links download audio automatically
+linkget 'https://x.com/USER/status/ID' --folder ~/Articles   # auto-archives X Articles offline
+linkget 'https://example.com/post' --article --folder ~/Articles  # save web article + local assets
 linkget --photos --live-photos                       # package picture + motion pairs
 linkget batch                                        # paste one URL per line, blank line to start
 linkget retry                                        # retry unfinished items from latest task
@@ -45,8 +47,8 @@ linkget read 'URL' --folder ./notes                  # extract subtitles, speech
 | `linkget help` / `linkget COMMAND --help` | Show usage or subcommand options |
 | `linkget sites` / `linkget doctor` | List supported sites or inspect local tools & sessions |
 | `linkget inspect URL` | Inspect routing, metadata, tools, and session state without downloading |
-| `linkget config [--photos \| --folder [PATH] \| --audio-folder [PATH]]` | Show or change defaults for media, audio, and reader browser |
-| `linkget batch [URL ...]` | Download multiple posts concurrently (`--jobs N`) |
+| `linkget config [--photos \| --folder [PATH] \| --audio-folder [PATH] \| --article-folder [PATH]]` | Show or change defaults for media, audio, articles, and reader browser |
+| `linkget batch [URL ...]` | Download multiple posts or articles concurrently (`--jobs N`) |
 | `linkget tasks [TASK]` | Inspect download and background read task states |
 | `linkget retry [TASK]` / `linkget recover [TASK]` | Resume failed tasks or save verified staged media |
 | `linkget clean [--apply] [--older-than 7d]` | Preview or remove old completed temporary staging folders |
@@ -62,7 +64,8 @@ linkget read 'URL' --folder ./notes                  # extract subtitles, speech
 | Site | Supported Media | Notes |
 | --- | --- | --- |
 | Instagram | Photos, videos, Reels | — |
-| X / Twitter | Photos, videos | — |
+| X / Twitter | Photos, videos, **X Articles** | Auto-detects Articles on `/status/ID` & `/article/ID` (`--folder` / `--article-folder` writes `article.md`, `article.html`, `content.json`, local `assets/`) |
+| WeChat / Toutiao / Zhihu / Web *(articles)* | Offline articles (`article.md`, `article.html`, assets) | Auto-enabled on WeChat/Toutiao/Zhihu/public web articles (`--article` forces X `/status/ID` checks; `--no-assets` skips media) |
 | Bilibili | Video (`BV`/`av`), Opus, Audio (`au`) | Login exposes higher quality; one part or track per URL |
 | TikTok | Photo posts, videos | Supports share links |
 | Douyin | Photo posts, videos | Clean playback ranking; optional BrowserOS neo / Chrome fallback |

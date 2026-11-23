@@ -19,6 +19,7 @@ XHS_SHORT_HOSTS = {"xhslink.com", "www.xhslink.com", "xhslink.cn", "www.xhslink.
 XHS_HOSTS = {"xiaohongshu.com", "www.xiaohongshu.com"} | XHS_SHORT_HOSTS
 WEIBO_HOSTS = {"weibo.com", "www.weibo.com", "m.weibo.cn", "weibo.cn", "video.weibo.com", "t.cn"}
 BILIBILI_HOSTS = {"bilibili.com", "www.bilibili.com", "m.bilibili.com", "b23.tv"}
+X_HOSTS = {"x.com", "www.x.com", "mobile.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"}
 SOUNDCLOUD_SHORT_HOSTS = {"on.soundcloud.com"}
 SOUNDCLOUD_HOSTS = {"soundcloud.com", "www.soundcloud.com", "m.soundcloud.com"} | SOUNDCLOUD_SHORT_HOSTS
 SOUNDCLOUD_RESERVED_USERS = {
@@ -152,6 +153,13 @@ def canonical_post(url):
         match = re.fullmatch(r"/track/([^/]+)/?", parsed.path)
         if match:
             return f"https://{parsed.hostname}/track/{match[1]}"
+    elif parsed.hostname in X_HOSTS:
+        match = re.fullmatch(r"/([A-Za-z0-9_]{1,32})/article/(\d+)/?", parsed.path)
+        if match:
+            return f"https://x.com/{match[1]}/article/{match[2]}"
+        match = re.fullmatch(r"/i/article/(\d+)/?", parsed.path)
+        if match:
+            return f"https://x.com/i/article/{match[1]}"
     return None
 
 

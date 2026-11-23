@@ -19,8 +19,10 @@ from urllib.parse import urlsplit
 PUBLIC_READER_REVISION = 2
 TOUTIAO_READER_REVISION = 4
 WECHAT_READER_REVISION = 1
+X_ARTICLE_READER_REVISION = 1
 PUBLIC_ORIGINS = ('https://www.raspberrypi.com/*', 'https://zhuanlan.zhihu.com/*')
 WECHAT_ORIGIN = 'https://mp.weixin.qq.com/*'
+X_ORIGIN = 'https://x.com/*'
 MAX_RESULT_BYTES = 256000
 MAX_READ_SECONDS = 45
 
@@ -180,20 +182,192 @@ def validate_wechat_page(page, expected):
         published_at = None
     if __package__:
         from .rendered_proof import browser_metadata
+        from . import web_article
     else:
         from rendered_proof import browser_metadata
+        import web_article
     metadata = browser_metadata(page)
     neo = metadata.get('reader_backend') == 'browseros_neo'
-    return {'url': expected, 'final_url': expected, 'title': title,
-            'author': author or None, 'published_at': published_at or None,
-            'kind': 'article', 'text': text, 'content_complete': True,
-            'dom_proof': {'selector': '#js_content', 'reader_revision': WECHAT_READER_REVISION,
-                          'basis': 'bounded_wechat_article_dom', 'http_transfer_verified': False, 'end_excerpt': tail},
-            'reader_revision': WECHAT_READER_REVISION,
-            'text_sha256': hashlib.sha256(text.encode()).hexdigest(),
-            'content_binding': 'exact_browseros_neo_wechat_dom' if neo else 'exact_daily_chrome_wechat_dom',
-            'transport_proof': {'kind': 'browseros_neo_dom' if neo else 'daily_chrome_dom',
-                                'http_transfer_verified': False, 'cookies_exported': False}, **metadata}
+    cover_image = page.get('cover_image')
+    if not isinstance(cover_image, str) or not cover_image.startswith(('http://', 'https://')):
+        cover_image = None
+    body_html_raw = page.get('body_html')
+    markdown_body = None
+    body_html = None
+    fragment_media = []
+    if isinstance(body_html_raw, str) and body_html_raw.strip() and hasattr(web_article, 'render_fragment'):
+        frag = web_article.render_fragment(body_html_raw, expected)
+        markdown_body = frag.get('markdown') or None
+        body_html = frag.get('body_html') or None
+        fragment_media = frag.get('media_items') or []
+    media_items = []
+    seen = set()
+    if cover_image:
+        media_items.append({'role': 'cover', 'media_type': 'image', 'original_url': cover_image, 'alt': title})
+        seen.add(cover_image)
+    for item in fragment_media:
+        orig = item.get('original_url', '')
+        if orig and orig not in seen:
+            media_items.append(item)
+            seen.add(orig)
+    for raw_img in page.get('images') or []:
+        if isinstance(raw_img, str) and raw_img.startswith(('http://', 'https://')) and raw_img not in seen:
+            media_items.append({'role': 'inline', 'media_type': 'image', 'original_url': raw_img})
+            seen.add(raw_img)
+    out = {'url': expected, 'final_url': expected, 'title': title,
+           'author': author or None, 'published_at': published_at or None,
+           'kind': 'article', 'text': text, 'content_complete': True,
+           'dom_proof': {'selector': '#js_content', 'reader_revision': WECHAT_READER_REVISION,
+                         'basis': 'bounded_wechat_article_dom', 'http_transfer_verified': False, 'end_excerpt': tail},
+           'reader_revision': WECHAT_READER_REVISION,
+           'text_sha256': hashlib.sha256(text.encode()).hexdigest(),
+           'content_binding': 'exact_browseros_neo_wechat_dom' if neo else 'exact_daily_chrome_wechat_dom',
+           'transport_proof': {'kind': 'browseros_neo_dom' if neo else 'daily_chrome_dom',
+                               'http_transfer_verified': False, 'cookies_exported': False}, **metadata}
+    if cover_image:
+        out['cover_image'] = cover_image
+    if media_items:
+        out['media_items'] = media_items
+    if markdown_body:
+        out['markdown'] = markdown_body
+    if body_html:
+        out['body_html'] = body_html
+    if isinstance(body_html_raw, str) and body_html_raw.strip():
+        out['raw_html'] = body_html_raw
+    return out
+
+
+def x_article_url(url):
+    if not isinstance(url, str) or len(url) > 2048:
+        raise ValueError('A bounded X article URL is required.')
+    p = urlsplit(url)
+    host = (p.hostname or '').lower().rstrip('.')
+    if p.scheme != 'https' or p.username or p.password or p.port not in (None, 443) or p.query or p.fragment:
+        raise ValueError('Unsupported X browser article URL.')
+    if host in {'x.com', 'www.x.com', 'mobile.x.com', 'twitter.com', 'www.twitter.com', 'mobile.twitter.com'}:
+        m = re.fullmatch(r'/([A-Za-z0-9_]{1,15})/(status|article)/([0-9]{1,25})/?', p.path)
+        if m:
+            return f'https://x.com/{m.group(1)}/{m.group(2)}/{m.group(3)}', X_ORIGIN
+        m_web = re.fullmatch(r'/i/web/status/([0-9]{1,25})/?', p.path)
+        if m_web:
+            return f'https://x.com/i/web/status/{m_web.group(1)}', X_ORIGIN
+    raise ValueError('The X article URL is outside browser reader scope; use x.com/USER/status/ID or x.com/USER/article/ID.')
+
+
+def validate_x_article_page(page, expected):
+    expected, _ = x_article_url(expected)
+    if not isinstance(page, dict) or page.get('url') != expected or page.get('final_url') != expected:
+        raise ValueError('Exact X article URL and final URL binding are required.')
+    title, text, proof = page.get('title'), page.get('text'), page.get('dom_proof')
+    if (page.get('kind') != 'article' or page.get('content_complete') is not True or
+            not isinstance(title, str) or not 1 <= len(title) <= 300 or
+            title != title.strip() or not title.strip() or
+            not isinstance(text, str) or not 40 <= len(text.encode()) <= 240000 or
+            not isinstance(proof, dict) or proof.get('reader_revision') != X_ARTICLE_READER_REVISION or
+            proof.get('selector') != '[data-testid="twitterArticleReadView"]' or
+            proof.get('basis') != 'bounded_x_article_dom' or
+            proof.get('http_transfer_verified') is not False):
+        raise ValueError('Bounded X article text and DOM scope evidence are required.')
+    tail = proof.get('end_excerpt')
+    if not isinstance(tail, str) or not 1 <= len(tail) <= 512 or not text.endswith(tail):
+        raise ValueError('The captured X article tail does not match its text.')
+    author = page.get('author')
+    author_handle = page.get('author_handle')
+    published_at = page.get('published_at')
+    if author is not None and (not isinstance(author, str) or len(author) > 200):
+        author = None
+    if author_handle is not None and (not isinstance(author_handle, str) or not re.fullmatch(r'[A-Za-z0-9_]{1,32}', author_handle)):
+        author_handle = None
+    if published_at is not None and (not isinstance(published_at, str) or len(published_at) > 100):
+        published_at = None
+    if __package__:
+        from .rendered_proof import browser_metadata
+        from . import web_article, x_article
+    else:
+        from rendered_proof import browser_metadata
+        import web_article, x_article
+    metadata = browser_metadata(page)
+    neo = metadata.get('reader_backend') == 'browseros_neo'
+
+    cover_image = page.get('cover_image')
+    if not isinstance(cover_image, str) or not cover_image.startswith(('http://', 'https://')):
+        cover_image = None
+    else:
+        cover_image = x_article.upgrade_x_media_url(cover_image)
+
+    body_html_raw = page.get('body_html')
+    markdown_body = None
+    body_html = None
+    fragment_media = []
+    if isinstance(body_html_raw, str) and body_html_raw.strip() and hasattr(web_article, 'render_fragment'):
+        frag = web_article.render_fragment(body_html_raw, expected)
+        markdown_body = frag.get('markdown') or None
+        body_html = frag.get('body_html') or None
+        fragment_media = frag.get('media_items') or []
+
+    media_items = []
+    seen = set()
+    if cover_image:
+        media_items.append({'role': 'cover', 'media_type': 'image', 'original_url': cover_image, 'alt': title})
+        seen.add(cover_image)
+    for item in fragment_media:
+        orig = x_article.upgrade_x_media_url(item.get('original_url', ''))
+        if orig and orig not in seen:
+            media_items.append({**item, 'original_url': orig})
+            seen.add(orig)
+    for raw_img in page.get('images') or []:
+        if isinstance(raw_img, str) and raw_img.startswith(('http://', 'https://')):
+            orig = x_article.upgrade_x_media_url(raw_img)
+            if orig not in seen:
+                media_items.append({'role': 'inline', 'media_type': 'image', 'original_url': orig})
+                seen.add(orig)
+    for raw_vid in page.get('videos') or []:
+        if isinstance(raw_vid, dict) and isinstance(raw_vid.get('url'), str) and raw_vid['url'].startswith(('http://', 'https://')):
+            vurl = raw_vid['url']
+            if vurl not in seen:
+                poster = raw_vid.get('poster')
+                media_items.append({
+                    'role': 'video',
+                    'media_type': 'video',
+                    'original_url': vurl,
+                    'poster_url': x_article.upgrade_x_media_url(poster) if isinstance(poster, str) and poster.startswith(('http://', 'https://')) else None,
+                })
+                seen.add(vurl)
+
+    return {
+        'url': expected,
+        'final_url': expected,
+        'canonical_url': expected,
+        'title': title,
+        'author': author or None,
+        'author_handle': author_handle or None,
+        'author_url': f'https://x.com/{author_handle}' if author_handle else None,
+        'published_at': published_at or None,
+        'cover_image': cover_image,
+        'media_items': media_items,
+        'kind': 'article',
+        'text': text,
+        'markdown': markdown_body or text,
+        'body_html': body_html,
+        'raw_html': body_html_raw if isinstance(body_html_raw, str) else None,
+        'content_complete': True,
+        'dom_proof': {
+            'selector': '[data-testid="twitterArticleReadView"]',
+            'reader_revision': X_ARTICLE_READER_REVISION,
+            'basis': 'bounded_x_article_dom',
+            'http_transfer_verified': False,
+            'end_excerpt': tail,
+        },
+        'reader_revision': X_ARTICLE_READER_REVISION,
+        'text_sha256': hashlib.sha256(text.encode()).hexdigest(),
+        'content_binding': 'exact_browseros_neo_x_article_dom' if neo else 'exact_daily_chrome_x_article_dom',
+        'transport_proof': {
+            'kind': 'browseros_neo_dom' if neo else 'daily_chrome_dom',
+            'http_transfer_verified': False,
+            'cookies_exported': False,
+        },
+        **metadata,
+    }
 
 
 def lock_path():
@@ -260,13 +434,18 @@ def read_page(url, timeout=MAX_READ_SECONDS, *, backend=None):
             expected, _ = public_article_url(url)
             script_name, mode = 'public_browser.js', 'public'
         except ValueError:
-            expected, _ = wechat_article_url(url)
-            script_name, mode = 'wechat_browser.js', 'wechat'
+            try:
+                expected, _ = wechat_article_url(url)
+                script_name, mode = 'wechat_browser.js', 'wechat'
+            except ValueError:
+                expected, _ = x_article_url(url)
+                script_name, mode = 'x_article_browser.js', 'x_article'
     backend = selected_backend(backend)
     javascript = Path(__file__).with_name(script_name).read_text()
     validator = (
         (lambda p, exp: validate_public_page(p, exp)) if mode == 'public'
         else (lambda p, exp: validate_wechat_page(p, exp)) if mode == 'wechat'
+        else (lambda p, exp: validate_x_article_page(p, exp)) if mode == 'x_article'
         else (lambda p, exp: toutiao.validate_page(exp, p))
     )
     if backend == 'neo':
@@ -284,10 +463,16 @@ def read_page(url, timeout=MAX_READ_SECONDS, *, backend=None):
             except NeoUnavailable as error:
                 raise BrowserUnavailable(str(error)) from error
         result = validator(page, expected)
-        rev = PUBLIC_READER_REVISION if mode == 'public' else WECHAT_READER_REVISION if mode == 'wechat' else TOUTIAO_READER_REVISION
+        rev = (
+            PUBLIC_READER_REVISION if mode == 'public'
+            else WECHAT_READER_REVISION if mode == 'wechat'
+            else X_ARTICLE_READER_REVISION if mode == 'x_article'
+            else TOUTIAO_READER_REVISION
+        )
         binding = (
             'exact_browseros_neo_article_dom' if mode == 'public'
             else 'exact_browseros_neo_wechat_dom' if mode == 'wechat'
+            else 'exact_browseros_neo_x_article_dom' if mode == 'x_article'
             else 'exact_browseros_neo_toutiao_post'
         )
         result.update(final_url=expected, reader_revision=rev, content_binding=binding)
@@ -314,7 +499,7 @@ def read_page(url, timeout=MAX_READ_SECONDS, *, backend=None):
                     raise ValueError('Chrome returned invalid content evidence.') from None
                 if isinstance(page, dict) and 'diagnostic' in page:
                     reason = page['diagnostic'].get('reason') if isinstance(page['diagnostic'], dict) else None
-                    if reason in ('post_mismatch', 'public_article_mismatch', 'article_access_gate', 'article_scope_size_out_of_bounds'):
+                    if reason in ('post_mismatch', 'public_article_mismatch', 'article_access_gate', 'article_scope_size_out_of_bounds', 'x_article_login_required'):
                         raise ValueError('The requested page cannot be read completely: ' + reason)
                 elif page is not None:
                     try:
@@ -350,4 +535,9 @@ def read_public(url, timeout=MAX_READ_SECONDS, *, backend=None):
 
 def read_wechat(url, timeout=MAX_READ_SECONDS, *, backend=None):
     wechat_article_url(url)
+    return read_page(url, timeout=timeout, backend=backend)
+
+
+def read_x_article(url, timeout=MAX_READ_SECONDS, *, backend=None):
+    x_article_url(url)
     return read_page(url, timeout=timeout, backend=backend)

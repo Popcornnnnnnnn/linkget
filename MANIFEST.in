@@ -3,6 +3,7 @@ include docs/RELIABILITY.md docs/FILE_OWNERSHIP.md docs/COMPATIBILITY.md docs/FA
 include docs/TESTING.md docs/INSTALL.md docs/WATERMARKS.md docs/WEIBO_IMAGE_AUDIT.md
 include docs/MEDIA_VALIDATION.md docs/READ.md docs/TOUTIAO.md docs/MAC_SHARE.md docs/TRANSLATION_VALIDATION.md
 include docs/USAGE_REFERENCE.md docs/AGENT_SKILL.md
+recursive-include src/linkget *.applescript *.swift *.js
 recursive-include macos *.py *.swift
 recursive-include scripts *.py
 recursive-include tests *.py *.json

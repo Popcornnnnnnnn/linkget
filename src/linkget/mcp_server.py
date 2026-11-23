@@ -34,6 +34,7 @@ TOOLS = [
             'properties': {
                 'url_or_path': {'type': 'string', 'description': 'Supported media/article URL or existing local media file path'},
                 'audio': {'type': 'boolean', 'default': False, 'description': 'Check effective audio download mode'},
+                'article': {'type': 'boolean', 'default': False, 'description': 'Inspect URL as an offline article archive'},
                 'no_network': {'type': 'boolean', 'default': False, 'description': 'Skip short-link expansion and remote metadata probe'},
                 'browser': {'type': 'string', 'enum': ['auto', 'none', 'chrome', 'firefox', 'safari', 'edge', 'brave'], 'default': 'auto'},
             },
@@ -42,15 +43,17 @@ TOOLS = [
     },
     {
         'name': 'download_media',
-        'description': 'Download media or extract audio to an explicit destination folder with optional clipping and safety caps.',
+        'description': 'Download media, audio, or an offline article archive to an explicit destination folder with optional clipping and safety caps.',
         'annotations': {'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': False, 'openWorldHint': True},
         'inputSchema': {
             'type': 'object',
             'properties': {
-                'url': {'type': 'string', 'description': 'Single supported post, video, or music URL'},
+                'url': {'type': 'string', 'description': 'Single supported post, article, video, or music URL'},
                 'folder': {'type': 'string', 'description': 'Explicit destination directory path (required in MCP mode)'},
                 'audio': {'type': 'boolean', 'default': False, 'description': 'Extract/download audio only'},
                 'audio_format': {'type': 'string', 'enum': ['mp3', 'm4a', 'flac', 'wav', 'opus'], 'description': 'Optional audio output format (implies audio)'},
+                'article': {'type': 'boolean', 'default': False, 'description': 'Treat an X post URL as an offline article archive'},
+                'no_assets': {'type': 'boolean', 'default': False, 'description': 'Article downloads only: skip downloading embedded images and videos'},
                 'clip': {'type': 'string', 'description': 'Optional time range START-END (e.g. 0:30-2:00)'},
                 'max_duration': {'type': 'string', 'description': 'Maximum duration cap (e.g. 10m, 90s)'},
                 'max_size': {'type': 'string', 'description': 'Maximum size cap (e.g. 100MB, 1.5GB)'},
@@ -61,7 +64,7 @@ TOOLS = [
     },
     {
         'name': 'read_content',
-        'description': 'Extract transcripts, subtitles, OCR, video keyframes, or web/WeChat/Toutiao articles.',
+        'description': 'Extract transcripts, subtitles, OCR, video keyframes, or X/web/WeChat/Toutiao articles.',
         'annotations': {'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': False, 'openWorldHint': True},
         'inputSchema': {
             'type': 'object',
@@ -71,6 +74,7 @@ TOOLS = [
                 'frames': {'type': 'boolean', 'default': False, 'description': 'Extract video keyframes into frames/'},
                 'max_frames': {'type': 'integer', 'minimum': 1, 'maximum': 60, 'default': 12},
                 'frame_ocr': {'type': 'boolean', 'default': False, 'description': 'Run macOS Vision OCR on extracted keyframes'},
+                'no_assets': {'type': 'boolean', 'default': False, 'description': 'Article reads: skip downloading embedded images and videos'},
                 'language': {'type': 'string', 'description': 'Whisper language code or auto'},
                 'subtitles': {'type': 'string', 'enum': ['auto', 'never', 'only'], 'default': 'auto'},
                 'browser': {'type': 'string', 'enum': ['auto', 'none', 'chrome', 'firefox', 'safari', 'edge', 'brave'], 'default': 'auto'},
@@ -221,6 +225,8 @@ def _call_tool(name, arguments):
         argv = ['inspect', target, '--non-interactive', '--json']
         if _require_bool(arguments, 'audio'):
             argv.append('--audio')
+        if _require_bool(arguments, 'article'):
+            argv.append('--article')
         if _require_bool(arguments, 'no_network'):
             argv.append('--no-network')
         browser = _optional_enum(arguments, 'browser', BROWSERS)
@@ -257,6 +263,10 @@ def _call_tool(name, arguments):
         audio_format = _optional_enum(arguments, 'audio_format', AUDIO_FORMATS)
         if audio_format:
             argv.append(f'--audio-format={audio_format}')
+        if _require_bool(arguments, 'article'):
+            argv.append('--article')
+        if _require_bool(arguments, 'no_assets'):
+            argv.append('--no-assets')
         if clip:
             argv.append(f'--clip={clip}')
         if max_duration:
@@ -284,6 +294,8 @@ def _call_tool(name, arguments):
             argv.append(f"--max-frames={arguments['max_frames']}")
         if _require_bool(arguments, 'frame_ocr'):
             argv.append('--frame-ocr')
+        if _require_bool(arguments, 'no_assets'):
+            argv.append('--no-assets')
         language = _optional_str(arguments, 'language')
         if language:
             if language.startswith('-'):

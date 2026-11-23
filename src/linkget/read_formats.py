@@ -132,8 +132,9 @@ def markdown(result):
     title = result.get('title') or result.get('site') or 'Content'
     reference = result.get('reference') or result.get('url') or ''
     header = f'# {title}\n\nSource: {reference}\n\n'
-    if result.get('description'):
-        header += '<a id="description"></a>\n## Publisher description\n\n' + result['description'] + '\n\n'
+    desc = result.get('description')
+    if desc and (result.get('kind') != 'article' or not (result.get('text') or '').startswith(desc[:40])):
+        header += '<a id="description"></a>\n## Publisher description\n\n' + desc + '\n\n'
     videos = result.get('videos') or ([result] if result.get('segments') else [])
     body = ''
     if videos:
@@ -149,6 +150,12 @@ def markdown(result):
         meta_parts = [part for part in (result.get('author'), result.get('published_at')) if part]
         if meta_parts:
             body += '_' + ' · '.join(meta_parts) + '_\n\n'
+        cover = result.get('cover_local_path') or result.get('cover_image')
+        if cover:
+            safe_title = str(title).replace('[', '\\[').replace(']', '\\]')
+            body += f'![{safe_title}]({cover})\n\n'
+        if result.get('community_note'):
+            body += '> **Community Note:** ' + str(result['community_note']).strip() + '\n\n'
         if result.get('markdown'):
             body += result['markdown'].rstrip() + '\n'
         else:

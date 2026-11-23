@@ -2,22 +2,22 @@
 import argparse
 from copy import copy
 
-COMMON={'folder','photos','audio','audio_format','browser','profile','live_photos','date_now','report','json','non_interactive','clip','max_duration','max_size'}
+COMMON={'folder','photos','audio','audio_format','article','no_assets','browser','profile','live_photos','date_now','report','json','non_interactive','clip','max_duration','max_size'}
 SPECS={
  'config':('View or save personal defaults. Omit options for a read-only query.',
-           {'folder','photos','audio_folder','clear_audio_folder','reader_browser','json','non_interactive'},
-           'linkget config\nlinkget config --reader-browser neo\nlinkget config --folder ~/Downloads\nlinkget config --audio-folder ~/Music\nThese settings are permanent. One-time page override: linkget URL --rendered-backend chrome.\n--reader-browser is configuration only; omit config for one-time --folder/--photos.'),
+           {'folder','photos','audio_folder','clear_audio_folder','article_folder','clear_article_folder','reader_browser','json','non_interactive'},
+           'linkget config\nlinkget config --reader-browser neo\nlinkget config --folder ~/Downloads\nlinkget config --audio-folder ~/Music\nlinkget config --article-folder ~/Articles\nThese settings are permanent. One-time page override: linkget URL --rendered-backend chrome.\n--reader-browser is configuration only; omit config for one-time --folder/--photos.'),
  'doctor':('Inspect local tools, page-controller selection and saved-session metadata. Default: no website or browser requests.',
            {'folder','photos','audio','audio_format','live_photos','browser','rendered_backend','probe_browser','check_session','json','non_interactive'},
            'linkget doctor\nlinkget doctor --probe-browser neo\nlinkget doctor --check-session bilibili\nConnection/control checks do not establish actual article or website availability.'),
  'inspect':('Inspect one link without downloading or modifying files. Returns routing, session, tool, destination, and optional metadata.',
-            {'audio','audio_format','browser','no_network','json','non_interactive'},
+            {'audio','audio_format','article','browser','no_network','json','non_interactive'},
             'linkget inspect URL\nlinkget inspect URL --no-network --json\nlinkget inspect URL --audio --json'),
  'retry':('Retry unfinished download items; preserve checked retained resources and frozen controller choices.',
           COMMON|{'jobs','redownload','rendered_backend','page_data'},
           'linkget retry TASK\nlinkget retry TASK --rendered-backend neo\nlinkget retry TASK --redownload\nUse read retry for retained reading folders.'),
  'recover':('List retained downloads or save a complete checked task. --verify verifies Photos originals and can remove verified staged copies.',
-            (COMMON-{'audio_format','clip','max_duration','max_size'})|{'verify','item'},
+            (COMMON-{'article','no_assets','audio_format','clip','max_duration','max_size'})|{'verify','item'},
             'linkget recover\nlinkget recover TASK --folder ~/Downloads\nlinkget recover TASK --verify\nUse tasks for read-only inspection; recovery can save or remove checked staging files.'),
  'batch':('Download multiple posts with bounded concurrency and per-site pacing.',
           COMMON|{'jobs','rendered_backend'},
@@ -58,6 +58,8 @@ def show(parser,tokens):
                           'photos':'Save Photos as the default destination.',
                           'audio_folder':'Save a default folder for audio and music downloads; omit PATH for the current folder on each run.',
                           'clear_audio_folder':'Clear the saved default audio folder.',
+                          'article_folder':'Save a default folder for article downloads; omit PATH for the current folder on each run.',
+                          'clear_article_folder':'Clear the saved default article folder.',
                           'reader_browser':'Save the personal page reader; auto follows the saved/system browser.'},
                 'doctor':{'folder':'Check destination writability; no media is saved.',
                           'photos':'Check Photos staging prerequisites; no import.',

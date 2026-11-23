@@ -41,12 +41,50 @@ function (expected) {
     if (bytes < 40 || bytes > 120000 || title.length > 300) {
         return {diagnostic: {reason: 'article_scope_size_out_of_bounds'}};
     }
+
+    const coverImage = document.querySelector('meta[property="og:image"]')?.getAttribute('content') ||
+        document.querySelector('meta[name="twitter:image"]')?.getAttribute('content') || null;
+    const images = [];
+    const seenImgs = new Set();
+    let bodyHtml = null;
+    if (body && typeof body.cloneNode === 'function') {
+        const htmlCopy = body.cloneNode(true);
+        if (typeof htmlCopy.querySelectorAll === 'function') {
+            htmlCopy.querySelectorAll('script,style,noscript,nav,form,iframe').forEach(node => node.remove());
+            htmlCopy.querySelectorAll('img').forEach(img => {
+                const src = String(img.getAttribute('data-src') || img.getAttribute('src') || '').trim();
+                if (/^https?:\/\//i.test(src)) {
+                    img.setAttribute('src', src);
+                    if (!seenImgs.has(src)) {
+                        seenImgs.add(src);
+                        images.push(src);
+                    }
+                }
+            });
+            htmlCopy.querySelectorAll('*').forEach(el => {
+                for (const attr of Array.from(el.attributes || [])) {
+                    const name = attr.name.toLowerCase();
+                    if (!['href', 'src', 'data-src', 'alt', 'poster', 'title', 'colspan', 'rowspan'].includes(name)) {
+                        el.removeAttribute(attr.name);
+                    }
+                }
+            });
+            const candidateHtml = htmlCopy.innerHTML || '';
+            if (candidateHtml && new TextEncoder().encode(candidateHtml).length <= 120000) {
+                bodyHtml = candidateHtml;
+            }
+        }
+    }
+
     return {
         url: expected,
         final_url: actual,
         title,
         author: author || null,
         published_at: publishedAt || null,
+        cover_image: coverImage && /^https?:\/\//i.test(coverImage) ? coverImage : null,
+        images,
+        body_html: bodyHtml,
         kind: 'article',
         text,
         content_complete: true,

@@ -80,7 +80,8 @@ def _content_url(value):
         parts.hostname == 'www.toutiao.com' and re.fullmatch(r'/(article|video)/[0-9]+/', parts.path) or
         parts.hostname == 'www.raspberrypi.com' and parts.path == '/products/raspberry-pi-5/' or
         parts.hostname == 'zhuanlan.zhihu.com' and re.fullmatch(r'/p/[0-9]{1,20}', parts.path) or
-        parts.hostname == 'mp.weixin.qq.com' and re.fullmatch(r'/s/[A-Za-z0-9_-]{8,128}', parts.path)
+        parts.hostname == 'mp.weixin.qq.com' and re.fullmatch(r'/s/[A-Za-z0-9_-]{8,128}', parts.path) or
+        parts.hostname == 'x.com' and re.fullmatch(r'/(?:[A-Za-z0-9_]{1,15}/(?:status|article)|i/web/status)/[0-9]{1,25}', parts.path)
     )
     if not allowed:
         raise ValueError('The page is outside the existing authorized content scope.')
@@ -357,6 +358,7 @@ def _read_script(url, javascript, token, wait_ms, page_id):
                 'article .ContentItem-time, article .Post-Time' if parts.hostname == 'zhuanlan.zhihu.com' else
                 'main h1 img[alt]' if parts.hostname == 'www.raspberrypi.com' else
                 '#js_content, #activity-name, .weui-msg' if parts.hostname == 'mp.weixin.qq.com' else
+                '[data-testid="twitterArticleReadView"], [data-testid="tweetText"], article' if parts.hostname == 'x.com' else
                 'video' if parts.path.startswith('/video/') else 'article')
     marker = url + '#linkget-neo-' + token
     proof_code = ('if(location.href!==' + json.dumps(marker) + ')return {owned:false};'
