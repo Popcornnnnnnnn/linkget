@@ -1,7 +1,7 @@
 # linkget
 
 Save photos, videos, and audio from a post or music link to **macOS Photos** or a local folder.
-A local-first macOS CLI (`MIT` · current stable release `v0.3.0`) with browser session reuse, completeness checks, and no hosted service.
+A local-first macOS CLI (`MIT` · current stable release `v0.3.1`) with browser session reuse, completeness checks, and no hosted service.
 
 ```mermaid
 flowchart LR
@@ -51,6 +51,7 @@ linkget read 'URL' --folder ./notes                  # extract subtitles, speech
 | `linkget retry [TASK]` / `linkget recover [TASK]` | Resume failed tasks or save verified staged media |
 | `linkget read URL --folder DIR` | Extract text/subtitles/ASR/keyframes, web & WeChat articles, `wait`, `show`, `summarize`, or `translate` ([docs/READ.md](docs/READ.md)) |
 | `linkget auth [SITE]` / `linkget logout [SITE\|all]` | Inspect, connect, or disconnect optional site logins |
+| `linkget upgrade [--check]` | Check for updates and upgrade linkget |
 
 > Automation / AI agents: pass `--non-interactive --json` (or `--stdout` on `read`). See [Agent Skill](docs/AGENT_SKILL.md).
 

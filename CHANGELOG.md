@@ -4,6 +4,11 @@
 
 - Nothing yet.
 
+## 0.3.1 (2026-11-23)
+
+- Add a non-blocking daily update check against GitHub Releases (interactive terminal only; set `LINKGET_NO_UPDATE_CHECK=1` to disable).
+- Add `linkget upgrade` (with `--check` and `--json`) to check for new versions and run the appropriate Homebrew, `uv`, or `pipx` upgrade.
+
 ## 0.3.0 (2026-11-22)
 
 First stable release. Everything below accumulated across the 0.2.1 development prereleases and the changes since dev22.

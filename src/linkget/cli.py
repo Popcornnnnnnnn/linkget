@@ -571,10 +571,22 @@ def _is_audio_only_link_text(text):
 
 def main(argv=None):
     saved_modes = runtime.snapshot_modes()
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    code = 1
     try:
-        return _main(argv)
+        code = _main(tokens)
+        return code
     finally:
         runtime.restore_modes(saved_modes)
+        if code in (None, 0):
+            try:
+                if __package__:
+                    from . import update as update_mod
+                else:
+                    import update as update_mod
+                update_mod.maybe_notify_update(VERSION, tokens)
+            except Exception:
+                pass
 
 
 def _main(argv=None):
@@ -590,6 +602,18 @@ def _main(argv=None):
         else:
             from build_info import main as version_details
         return version_details(tokens[1:])
+    if tokens and tokens[0] == 'upgrade':
+        if __package__:
+            from . import update as update_mod
+        else:
+            import update as update_mod
+        return update_mod.run_upgrade(tokens[1:], current_version=VERSION)
+    if tokens == ['help', 'upgrade']:
+        if __package__:
+            from . import update as update_mod
+        else:
+            import update as update_mod
+        return update_mod.run_upgrade(['--help'], current_version=VERSION)
     if tokens and tokens[0] == 'tasks':
         if __package__:
             from .tasks import main as task_status
@@ -609,6 +633,7 @@ def _main(argv=None):
         epilog="""Commands:
   help                 Show this help (also -h or --help)
   version              Show detailed local build and source identity
+  upgrade              Check for updates and upgrade linkget (--check, --json)
   sites                List supported sites and media
   inspect URL          Inspect one URL or local file without downloading
   read URL --folder D  Read/transcribe in the background (read --help)
