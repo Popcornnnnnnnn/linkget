@@ -5,7 +5,7 @@ description: Non-interactive, JSON-structured media inspection, download, audio 
 
 # Using `linkget` from an AI Agent
 
-Always pass `--non-interactive --json` (or set `LINKGET_NON_INTERACTIVE=1`) when running `linkget` from an agent shell. Many agent runners attach a PTY (`isatty() == True`); without `--non-interactive`, missing inputs or login prompts can wait for terminal input. `--json` automatically implies `--non-interactive` and suppresses status text and spinners on stdout/stderr so stdout holds one JSON object (`schema_version: 1`). `--json` is supported on `doctor`, `inspect`, `download`, `batch`, `retry`, `recover`, `tasks`, `compare`, `sites`, `config`, `logout`, and `read` (`read`, `read batch`, `read retry`, `read recover`, `read status`, `read wait`, `read show`). Set `LINKGET_NON_INTERACTIVE=1` for helper subcommands without `--json` (`auth`, `read config`, `read doctor`, `read logs`, `read cancel`, `read translate`, `read summarize`).
+Always pass `--non-interactive --json` (or set `LINKGET_NON_INTERACTIVE=1`) when running `linkget` from an agent shell. Many agent runners attach a PTY (`isatty() == True`); without `--non-interactive`, missing inputs or login prompts can wait for terminal input. `--json` automatically implies `--non-interactive` and suppresses status text and spinners on stdout/stderr so stdout holds one JSON object (`schema_version: 1`). `--json` is supported on `doctor`, `inspect`, `download`, `batch`, `retry`, `recover`, `tasks`, `clean`, `compare`, `sites`, `config`, `logout`, and `read` (`read`, `read batch`, `read retry`, `read recover`, `read status`, `read wait`, `read show`). Set `LINKGET_NON_INTERACTIVE=1` for helper subcommands without `--json` (`auth`, `read config`, `read doctor`, `read logs`, `read cancel`, `read translate`, `read summarize`). For native MCP tool integration, run `linkget mcp` over stdio.
 
 ## Standard Agent Workflow
 
@@ -44,6 +44,9 @@ Always pass `--non-interactive --json` (or set `LINKGET_NON_INTERACTIVE=1`) when
 
    # Concurrent batch:
    linkget batch 'URL1' 'URL2' --folder ./downloads --non-interactive --json
+
+   # Time clipping & safety caps (pre-download for yt-dlp, post-download verified before save):
+   linkget 'URL' --clip 0:30-2:00 --max-duration 10m --max-size 100MB --folder ./clips --non-interactive --json
    ```
 
    On success (`ok: true`, exit `0`), read `task_id`, `destination`, `saved_files` (for single download), or `items` (for batch). On failure, read `error.category`, `error.message`, `error.next_step`, and `error.retryable`.
@@ -77,6 +80,23 @@ Always pass `--non-interactive --json` (or set `LINKGET_NON_INTERACTIVE=1`) when
 
    Never pass `--photos`, `--date-now`, or `--live-photos` with `--audio` or music-only URLs (`music.youtube.com/watch`, `bilibili.com/audio/au...`, SoundCloud tracks, Bandcamp `/track/`).
 
+6. **Preview or clean old completed staging directories safely:**
+
+   ```sh
+   # Dry run by default (lists eligible linkget-* stages older than 7d and reasons kept items stay):
+   linkget clean --older-than 7d --json
+   # Apply deletion only after reviewing dry-run output:
+   linkget clean --apply --older-than 7d --json
+   ```
+
+7. **Run via native MCP server (`stdio` JSON-RPC 2.0):**
+
+   ```sh
+   linkget mcp
+   ```
+
+   Exposes `inspect_url`, `download_media`, `read_content`, `get_task`, and `doctor` over newline-delimited JSON-RPC 2.0 or `Content-Length`-framed stdio.
+
 ## Exit Codes & Error Categories
 
 | Exit code | Meaning |
@@ -93,4 +113,4 @@ Common `error.category` values: `rate_limit` (`retryable: true`), `network` (`re
 
 - Wrap every URL in single quotes (`'...'`) so shell does not expand `&`, `?`, or `;`.
 - Never automate logins, bypass CAPTCHAs, or scrape browser cookies directly; if `login_required` or `website_check` is returned, surface `error.next_step` to the user.
-- Do not run `rm -rf` on staging directories (`~/Library/Application Support/linkget/` or `/tmp/linkget-*`).
+- Do not run `rm -rf` on staging directories (`~/Library/Application Support/linkget/` or `/tmp/linkget-*`); use `linkget clean` (dry-run by default) or `linkget clean --apply`.

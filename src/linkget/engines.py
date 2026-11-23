@@ -7,10 +7,12 @@ if __package__:
     from .runtime import run_process
     from .failures import classify
     from .links import BANDCAMP_RESERVED_HOSTS, soundcloud_track_parts
+    from . import media_limits
 else:
     from runtime import run_process
     from failures import classify
     from links import BANDCAMP_RESERVED_HOSTS, soundcloud_track_parts
+    import media_limits
 SITES = (
     "Instagram, X/Twitter, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, Weibo, "
     "Reddit, Lofter, Pixiv and Pinterest posts; YouTube videos and Shorts; "
@@ -278,6 +280,10 @@ def command_for(args, url, engine, domain, media_dir, tools, cookie_path=None, a
         command.extend(["-o", str(media_dir / (domain.split(".")[0] + "_%(id)s.%(ext)s"))])
         if domain == "youtube.com":
             command.extend(["--js-runtimes", "deno:" + tools["deno"]])
+        clip_raw = getattr(args, "clip", None)
+        if clip_raw:
+            clip_range = media_limits.parse_clip(clip_raw)
+            command.extend(["--download-sections", media_limits.ytdlp_section(clip_range)])
     if cookie_path is not None:
         command.extend(["--cookies", str(cookie_path)])
     command.append(url)

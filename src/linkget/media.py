@@ -28,6 +28,18 @@ class DownloadResult:
 VIDEO = {".mp4", ".mov", ".m4v"}
 MEDIA = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".avif", ".tif", ".tiff"} | VIDEO
 AUDIO = {'.m4a', '.mp3', '.aac', '.opus', '.ogg', '.wav', '.flac', '.webm', '.mka'}
+_REAL_WHICH = shutil.which
+
+
+def _ffprobe_binary():
+    tool = shutil.which("ffprobe")
+    if tool:
+        return tool
+    if shutil.which is _REAL_WHICH:
+        for candidate in ("/opt/homebrew/bin/ffprobe", "/usr/local/bin/ffprobe"):
+            if Path(candidate).is_file():
+                return candidate
+    return None
 
 
 def reference(url):
@@ -39,7 +51,7 @@ def reference(url):
 
 
 def inspect_files(files, variants=None):
-    tool = shutil.which("ffprobe")
+    tool = _ffprobe_binary()
     records = []
     for path in files:
         record = {"file": path.name, "bytes": path.stat().st_size, "sha256": digest(path),
@@ -52,7 +64,7 @@ def inspect_files(files, variants=None):
             process = None
             try:
                 process = subprocess.Popen([tool, "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
-                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 output, _ = process.communicate(timeout=20)
                 data = json.loads(output) if process.returncode == 0 else {}
                 streams = data.get("streams", [])
