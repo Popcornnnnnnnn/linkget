@@ -20,12 +20,15 @@ linkget read ~/Downloads/recording.m4a
 linkget read translate '/path/to/read-folder' --language zh
 linkget read status                    # recent tasks
 linkget read status TASK_ID            # phase, model and result paths
+linkget read wait TASK_ID [--timeout S] # wait for completion (exit 124 on timeout)
+linkget read show [TASK_OR_DIR] [--format md|json|txt] # print saved result
 linkget read logs TASK_ID --tail 50
 linkget read cancel TASK_ID
 linkget read ~/Downloads/recording.m4a --foreground
+linkget read 'URL' --stdout [--stdout-format md|json|txt] # run synchronously and print to stdout
 ```
 
-Submission exit code zero means accepted, not completed. A task reaches `completed`, `failed`, `cancelled` or `interrupted`; `status TASK_ID` exits nonzero for the last three states. Use `--foreground` when a script needs to wait and receive the processing exit code. For read batches supplied through standard input, links are collected before the terminal returns, then processed in the worker.
+Submission exit code zero means accepted, not completed. A task reaches `completed`, `failed`, `cancelled` or `interrupted`; `status TASK_ID` exits nonzero for the last three states. Use `--foreground` or `--stdout` when a script needs to wait and receive the processing exit code/content, or call `linkget read wait TASK_ID --json` followed by `linkget read show TASK_ID`. For read batches supplied through standard input, links are collected before the terminal returns, then processed in the worker. (`--non-interactive` / `LINKGET_NON_INTERACTIVE=1` prevents blocking on empty PTY stdin.)
 
 Receipts and logs are private files under the linkget application-support directory. Logs may contain source paths and post references. Status distinguishes cloud requests, local service startup, model loading and local inference. Cancellation signals only the verified task process group, preserves source/checkpoints, and stops its child tools. A stopped worker is detected on the next status check; tasks are not automatically restarted after a reboot. Use `read recover` and `read retry FOLDER` for retained recognition checkpoints. Browser or website authorization that needs interaction must be configured before submitting the task.
 

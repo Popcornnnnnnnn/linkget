@@ -12,13 +12,13 @@ import uuid
 from urllib.parse import parse_qs, urlsplit
 
 if __package__:
-    from . import toutiao, rendered_page, read_store, read_formats, read_asr, read_ocr, read_tasks
+    from . import agent_output, toutiao, rendered_page, read_store, read_formats, read_asr, read_ocr, read_tasks, runtime
     from .engines import route
     from .links import normalize_link
     from .media import reference, AUDIO, DownloadResult
     from .preflight import writable_directory
 else:
-    import toutiao, rendered_page, read_store, read_formats, read_asr, read_ocr, read_tasks
+    import agent_output, toutiao, rendered_page, read_store, read_formats, read_asr, read_ocr, read_tasks, runtime
     from engines import route
     from links import normalize_link
     from media import reference, AUDIO, DownloadResult
@@ -126,7 +126,20 @@ def read_videos(args):
             if job.get('schema') != read_store.SCHEMA or job.get('folder') != str(folder):
                 raise ValueError('The read checkpoint does not match this folder.')
             if job.get('status') == 'completed':
-                cli.status('Done', 'This read is already complete')
+                if (runtime.json_mode() or getattr(args, 'json', False)) and getattr(args, '_batch_collect', None) is None and not getattr(args, 'stdout', False):
+                    content_file = folder / 'content.json'
+                    data = read_store.read_json(content_file) if content_file.is_file() else None
+                    agent_output.emit({
+                        'schema_version': agent_output.SCHEMA_VERSION,
+                        'ok': True,
+                        'command': 'read retry',
+                        'already_completed': True,
+                        'folder': str(folder),
+                        'content_path': str(content_file) if content_file.is_file() else None,
+                        'result': data,
+                    })
+                else:
+                    cli.status('Done', 'This read is already complete')
                 return 0
             job['status'] = 'running'
             if getattr(args, '_rendered_backend_override', False):
@@ -159,7 +172,32 @@ def read_videos(args):
             job.update(status='completed', source=None)
             read_store.save_job(folder, job)
             completed = True
-            print(json.dumps({'status': 'content_ready', 'content': str(output), 'send_enabled': False}, ensure_ascii=False))
+            if getattr(args, '_batch_collect', None) is not None:
+                args._batch_collect.append({'folder': str(folder), 'content_path': str(output), 'result': result})
+            elif getattr(args, 'stdout', False):
+                fmt = getattr(args, 'stdout_format', 'md')
+                if fmt == 'json':
+                    print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
+                elif fmt == 'txt':
+                    sys.stdout.write((result.get('text') or '') + '\n')
+                    sys.stdout.flush()
+                else:
+                    md_path = folder / 'content.md'
+                    text = md_path.read_text() if md_path.is_file() else read_formats.markdown(result)
+                    sys.stdout.write(text)
+                    sys.stdout.flush()
+            elif getattr(args, 'json', False) or runtime.json_mode():
+                agent_output.emit({
+                    'schema_version': agent_output.SCHEMA_VERSION,
+                    'ok': True,
+                    'command': 'read',
+                    'mode': 'foreground',
+                    'folder': str(folder),
+                    'content_path': str(output),
+                    'result': result,
+                })
+            else:
+                print(json.dumps({'status': 'content_ready', 'content': str(output), 'send_enabled': False}, ensure_ascii=False))
 
         def content_metadata(metadata):
             fields = read_formats.source_metadata(metadata or {})
@@ -397,6 +435,28 @@ def read_videos(args):
                 job['status'] = 'cancelled' if code == 130 else 'failed'
                 read_store.save_job(folder, job)
                 cli.status('Retry', f'linkget read retry "{folder}"', stream=sys.stderr)
+                last_err, last_phase = getattr(download_args, '_last_failure', None) or (None, None)
+                err_obj = (
+                    last_err
+                    if last_err is not None
+                    else (KeyboardInterrupt('Content read cancelled.') if code == 130 else RuntimeError('Content download failed.'))
+                )
+                read_tasks.failure(err_obj)
+                if getattr(args, '_batch_collect', None) is not None:
+                    args._batch_collect.append({
+                        'folder': str(folder),
+                        'error': agent_output.classify_error(err_obj, phase=last_phase),
+                    })
+                elif runtime.json_mode() or getattr(args, 'json', False):
+                    agent_output.emit(
+                        agent_output.error_payload(
+                            'read',
+                            err_obj,
+                            phase=last_phase,
+                            exit_code=code,
+                            extra={'folder': str(folder)},
+                        )
+                    )
             return code
         except BaseException as error:
             job['status'] = 'cancelled' if isinstance(error, (KeyboardInterrupt, EOFError)) else 'failed'
@@ -469,6 +529,8 @@ def read_parser(batch=False):
   translate FOLDER          Translate complete saved text (--language zh)
   summarize FOLDER          Summarize complete saved text with source references
   status [TASK]             List recent tasks, or inspect one task and results
+  wait [TASK]               Wait for a background read task to complete
+  show [TASK_OR_FOLDER]     Print completed read content to stdout
   logs TASK [--tail N]      Show a task's private log (default: last 50 lines)
   cancel TASK               Stop a task and preserve source/checkpoints
 
@@ -476,6 +538,9 @@ Examples:
   linkget read 'https://www.bilibili.com/video/BV1bK411W797?p=1'
   linkget read ~/Downloads/recording.m4a --language zh
   linkget read ~/Downloads/screenshot.png
+  linkget read URL --stdout --stdout-format md
+  linkget read wait TASK --json
+  linkget read show TASK --format txt
   linkget read translate '/path/to/read-folder' --language en
   linkget read status TASK
   linkget read logs TASK
@@ -483,7 +548,7 @@ Examples:
 
 Processing returns a task ID immediately; closing the terminal does not stop it.
 Submission success means accepted; inspect status for completion or failure.
-Add --foreground to read, batch, retry, translate or summarize to wait.
+Add --foreground (or --stdout) to read synchronously and return the content or exit code.
 Recognition/OCR run locally. Only translate/summarize use the configured AI.
 An enabled AI fallback switches on provider outages; config --help lists options.''')
     parser.add_argument('url', nargs='*' if batch else None)
@@ -504,6 +569,10 @@ An enabled AI fallback switches on provider outages; config --help lists options
     parser.add_argument('--browser', choices=['auto', 'none', 'chrome', 'firefox', 'safari', 'edge', 'brave'], default='auto', help='Existing login source; scoped pages: chrome selects Chrome, none disables browser access; other explicit browsers are not substituted')
     parser.add_argument('--profile')
     parser.add_argument('--foreground', action='store_true', help='Wait for completion instead of running in the background')
+    parser.add_argument('--stdout', action='store_true', help='Run synchronously and print extracted content to stdout')
+    parser.add_argument('--stdout-format', choices=['md', 'json', 'txt'], default='md', help='Format for --stdout (default: md)')
+    parser.add_argument('--json', action='store_true', help='Emit structured JSON output on stdout')
+    parser.add_argument('--non-interactive', action='store_true', help='Never prompt or animate spinners')
     return parser
 
 
@@ -512,19 +581,37 @@ def retry_parser():
     parser.add_argument('folder', nargs='?', type=Path, help='Unfinished read folder; omit for the latest unfinished read')
     parser.add_argument('--foreground', action='store_true', help='Wait for completion and return its exit code')
     parser.add_argument('--rendered-backend', choices=['chrome', 'neo'], help='Explicitly override the retained scoped reader choice; does not enable a disabled browser')
+    parser.add_argument('--json', action='store_true', help='Emit structured JSON output on stdout')
+    parser.add_argument('--non-interactive', action='store_true', help='Never prompt or animate spinners')
     return parser
 
 
 def main(argv):
+    saved_modes = runtime.snapshot_modes()
+    wants_json = '--json' in argv
+    wants_stdout = '--stdout' in argv
     try:
+        if '--non-interactive' in argv or wants_json:
+            runtime.set_non_interactive(True)
+        if wants_json:
+            runtime.set_json_mode(True)
+        if wants_stdout:
+            runtime.set_quiet_status(True)
         if argv and argv[0] == 'config':
             return config_command(argv[1:])
         if argv and argv[0] == 'doctor':
             return doctor()
         if argv and argv[0] == 'recover':
-            argparse.ArgumentParser(prog='linkget read recover', description='List unfinished reads and retained checkpoint folders; use read retry FOLDER to resume.').parse_args(argv[1:])
-            for job in read_store.unfinished():
-                print(job['status'] + '  ' + job['folder'])
+            recover_parser = argparse.ArgumentParser(prog='linkget read recover', description='List unfinished reads and retained checkpoint folders; use read retry FOLDER to resume.')
+            recover_parser.add_argument('--json', action='store_true', help='Emit structured JSON output')
+            recover_parser.add_argument('--non-interactive', action='store_true', help='Never prompt')
+            r_args = recover_parser.parse_args(argv[1:])
+            unfinished = read_store.unfinished()
+            if r_args.json:
+                agent_output.emit({'schema_version': agent_output.SCHEMA_VERSION, 'ok': True, 'command': 'read recover', 'unfinished': unfinished})
+            else:
+                for job in unfinished:
+                    print(job['status'] + '  ' + job['folder'])
             return 0
         if argv and argv[0] in {'summarize', 'translate'}:
             if __package__:
@@ -540,7 +627,7 @@ def main(argv):
                 raise ValueError('No unfinished read was found.')
             record = read_store.read_json(folder / '.read-job.json')
             args = argparse.Namespace(**record['options'], url=record.get('source') or '', folder=folder,
-                                      resume=True, refresh=False, transcribe=True)
+                                      resume=True, refresh=False, transcribe=True, json=retry.json)
             if retry.rendered_backend is not None:
                 args.rendered_backend = retry.rendered_backend
                 args._rendered_backend_override = True
@@ -548,12 +635,27 @@ def main(argv):
                 value = getattr(args, field, None)
                 setattr(args, field, Path(value) if value else None)
             if record['status'] == 'completed':
-                print('This read is already complete.')
+                if retry.json:
+                    content_file = folder / 'content.json'
+                    data = read_store.read_json(content_file) if content_file.is_file() else None
+                    agent_output.emit({
+                        'schema_version': agent_output.SCHEMA_VERSION,
+                        'ok': True,
+                        'command': 'read retry',
+                        'already_completed': True,
+                        'folder': str(folder),
+                        'content_path': str(content_file) if content_file.is_file() else None,
+                        'result': data,
+                    })
+                else:
+                    print('This read is already complete.')
                 return 0
             return read_videos(args)
         batch = bool(argv and argv[0] == 'batch')
         parser = read_parser(batch)
         args = parser.parse_args(argv[1:] if batch else argv)
+        if batch and args.stdout:
+            parser.error('--stdout applies to a single read, not batch.')
         args.resume = False
         if args.profile and args.browser in {'auto', 'none'}:
             parser.error('--profile requires an explicit browser')
@@ -563,35 +665,67 @@ def main(argv):
             return read_videos(args)
         links = args.url
         if not links:
-            if sys.stdin.isatty():
+            if runtime.is_interactive():
                 print('Paste one link or local file per line; blank line starts reads.')
                 while line := input('> ').strip():
                     links.append(line)
-            else:
+            elif not sys.stdin.isatty():
                 links = [line.strip() for line in sys.stdin if line.strip()]
         if not links:
+            if wants_json:
+                raise ValueError('The read batch is empty')
             parser.error('The read batch is empty')
         failed = []
+        batch_results = []
         for index, link in enumerate(links, 1):
             item = argparse.Namespace(**vars(args))
             item.url = link
             item.folder = args.folder / f'item-{index:03d}' if args.folder else None
-            print(f'Reading {index} / {len(links)}')
+            collected = []
+            if args.json:
+                item._batch_collect = collected
+            if not args.json:
+                print(f'Reading {index} / {len(links)}')
             try:
                 code = read_videos(item)
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 read_tasks.failure(error)
-                print(str(error), file=sys.stderr)
+                if not args.json:
+                    print(str(error), file=sys.stderr)
+                collected.append({'error': agent_output.classify_error(error)})
                 code = 1
             if code == 130:
+                if args.json:
+                    agent_output.emit({'schema_version': agent_output.SCHEMA_VERSION, 'ok': False, 'command': 'read batch', 'cancelled': True, 'items': batch_results})
                 return 130
             if code:
                 failed.append(index)
-        print(f'{len(links) - len(failed)} completed; failed items: {failed}')
+            entry = {'index': index, 'ok': code == 0}
+            if collected:
+                entry.update(collected[0])
+            batch_results.append(entry)
+        if args.json:
+            agent_output.emit({
+                'schema_version': agent_output.SCHEMA_VERSION,
+                'ok': not failed,
+                'command': 'read batch',
+                'completed_count': len(links) - len(failed),
+                'failed_items': failed,
+                'items': batch_results,
+            })
+        else:
+            print(f'{len(links) - len(failed)} completed; failed items: {failed}')
         return 1 if failed else 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         read_tasks.failure(error)
-        print('Content read stopped: ' + str(error), file=sys.stderr)
+        if wants_json:
+            agent_output.emit(agent_output.error_payload('read', error))
+        else:
+            print('Content read stopped: ' + str(error), file=sys.stderr)
         return 1
     except (KeyboardInterrupt, EOFError):
+        if wants_json:
+            agent_output.emit(agent_output.error_payload('read', KeyboardInterrupt('Content read stopped'), exit_code=130))
         return 130
+    finally:
+        runtime.restore_modes(saved_modes)

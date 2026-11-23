@@ -20,7 +20,7 @@ else:
     from output import saving_activity, batch_media
 
 
-def listing(status):
+def listing(status, records=None):
     found = False
     for journal in jobs.all_journals():
         for index, row in enumerate(journal.data["items"], 1):
@@ -33,6 +33,13 @@ def listing(status):
         if pending:
             found = True
             ready = sum(bool(journal.data["items"][i - 1].get("ready")) for i in pending)
+            if records is not None:
+                records.append({
+                    "task_id": journal.identifier,
+                    "pending_count": len(pending),
+                    "ready_count": ready,
+                    "pending_items": pending,
+                })
             status("Task", f"{journal.identifier} · {len(pending)} need attention · {ready} ready to save")
             for index in pending:
                 row = journal.data["items"][index - 1]
@@ -76,7 +83,7 @@ def remove_verified(records, root):
     return removed
 
 
-def restore(journal, args, status, save_folder, import_photos, claimed=False, indices=None, audio_folder_resolver=None):
+def restore(journal, args, status, save_folder, import_photos, claimed=False, indices=None, audio_folder_resolver=None, records=None):
     failures = 0
     with nullcontext() if claimed else journal.claim():
         indices = (sorted(set(journal.incomplete() + (journal.needs_verification() if args.verify else [])))
@@ -90,6 +97,7 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
             return 0
         for index in indices:
             row = journal.data["items"][index - 1]
+            entry = {"item": index, "status": "failed"}
             try:
                 with jobs.item(journal, index):
                     staging.remember_earlier(status)
@@ -129,6 +137,8 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                         if row.get("stage"):
                             status("Files kept", row["stage"])
                         cleanup_folder = args.folder
+                        entry.update(verified=True, removed_staged=removed,
+                                     destination=str(cleanup_folder) if cleanup_folder else "Photos")
                     else:
                         ready = row.get("ready")
                         if not ready:
@@ -210,10 +220,18 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                             for pair in ready.get("prepared", []):
                                 remove_verified(pair, stage)
                         cleanup_folder = target_folder
+                        dest_files = [item.get("path") for item in journal.data["items"][index - 1].get("destination_files", []) if item.get("path")]
+                        entry.update(verified=False, destination=str(target_folder) if target_folder is not None else "Photos",
+                                     saved_count=len(saved), skipped_count=skipped, saved_files=dest_files, audio_mode=is_audio_item)
                         status("Recovered", f"Item {index} · {len(saved)} saved · {skipped} duplicates")
                     staging.cleanup(status, cleanup_folder, photos_verified=args.verify)
                     jobs.record(status="completed")
+                    entry["status"] = "completed"
             except (OSError, ValueError, RuntimeError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
                 failures += 1
+                entry["error"] = redact(error)
                 status("Kept", f"Item {index}: {redact(error)}", "33")
+            finally:
+                if records is not None:
+                    records.append(entry)
     return 1 if failures else 0

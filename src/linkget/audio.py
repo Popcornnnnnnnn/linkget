@@ -2,6 +2,7 @@
 
 from http.client import HTTPException
 import hashlib
+import html
 import json
 from pathlib import Path
 import re
@@ -102,8 +103,16 @@ def probe_audio(path, ffprobe):
 def _clean_text(value):
     if not isinstance(value, str):
         return ""
-    cleaned = plain(value)
+    cleaned = html.unescape(value).replace("\x00", "")
+    cleaned = "".join(" " if ord(c) < 32 or ord(c) == 127 else c for c in cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _url_scheme(url):
+    try:
+        return urlsplit(url).scheme
+    except ValueError:
+        return ""
 
 
 def _first_text(*values):
@@ -151,14 +160,14 @@ def _format_date(raw):
 
 def _thumbnail_url(raw):
     thumb = raw.get("thumbnail")
-    if isinstance(thumb, str) and urlsplit(thumb).scheme in {"http", "https"}:
+    if isinstance(thumb, str) and _url_scheme(thumb) in {"http", "https"}:
         return thumb
     thumbnails = raw.get("thumbnails")
     if isinstance(thumbnails, list):
         for entry in reversed(thumbnails):
             if isinstance(entry, dict):
                 candidate = entry.get("url")
-                if isinstance(candidate, str) and urlsplit(candidate).scheme in {"http", "https"}:
+                if isinstance(candidate, str) and _url_scheme(candidate) in {"http", "https"}:
                     return candidate
     return ""
 
@@ -194,7 +203,9 @@ def extract_metadata(raw, source_url, site):
         for field in ("description", "desc", "caption", "content", "text"):
             raw_desc = post.get(field)
             if isinstance(raw_desc, str) and raw_desc.strip():
-                first_line = next((line for line in plain(raw_desc).splitlines() if line.strip()), "")
+                cleaned_desc = plain(raw_desc).replace("\x00", "")
+                first_line = next((line for line in cleaned_desc.splitlines() if line.strip()), "")
+                first_line = "".join(" " if ord(c) < 32 or ord(c) == 127 else c for c in first_line)
                 first_line = re.sub(r"\s+", " ", first_line).strip()
                 if first_line:
                     title = first_line[:80].rstrip()
@@ -248,9 +259,9 @@ def build_filename(meta, fallback_stem, ext, index=1, total=1):
             stem = f"{artist} - {title}"
     else:
         stem = title or sanitize_component(fallback_stem) or "audio"
+    stem = _truncate_utf8(stem, max_bytes=170 if total > 1 else 180) or "audio"
     if total > 1:
         stem = f"{stem} ({index})"
-    stem = _truncate_utf8(stem) or "audio"
     return f"{stem}{ext}"
 
 
@@ -264,7 +275,10 @@ def _unique_path(directory, stem, suffix):
 
 
 def fetch_cover(url, work_dir, ffmpeg):
-    parsed = urlsplit(url or "")
+    try:
+        parsed = urlsplit(url or "")
+    except ValueError:
+        return None, "Cover art unavailable; saved audio without thumbnail."
     if (parsed.scheme not in {"http", "https"} or not parsed.hostname
             or parsed.username or parsed.password):
         return None, "Cover art unavailable; saved audio without thumbnail."
@@ -276,7 +290,7 @@ def fetch_cover(url, work_dir, ffmpeg):
     try:
         request = Request(url, headers={"User-Agent": COVER_UA})
         with urlopen(request, timeout=15) as response:
-            if urlsplit(response.geturl() or url).scheme not in {"http", "https"}:
+            if _url_scheme(response.geturl() or url) not in {"http", "https"}:
                 return None, "Cover art unavailable; saved audio without thumbnail."
             writer = ownership.Writer(raw_path)
             with writer:

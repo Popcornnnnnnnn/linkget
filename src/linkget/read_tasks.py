@@ -1,6 +1,7 @@
 """Detached read/AI workers with private receipts, results and safe cancellation."""
 import argparse
 from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
 import re
@@ -13,13 +14,14 @@ import uuid
 
 if __package__:
     from .failures import redact
-    from . import read_store
+    from . import agent_output, read_formats, read_store, runtime
 else:
     from failures import redact
-    import read_store
+    import agent_output, read_formats, read_store, runtime
 
 TERMINAL = {'completed', 'failed', 'cancelled', 'interrupted'}
-FAST = {'config', 'doctor', 'recover', 'status', 'logs', 'cancel', '_worker'}
+FAST = {'config', 'doctor', 'recover', 'status', 'logs', 'cancel', 'show', 'wait', '_worker'}
+_TASK_ID_RE = re.compile(r'\d{8}T\d{6}-[a-f0-9]{12}')
 _current = None
 
 
@@ -106,20 +108,172 @@ def show(value):
         print('Log: ' + str(paths(value['id'])[3]))
 
 
+def _task_payload(value):
+    content_path = None
+    if value['status'] == 'completed' and value.get('outputs'):
+        candidate = Path(value['outputs'][0]) / 'content.json'
+        if candidate.is_file() and not candidate.is_symlink():
+            content_path = str(candidate)
+    return {
+        'id': value['id'],
+        'kind': value['kind'],
+        'status': value['status'],
+        'phase': value.get('phase', value['kind']),
+        'model': value.get('model'),
+        'outputs': list(value.get('outputs', [])),
+        'content_path': content_path,
+        'failure': value.get('failure'),
+    }
+
+
 def status(argv):
     parser = argparse.ArgumentParser(prog='linkget read status', description='Show phase, model and result paths. Failed, cancelled or interrupted tasks return a nonzero exit code.')
     parser.add_argument('task', nargs='?', help='Submitted task ID; omit to list the latest 20 tasks')
+    parser.add_argument('--json', action='store_true', help='Print machine-readable task status')
+    parser.add_argument('--non-interactive', action='store_true', help='Disable interactive prompts')
     args = parser.parse_args(argv)
     if args.task:
         value = refresh(args.task)
-        show(value)
-        return int(value['status'] in {'failed', 'cancelled', 'interrupted'})
+        code = int(value['status'] in {'failed', 'cancelled', 'interrupted'})
+        if args.json:
+            agent_output.emit({
+                'schema_version': agent_output.SCHEMA_VERSION,
+                'ok': code == 0,
+                'command': 'read status',
+                'task': _task_payload(value),
+            })
+        else:
+            show(value)
+        return code
     records = sorted(directory().glob('*.json'), reverse=True)[:20]
-    if not records:
+    values = [refresh(record.stem) for record in records]
+    if args.json:
+        agent_output.emit({
+            'schema_version': agent_output.SCHEMA_VERSION,
+            'ok': True,
+            'command': 'read status',
+            'tasks': [_task_payload(value) for value in values],
+        })
+        return 0
+    if not values:
         print('No background read tasks.')
-    for record in records:
-        show(refresh(record.stem))
+    for value in values:
+        show(value)
     return 0
+
+
+def _resolve_read_folder(target):
+    if target is None:
+        for record in sorted(directory().glob('*.json'), reverse=True):
+            value = refresh(record.stem)
+            if value['status'] == 'completed' and value.get('kind') not in {'translate', 'summarize'} and value.get('outputs'):
+                raw = Path(value['outputs'][0]).expanduser()
+                if not raw.is_symlink() and raw.is_dir():
+                    return raw.resolve()
+        raise ValueError('No completed read task was found.')
+    if _TASK_ID_RE.fullmatch(target):
+        value = refresh(target)
+        if value['status'] in {'queued', 'running'}:
+            raise ValueError(f"Read task {target} is still {value['status']}. Wait for it with linkget read wait {target}.")
+        if value['status'] != 'completed' or not value.get('outputs'):
+            raise ValueError(value.get('failure') or f"Read task {target} did not complete.")
+        raw = Path(value['outputs'][0]).expanduser()
+        if raw.is_symlink():
+            raise ValueError('Read output folder must not be a symbolic link.')
+        return raw.resolve()
+    raw = Path(target).expanduser()
+    if raw.is_symlink():
+        raise ValueError('Read output folder must not be a symbolic link.')
+    return raw.resolve()
+
+
+def show_content(argv):
+    parser = argparse.ArgumentParser(prog='linkget read show', description='Print the completed content of a read task or folder to stdout.')
+    parser.add_argument('target', nargs='?', help='Task ID or read folder; omit for the latest completed read task')
+    parser.add_argument('--format', choices=['md', 'json', 'txt'], default=None, help='Output format (default: md, or json when --json is set)')
+    parser.add_argument('--json', action='store_true', help='Print raw content.json output')
+    parser.add_argument('--non-interactive', action='store_true', help='Disable interactive prompts')
+    args = parser.parse_args(argv)
+    folder = _resolve_read_folder(args.target)
+    if folder.is_symlink() or not folder.is_dir():
+        raise ValueError('Read output folder is unavailable or a symbolic link.')
+    content_path = folder / 'content.json'
+    if content_path.is_symlink() or not content_path.is_file():
+        raise ValueError('No content.json found in ' + str(folder))
+    data = read_store.read_json(content_path)
+    fmt = args.format or ('json' if args.json else 'md')
+    if fmt == 'json':
+        print(json.dumps(data, ensure_ascii=False, indent=2), flush=True)
+    elif fmt == 'txt':
+        txt_path = folder / 'content.txt'
+        text = txt_path.read_text() if txt_path.is_file() and not txt_path.is_symlink() else ((data.get('text') or '') + '\n')
+        sys.stdout.write(text)
+        sys.stdout.flush()
+    else:
+        md_path = folder / 'content.md'
+        text = md_path.read_text() if md_path.is_file() and not md_path.is_symlink() else read_formats.markdown(data)
+        sys.stdout.write(text)
+        sys.stdout.flush()
+    return 0
+
+
+def wait_task(argv):
+    parser = argparse.ArgumentParser(prog='linkget read wait', description='Wait for a background read task to finish and report its terminal status.')
+    parser.add_argument('task', nargs='?', help='Submitted task ID; omit for the latest read task')
+    parser.add_argument('--timeout', type=float, default=0.0, help='Maximum seconds to wait (0 waits until done; default: 0)')
+    parser.add_argument('--interval', type=float, default=0.5, help='Polling interval in seconds (0.1-10.0; default: 0.5)')
+    parser.add_argument('--json', action='store_true', help='Print machine-readable completion JSON')
+    parser.add_argument('--non-interactive', action='store_true', help='Disable interactive prompts')
+    args = parser.parse_args(argv)
+    if args.timeout < 0:
+        parser.error('--timeout must be >= 0.')
+    if not 0.1 <= args.interval <= 10.0:
+        parser.error('--interval must be between 0.1 and 10 seconds.')
+    task_id = args.task
+    if not task_id:
+        records = sorted(directory().glob('*.json'), reverse=True)
+        if not records:
+            raise ValueError('No background read tasks found.')
+        task_id = records[0].stem
+    deadline = time.monotonic() + args.timeout if args.timeout > 0 else None
+    while True:
+        value = refresh(task_id)
+        if value['status'] in TERMINAL:
+            break
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                if args.json:
+                    agent_output.emit({
+                        'schema_version': agent_output.SCHEMA_VERSION,
+                        'ok': False,
+                        'command': 'read wait',
+                        'task_id': task_id,
+                        'status': value['status'],
+                        'phase': value.get('phase', value['kind']),
+                        'timed_out': True,
+                        'outputs': list(value.get('outputs', [])),
+                    })
+                else:
+                    print(f"Timed out waiting for {task_id} ({value['status']} · {value.get('phase', value['kind'])})", file=sys.stderr)
+                return 124
+            time.sleep(min(args.interval, remaining))
+        else:
+            time.sleep(args.interval)
+    code = 0 if value['status'] == 'completed' else 130 if value['status'] == 'cancelled' else 1
+    if args.json:
+        payload = _task_payload(value)
+        agent_output.emit({
+            'schema_version': agent_output.SCHEMA_VERSION,
+            'ok': code == 0,
+            'command': 'read wait',
+            'task_id': task_id,
+            'timed_out': False,
+            **payload,
+        })
+    else:
+        show(value)
+    return code
 
 
 def logs(argv):
@@ -163,9 +317,10 @@ def submit(argv, kind):
     directory().mkdir(parents=True, exist_ok=True, mode=0o700)
     identifier = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S') + '-' + uuid.uuid4().hex[:12]
     record, _, _, log = paths(identifier)
-    read_store.write_json(record, {'schema': 1, 'id': identifier, 'kind': kind, 'argv': argv,
+    worker_argv = [arg for arg in argv if arg != '--json']
+    read_store.write_json(record, {'schema': 1, 'id': identifier, 'kind': kind, 'argv': worker_argv,
         'created': time.time(), 'status': 'queued', 'phase': 'queued', 'outputs': [], 'pid': None,
-        'source_folder': str(Path(argv[1]).expanduser().resolve()) if kind in {'translate', 'summarize', 'retry'} and len(argv) > 1 else None})
+        'source_folder': str(Path(worker_argv[1]).expanduser().resolve()) if kind in {'translate', 'summarize', 'retry'} and len(worker_argv) > 1 else None})
     try:
         fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, 'wb') as stream:
@@ -178,9 +333,24 @@ def submit(argv, kind):
     except (OSError, RuntimeError):
         update(identifier, status='failed', phase='worker could not start', finished=time.time())
         raise
-    print('Task: ' + identifier)
-    print('Status: linkget read status ' + identifier)
-    print('Log: linkget read logs ' + identifier)
+    if runtime.json_mode():
+        agent_output.emit({
+            'schema_version': agent_output.SCHEMA_VERSION,
+            'ok': True,
+            'command': 'read',
+            'mode': 'background',
+            'task_id': identifier,
+            'kind': kind,
+            'status': 'queued',
+            'status_command': 'linkget read status ' + identifier,
+            'wait_command': 'linkget read wait ' + identifier,
+            'show_command': 'linkget read show ' + identifier,
+            'log_command': 'linkget read logs ' + identifier,
+        })
+    else:
+        print('Task: ' + identifier)
+        print('Status: linkget read status ' + identifier)
+        print('Log: linkget read logs ' + identifier)
     return 0
 
 
@@ -229,18 +399,24 @@ def worker(identifier):
 
 
 def main(argv):
+    saved_modes = runtime.snapshot_modes()
+    wants_json = '--json' in argv
     try:
+        if '--non-interactive' in argv or wants_json:
+            runtime.set_non_interactive(True)
+        if wants_json:
+            runtime.set_json_mode(True)
         if argv and argv[0] == '_worker':
             if len(argv) != 2:
                 raise ValueError('Invalid worker invocation.')
             return worker(argv[1])
-        if argv and argv[0] in {'status', 'logs', 'cancel'}:
-            return {'status': status, 'logs': logs, 'cancel': cancel}[argv[0]](argv[1:])
+        if argv and argv[0] in {'status', 'logs', 'cancel', 'show', 'wait'}:
+            return {'status': status, 'logs': logs, 'cancel': cancel, 'show': show_content, 'wait': wait_task}[argv[0]](argv[1:])
         if __package__:
             from . import content, read_ai
         else:
             import content, read_ai
-        if not argv or argv[0] in FAST or '-h' in argv or '--help' in argv or '--foreground' in argv:
+        if not argv or argv[0] in FAST or '-h' in argv or '--help' in argv or '--foreground' in argv or '--stdout' in argv:
             return content.main([arg for arg in argv if arg != '--foreground'])
         kind = argv[0] if argv[0] in {'translate', 'summarize', 'retry', 'batch'} else 'read'
         if kind in {'translate', 'summarize'}:
@@ -267,19 +443,30 @@ def main(argv):
             if args.language and not re.fullmatch(r'auto|[a-z]{2,3}', args.language):
                 parser.error('Use auto or a Whisper language code')
             if batch and not args.url:
-                if sys.stdin.isatty():
+                if runtime.is_interactive():
                     print('Paste one link or local file per line; blank line submits the task.')
                     links = []
                     while line := input('> ').strip():
                         links.append(line)
-                else:
+                elif not sys.stdin.isatty():
                     links = [line.strip() for line in sys.stdin if line.strip()]
+                else:
+                    links = []
                 if not links:
+                    if wants_json:
+                        raise ValueError('The read batch is empty')
                     parser.error('The read batch is empty')
                 argv = ['batch', *links, *argv[1:]]
         return submit(argv, kind)
     except (OSError, ValueError, RuntimeError) as error:
-        print('Read task stopped: ' + str(error), file=sys.stderr)
+        if wants_json:
+            agent_output.emit(agent_output.error_payload('read', error))
+        else:
+            print('Read task stopped: ' + str(error), file=sys.stderr)
         return 1
     except (KeyboardInterrupt, EOFError):
+        if wants_json:
+            agent_output.emit(agent_output.error_payload('read', KeyboardInterrupt('Read stopped'), exit_code=130))
         return 130
+    finally:
+        runtime.restore_modes(saved_modes)

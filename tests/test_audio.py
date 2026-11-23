@@ -698,6 +698,123 @@ class MixedBatchAndRecoveryAudioTests(unittest.TestCase):
         self.assertEqual(files[0].parent.name, "audio")
         self.assertTrue(any("without thumbnail" in n for n in notes))
 
+    def test_p2_retry_folder_from_default_ready_audio_format_batch_and_login_guidance(self):
+        global_dir = self.root / "Downloads"
+        audio_dir = self.root / "Music"
+        self.assertEqual(self.run_cli("config", "--folder", str(global_dir))[0], 0)
+        self.assertEqual(self.run_cli("config", "--audio-folder", str(audio_dir))[0], 0)
+
+        # 1) Mixed batch early failure on audio short link before destination_folder recording
+        # still retries into --audio-folder rather than global --folder.
+        calls = {"pixiv": 0, "ytdlp": 0}
+
+        def fake_pixiv(url, folder, cookies):
+            calls["pixiv"] += 1
+            (folder / "art.jpg").write_bytes(b"img")
+
+        def fake_normalize(text):
+            if "on.soundcloud.com" in text and calls["ytdlp"] == 0:
+                calls["ytdlp"] += 1
+                raise RuntimeError("Could not resolve the short link.")
+            return "https://soundcloud.com/artist/track-p2"
+
+        def fake_ytdlp(command, **kwargs):
+            if "--dump-single-json" in command:
+                return CompletedProcess(command, 0, json.dumps({"id": "p2", "title": "P2Track", "uploader": "Artist", "acodec": "mp3"}) + "\n", "")
+            out_tmpl = Path(command[command.index("-o") + 1]).parent
+            (out_tmpl / "soundcloud_p2.mp3").write_bytes(b"mp3data")
+            return CompletedProcess(command, 0)
+
+        def fake_prepare_audio(files, live_pairs, meta_map, default_meta, url, site, out_dir, tools, target_format=None):
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_file = out_dir / "Artist - P2Track.mp3"
+            out_file.write_bytes(b"tagged-mp3")
+            return [out_file], []
+
+        def fake_inspect(files, variants=None):
+            return [{"file": p.name, "kind": "audio" if p.suffix == ".mp3" else "image", "source": "engine_selected", "probe_ok": True, "sha256": jobs.digest(p)} for p in files]
+
+        with patch.object(cli, "find_tool", return_value="tool"), \
+                patch.object(cli, "download_pixiv", side_effect=fake_pixiv), \
+                patch.object(cli, "normalize_link", side_effect=fake_normalize), \
+                patch.object(cli, "inspect_files", side_effect=fake_inspect):
+            code, _, _ = self.run_cli("batch", "https://www.pixiv.net/artworks/123", "https://on.soundcloud.com/xyz", "--browser", "none")
+        self.assertEqual(code, 1)
+        task = jobs.all_journals()[0]
+        self.assertTrue(task.data["options"]["folder_from_default"])
+
+        with patch.object(cli, "find_tool", return_value="tool"), \
+                patch.object(cli, "normalize_link", return_value="https://soundcloud.com/artist/track-p2"), \
+                patch.object(engines, "run_process", side_effect=fake_ytdlp), \
+                patch.object(cli, "run_process", side_effect=fake_ytdlp), \
+                patch.object(cli, "prepare_audio", side_effect=fake_prepare_audio), \
+                patch.object(cli, "inspect_files", side_effect=fake_inspect):
+            code, out, err = self.run_cli("retry", task.identifier)
+        self.assertEqual(code, 0, out + err)
+        self.assertTrue((audio_dir / "Artist - P2Track.mp3").is_file())
+        self.assertFalse((global_dir / "Artist - P2Track.mp3").exists())
+
+        # 2) retry --audio-format on ready audio item without --redownload rejects clearly.
+        with patch.object(cli, "find_tool", return_value="tool"), \
+                patch.object(engines, "run_process", side_effect=fake_ytdlp), \
+                patch.object(cli, "run_process", side_effect=fake_ytdlp), \
+                patch.object(cli, "prepare_audio", side_effect=fake_prepare_audio), \
+                patch.object(cli, "inspect_files", side_effect=fake_inspect), \
+                patch.object(cli, "save_folder", side_effect=OSError("disk full")):
+            code, _, _ = self.run_cli("https://soundcloud.com/artist/track-ready", "--audio-format", "mp3", "--browser", "none")
+        self.assertEqual(code, 1)
+        ready_task = jobs.all_journals()[0]
+        with patch.object(cli, "find_tool", return_value="tool"):
+            code, out, err = self.run_cli("retry", ready_task.identifier, "--audio-format", "flac")
+        self.assertEqual(code, 1)
+        self.assertIn("--redownload", out + err)
+
+        # 3) All-music batch without --audio on non-macOS with Photos default auto-enables audio.
+        self.assertEqual(self.run_cli("config", "--photos")[0], 0)
+        with patch.object(cli.sys, "platform", "linux"), \
+                patch.object(cli, "find_tool", return_value="tool"), \
+                patch.object(cli.preflight, "originals_directory", side_effect=AssertionError("should not check Photos")), \
+                patch.object(engines, "run_process", side_effect=fake_ytdlp), \
+                patch.object(cli, "run_process", side_effect=fake_ytdlp), \
+                patch.object(cli, "prepare_audio", side_effect=fake_prepare_audio), \
+                patch.object(cli, "inspect_files", side_effect=fake_inspect):
+            code, out, err = self.run_cli("batch", "https://soundcloud.com/artist/a", "https://indie.bandcamp.com/track/b", "--browser", "none")
+        self.assertEqual(code, 0, out + err)
+
+        # 4) Public-only login_guidance prints public-access note on interactive TTY or --browser none.
+        for browser_mode, is_tty in (("none", False), ("auto", True)):
+            err_buf = io.StringIO()
+            with patch.object(cli.sys.stdin, "isatty", return_value=is_tty), contextlib.redirect_stderr(err_buf):
+                cli.login_guidance(argparse.Namespace(browser=browser_mode), "soundcloud.com", "https://soundcloud.com/a/b", "401")
+            self.assertIn("public access", err_buf.getvalue())
+
+    def test_p3_metadata_truncation_thumbnail_help_and_empty_audio_message(self):
+        meta = audio.extract_metadata(
+            {"title": "Song &amp; <Live>\x00", "artist": "Band\x00 &amp; <Co>", "thumbnail": "https://[bad"},
+            "https://soundcloud.com/a/b",
+            "SoundCloud",
+        )
+        self.assertEqual(meta["title"], "Song & <Live>")
+        self.assertEqual(meta["artist"], "Band & <Co>")
+        self.assertEqual(meta["thumbnail"], "")
+        self.assertEqual(audio.fetch_cover("https://[bad", self.root, "ffmpeg")[0], None)
+
+        long_name = audio.build_filename({"artist": "歌手", "title": "歌" * 100}, "fallback", ".m4a", index=2, total=3)
+        self.assertTrue(long_name.endswith(" (2).m4a"))
+        self.assertLessEqual(len(long_name.encode("utf-8")), 190)
+
+        code, out, _ = self.run_cli("recover", "--help")
+        self.assertEqual(code, 0)
+        self.assertNotIn("--audio-format", out)
+
+        out_dir = self.root / "empty-audio"
+        with patch.object(cli, "find_tool", return_value="tool"), \
+                patch.object(engines, "run_process", return_value=CompletedProcess(["yt-dlp"], 0, "{}", "")), \
+                patch.object(cli, "run_process", return_value=CompletedProcess(["yt-dlp"], 0, "", "")):
+            code, out, err = self.run_cli("https://soundcloud.com/artist/empty", "--folder", str(out_dir), "--browser", "none")
+        self.assertEqual(code, 1)
+        self.assertIn("No audio was downloaded from this post.", out + err)
+
 
 if __name__ == "__main__":
     unittest.main()

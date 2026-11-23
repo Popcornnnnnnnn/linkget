@@ -10,14 +10,15 @@ import time
 import unicodedata
 from urllib.parse import urlsplit
 if __package__:
-    from .runtime import _batch, batch_lock, check_batch_cancelled
+    from .runtime import _batch, batch_lock, check_batch_cancelled, json_mode, non_interactive, quiet_status
     from .media import AUDIO, MEDIA, VIDEO
 else:
-    from runtime import _batch, batch_lock, check_batch_cancelled
+    from runtime import _batch, batch_lock, check_batch_cancelled, json_mode, non_interactive, quiet_status
     from media import AUDIO, MEDIA, VIDEO
 
 def terminal_styles(stream):
-    return stream.isatty() and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
+    return (not quiet_status() and not non_interactive() and stream.isatty()
+            and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb")
 
 
 
@@ -29,7 +30,11 @@ def emphasis(value, stream=None):
 
 def status(label, value, color="0", stream=None):
     """Aligned terminal output; redirected output remains plain text."""
+    if json_mode():
+        return
     stream = stream if stream is not None else sys.stdout
+    if quiet_status() and stream is sys.stdout:
+        return
     item = getattr(_batch, "item", None)
     state = getattr(_batch, "state", None)
     panel = state.get("panel") if state else None
@@ -328,7 +333,7 @@ def activity(label, media_dir=None):
                 if state["progress"].get(key) is entry:
                     state["progress"].pop(key, None)
         return
-    if not stream.isatty() or os.environ.get("TERM") == "dumb":
+    if quiet_status() or non_interactive() or not stream.isatty() or os.environ.get("TERM") == "dumb":
         status(label, "Working...")
         yield
         return
