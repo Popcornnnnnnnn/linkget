@@ -671,7 +671,10 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                         for i in valid_indices
                     )
             if not all_audio_recovery:
-                preflight.destination(args, find_tool)
+                if command == "recover":
+                    preflight.destination(args, find_tool, require_audio_tools=False)
+                else:
+                    preflight.destination(args, find_tool)
             if command == "recover":
                 return recovery.restore(journal, args, status, save_folder, import_photos,
                                         audio_folder_resolver=resolve_audio_folder)

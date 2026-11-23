@@ -185,7 +185,8 @@ class AudioCliConfigTests(unittest.TestCase):
         self.assertEqual(cli.resolve_audio_folder(), audio_dir.resolve())
         self.assertEqual(cli.resolve_audio_folder(explicit_dir), explicit_dir.resolve())
 
-        code, _, err = self.run_cli("https://www.pixiv.net/artworks/123", "--audio", "--browser", "none")
+        with patch.object(cli, "find_tool", return_value="tool"):
+            code, _, err = self.run_cli("https://www.pixiv.net/artworks/123", "--audio", "--browser", "none")
         self.assertEqual(code, 1)
         self.assertIn("Pixiv artworks are images only", err)
 
@@ -558,8 +559,9 @@ class MixedBatchAndRecoveryAudioTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("--verify", out + err)
 
-        # Normal recover saves to the recorded audio folder without re-downloading.
-        with patch.object(engines, "run_process", side_effect=AssertionError("should not redownload")), \
+        # Normal recover saves to the recorded audio folder without re-downloading or needing ffmpeg.
+        with patch.object(cli, "find_tool", return_value=None), \
+                patch.object(engines, "run_process", side_effect=AssertionError("should not redownload")), \
                 patch.object(recovery, "inspect_files", side_effect=fake_inspect):
             code, out, err = self.run_cli("recover", task.identifier)
         self.assertEqual(code, 0, out + err)
