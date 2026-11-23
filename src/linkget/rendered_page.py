@@ -18,7 +18,9 @@ from urllib.parse import urlsplit
 
 PUBLIC_READER_REVISION = 2
 TOUTIAO_READER_REVISION = 4
+WECHAT_READER_REVISION = 1
 PUBLIC_ORIGINS = ('https://www.raspberrypi.com/*', 'https://zhuanlan.zhihu.com/*')
+WECHAT_ORIGIN = 'https://mp.weixin.qq.com/*'
 MAX_RESULT_BYTES = 256000
 MAX_READ_SECONDS = 45
 
@@ -142,6 +144,58 @@ def validate_public_page(page, expected):
                                 'http_transfer_verified': False, 'cookies_exported': False}, **metadata}
 
 
+def wechat_article_url(url):
+    if not isinstance(url, str) or len(url) > 2048:
+        raise ValueError('A bounded WeChat article URL is required.')
+    p = urlsplit(url)
+    if p.scheme != 'https' or p.username or p.password or p.port not in (None, 443) or p.query or p.fragment:
+        raise ValueError('Unsupported WeChat browser article URL.')
+    if p.hostname == 'mp.weixin.qq.com' and re.fullmatch(r'/s/[A-Za-z0-9_-]{8,128}/?', p.path):
+        return 'https://mp.weixin.qq.com' + p.path.rstrip('/'), WECHAT_ORIGIN
+    raise ValueError('The WeChat article URL is outside browser reader scope.')
+
+
+def validate_wechat_page(page, expected):
+    expected, _ = wechat_article_url(expected)
+    if not isinstance(page, dict) or page.get('url') != expected or page.get('final_url') != expected:
+        raise ValueError('Exact WeChat article URL and final URL binding are required.')
+    title, text, proof = page.get('title'), page.get('text'), page.get('dom_proof')
+    if (page.get('kind') != 'article' or page.get('content_complete') is not True or
+            not isinstance(title, str) or not 1 <= len(title) <= 300 or
+            title != title.strip() or not title.strip() or
+            not isinstance(text, str) or not 40 <= len(text.encode()) <= 120000 or
+            not isinstance(proof, dict) or proof.get('reader_revision') != WECHAT_READER_REVISION or
+            proof.get('selector') != '#js_content' or
+            proof.get('basis') != 'bounded_wechat_article_dom' or
+            proof.get('http_transfer_verified') is not False):
+        raise ValueError('Bounded WeChat article text and DOM scope evidence are required.')
+    tail = proof.get('end_excerpt')
+    if not isinstance(tail, str) or not 1 <= len(tail) <= 512 or not text.endswith(tail):
+        raise ValueError('The captured WeChat article tail does not match its text.')
+    author = page.get('author')
+    published_at = page.get('published_at')
+    if author is not None and (not isinstance(author, str) or len(author) > 200):
+        author = None
+    if published_at is not None and (not isinstance(published_at, str) or len(published_at) > 100):
+        published_at = None
+    if __package__:
+        from .rendered_proof import browser_metadata
+    else:
+        from rendered_proof import browser_metadata
+    metadata = browser_metadata(page)
+    neo = metadata.get('reader_backend') == 'browseros_neo'
+    return {'url': expected, 'final_url': expected, 'title': title,
+            'author': author or None, 'published_at': published_at or None,
+            'kind': 'article', 'text': text, 'content_complete': True,
+            'dom_proof': {'selector': '#js_content', 'reader_revision': WECHAT_READER_REVISION,
+                          'basis': 'bounded_wechat_article_dom', 'http_transfer_verified': False, 'end_excerpt': tail},
+            'reader_revision': WECHAT_READER_REVISION,
+            'text_sha256': hashlib.sha256(text.encode()).hexdigest(),
+            'content_binding': 'exact_browseros_neo_wechat_dom' if neo else 'exact_daily_chrome_wechat_dom',
+            'transport_proof': {'kind': 'browseros_neo_dom' if neo else 'daily_chrome_dom',
+                                'http_transfer_verified': False, 'cookies_exported': False}, **metadata}
+
+
 def lock_path():
     return Path.home() / 'Library/Application Support/linkget/browser/reader.lock'
 
@@ -200,12 +254,21 @@ def read_page(url, timeout=MAX_READ_SECONDS, *, backend=None):
         import toutiao
     try:
         expected = toutiao.canonical(url)
-        script_name, public = 'toutiao_browser.js', False
+        script_name, mode = 'toutiao_browser.js', 'toutiao'
     except ValueError:
-        expected, _ = public_article_url(url)
-        script_name, public = 'public_browser.js', True
+        try:
+            expected, _ = public_article_url(url)
+            script_name, mode = 'public_browser.js', 'public'
+        except ValueError:
+            expected, _ = wechat_article_url(url)
+            script_name, mode = 'wechat_browser.js', 'wechat'
     backend = selected_backend(backend)
     javascript = Path(__file__).with_name(script_name).read_text()
+    validator = (
+        (lambda p, exp: validate_public_page(p, exp)) if mode == 'public'
+        else (lambda p, exp: validate_wechat_page(p, exp)) if mode == 'wechat'
+        else (lambda p, exp: toutiao.validate_page(exp, p))
+    )
     if backend == 'neo':
         if __package__:
             from .neo_browser import NeoUnavailable, read_dom
@@ -220,9 +283,14 @@ def read_page(url, timeout=MAX_READ_SECONDS, *, backend=None):
                 page = read_dom(expected, javascript, timeout=remaining)
             except NeoUnavailable as error:
                 raise BrowserUnavailable(str(error)) from error
-        result = validate_public_page(page, expected) if public else toutiao.validate_page(expected, page)
-        result.update(final_url=expected, reader_revision=PUBLIC_READER_REVISION if public else TOUTIAO_READER_REVISION,
-                      content_binding='exact_browseros_neo_article_dom' if public else 'exact_browseros_neo_toutiao_post')
+        result = validator(page, expected)
+        rev = PUBLIC_READER_REVISION if mode == 'public' else WECHAT_READER_REVISION if mode == 'wechat' else TOUTIAO_READER_REVISION
+        binding = (
+            'exact_browseros_neo_article_dom' if mode == 'public'
+            else 'exact_browseros_neo_wechat_dom' if mode == 'wechat'
+            else 'exact_browseros_neo_toutiao_post'
+        )
+        result.update(final_url=expected, reader_revision=rev, content_binding=binding)
         if result.get('kind') == 'article':
             result['text_sha256'] = hashlib.sha256(result['text'].encode()).hexdigest()
         return result
@@ -250,7 +318,7 @@ def read_page(url, timeout=MAX_READ_SECONDS, *, backend=None):
                         raise ValueError('The requested page cannot be read completely: ' + reason)
                 elif page is not None:
                     try:
-                        result = validate_public_page(page, expected) if public else toutiao.validate_page(expected, page)
+                        result = validator(page, expected)
                     except (TypeError, ValueError):
                         raise ValueError('Chrome did not expose complete bound content for this exact page.') from None
                     break
@@ -267,7 +335,7 @@ def read_page(url, timeout=MAX_READ_SECONDS, *, backend=None):
                     raise BrowserUnavailable('The reading tab cleanup could not be verified.')
         result['browser_controller'] = {'kind': 'daily_chrome_apple_events', 'reader_revision': 1,
                                         'temporary_tab_cleanup': cleanup, 'credentials_exported': False}
-        if not public:
+        if mode == 'toutiao':
             result.update(final_url=expected, reader_revision=TOUTIAO_READER_REVISION,
                           content_binding='exact_daily_chrome_toutiao_post')
             if result.get('kind') == 'article':
@@ -277,4 +345,9 @@ def read_page(url, timeout=MAX_READ_SECONDS, *, backend=None):
 
 def read_public(url, timeout=MAX_READ_SECONDS, *, backend=None):
     public_article_url(url)
+    return read_page(url, timeout=timeout, backend=backend)
+
+
+def read_wechat(url, timeout=MAX_READ_SECONDS, *, backend=None):
+    wechat_article_url(url)
     return read_page(url, timeout=timeout, backend=backend)

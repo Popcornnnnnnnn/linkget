@@ -55,6 +55,12 @@ Always pass `--non-interactive --json` (or set `LINKGET_NON_INTERACTIVE=1`) when
    linkget read 'URL_OR_PATH' --stdout --stdout-format md --non-interactive
    linkget read 'URL_OR_PATH' --foreground --json
 
+   # Read a video with keyframes (--frames / --max-frames / --frame-ocr):
+   linkget read 'VIDEO_URL_OR_PATH' --frames --max-frames 12 --foreground --json
+
+   # Read general web articles or WeChat Official Account articles (mp.weixin.qq.com/s/...):
+   linkget read 'https://mp.weixin.qq.com/s/ARTICLE_ID' --stdout --non-interactive
+
    # Asynchronous submit + wait + fetch:
    linkget read 'URL_OR_PATH' --json         # returns task_id immediately
    linkget read wait TASK_ID --timeout 300 --json

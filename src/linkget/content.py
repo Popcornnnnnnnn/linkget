@@ -12,13 +12,13 @@ import uuid
 from urllib.parse import parse_qs, urlsplit
 
 if __package__:
-    from . import agent_output, toutiao, rendered_page, read_store, read_formats, read_asr, read_ocr, read_tasks, runtime
+    from . import agent_output, toutiao, rendered_page, read_store, read_formats, read_asr, read_frames, read_ocr, read_tasks, runtime, web_article
     from .engines import route
     from .links import normalize_link
     from .media import reference, AUDIO, DownloadResult
     from .preflight import writable_directory
 else:
-    import agent_output, toutiao, rendered_page, read_store, read_formats, read_asr, read_ocr, read_tasks, runtime
+    import agent_output, toutiao, rendered_page, read_store, read_formats, read_asr, read_frames, read_ocr, read_tasks, runtime, web_article
     from engines import route
     from links import normalize_link
     from media import reference, AUDIO, DownloadResult
@@ -57,13 +57,19 @@ def read_videos(args):
         raise ValueError('Formats must be md, txt, srt or vtt.')
     subtitle_mode = getattr(args, 'subtitles', 'auto')
     ocr = getattr(args, 'ocr', False)
+    frame_ocr = bool(getattr(args, 'frame_ocr', False))
+    extract_frames = bool(getattr(args, 'frames', False) or frame_ocr)
+    max_frames = int(getattr(args, 'max_frames', read_frames.DEFAULT_MAX_FRAMES))
+    if not read_frames.MIN_FRAMES <= max_frames <= read_frames.MAX_FRAMES:
+        raise ValueError(f'--max-frames must be between {read_frames.MIN_FRAMES} and {read_frames.MAX_FRAMES}.')
     chunk_seconds = getattr(args, 'chunk_seconds', 600)
     vad_model = getattr(args, 'vad_model', None)
     if vad_model:
         vad_model = vad_model.expanduser().resolve()
     if not 30 <= chunk_seconds <= 1800:
         raise ValueError('Chunk length must be between 30 and 1800 seconds.')
-    local, public_article = None, False
+    local, public_article, wechat_article, web_article_target = None, False, False, False
+    wechat_browser_eligible = False
     if not re.search(r'https?://', args.url):
         local = Path(args.url).expanduser().resolve()
         retained = getattr(args, 'resume', False) and getattr(args, 'folder', None) and (args.folder / '.read-inputs.json').is_file()
@@ -72,14 +78,18 @@ def read_videos(args):
         url, site = str(local), 'Local file'
     else:
         supplied = re.findall(r'https?://[^\s<>"，。]+', args.url.strip())
-        candidate = supplied[0].rstrip('.,;!）)') if len(supplied) == 1 else args.url
-        if urlsplit(candidate).hostname in toutiao.HOSTS:
+        candidate = supplied[0].rstrip('.,;!）)') if len(supplied) == 1 else args.url.strip()
+        cand_host = (urlsplit(candidate).hostname or '').lower().rstrip('.')
+        if cand_host in toutiao.HOSTS:
             url, site = toutiao.canonical(candidate), 'Toutiao'
-        elif urlsplit(candidate).hostname in {'www.raspberrypi.com', 'zhuanlan.zhihu.com'}:
+        elif cand_host in {'www.raspberrypi.com', 'zhuanlan.zhihu.com'}:
             url, _ = rendered_page.public_article_url(candidate)
             site = 'Raspberry Pi' if url.startswith('https://www.raspberrypi.com/') else 'Zhihu'
             public_article = True
-        else:
+        elif cand_host == web_article.WECHAT_HOST:
+            url, wechat_browser_eligible = web_article.canonical_wechat_url(candidate)
+            site, wechat_article = 'WeChat', True
+        elif web_article.is_known_media_host(cand_host):
             url = normalize_link(args.url)
             site, _, domain = route(url)
             if domain == 'pixiv.net':
@@ -88,13 +98,30 @@ def read_videos(args):
                 raise ValueError('Read requires one Pinterest pin, not a board or profile.')
             if domain == 'lofter.com' and not re.fullmatch(r'/post/[A-Za-z0-9_]+/?', urlsplit(url).path):
                 raise ValueError('Read requires one LOFTER post, not a profile.')
+        else:
+            url = web_article.validate_public_web_url(candidate, resolve_dns=False)
+            site = cand_host or 'Web'
+            web_article_target = True
     if getattr(args, 'page_data', None) and site != 'Toutiao':
         raise ValueError('--page-data is supported only for Toutiao.')
     rendered_backend = getattr(args, 'rendered_backend', None)
-    reader_choice = rendered_page.selection(rendered_backend, browser=args.browser, backend_source='retained checkpoint' if getattr(args,'resume',False) and not getattr(args,'_rendered_backend_override',False) else 'command option', browser_source='retained checkpoint' if getattr(args,'resume',False) else 'command browser option') if (site == 'Toutiao' or public_article) and not getattr(args,'page_data',None) else None
-    if rendered_backend is not None and site != 'Toutiao' and not public_article:
-        raise ValueError('--rendered-backend applies only to Toutiao and scoped public articles.')
-    if (site == 'Toutiao' or public_article) and not getattr(args, 'page_data', None):
+    scoped_rendered = (site == 'Toutiao' or public_article) and not getattr(args, 'page_data', None)
+    wechat_rendered = wechat_article and wechat_browser_eligible
+    reader_choice = (
+        rendered_page.selection(
+            rendered_backend,
+            browser=args.browser,
+            backend_source='retained checkpoint' if getattr(args, 'resume', False) and not getattr(args, '_rendered_backend_override', False) else 'command option',
+            browser_source='retained checkpoint' if getattr(args, 'resume', False) else 'command browser option',
+        )
+        if (scoped_rendered or wechat_rendered)
+        else None
+    )
+    if rendered_backend is not None and not (site == 'Toutiao' or public_article or wechat_rendered):
+        raise ValueError('--rendered-backend applies only to Toutiao, scoped public articles, and WeChat /s/<id> articles.')
+    if scoped_rendered:
+        rendered_backend = rendered_page.selected_backend(rendered_backend, browser=args.browser)
+    elif wechat_rendered and rendered_backend is not None:
         rendered_backend = rendered_page.selected_backend(rendered_backend, browser=args.browser)
     if public_article and (args.browser not in {'auto', 'chrome'} or args.profile):
         raise ValueError('This scoped article uses the selected rendered reader; --browser none disables '
@@ -117,6 +144,7 @@ def read_videos(args):
     with read_store.lock(folder / '.read.lock'):
         options = {'whisper_model': str(model) if model else None, 'language': language,
                    'formats': ','.join(formats), 'subtitles': subtitle_mode, 'ocr': ocr,
+                   'frames': extract_frames, 'max_frames': max_frames, 'frame_ocr': frame_ocr,
                    'chunk_seconds': chunk_seconds, 'vad_model': str(vad_model) if vad_model else None,
                    'browser': args.browser, 'profile': args.profile,
                    'rendered_backend': rendered_backend,
@@ -158,8 +186,11 @@ def read_videos(args):
             source_key = source_reference(url)
         if rendered_backend == 'neo':
             source_key += ':rendered-reader:neo'
+        elif wechat_article and rendered_backend == 'chrome':
+            source_key += ':rendered-reader:chrome'
         key = read_store.cache_key(source_key, language, model, subtitle_mode, ocr, chunk_seconds, vad_model)
         completed = False
+        prefetched_subtitles = None
 
         def finish(result):
             nonlocal completed
@@ -168,7 +199,8 @@ def read_videos(args):
             result.update(schema_version=read_store.SCHEMA, send_enabled=False)
             read_formats.export(folder, result, formats)
             read_store.write_json(output, result)
-            read_store.cache(key, result)
+            if not extract_frames and not result.get('frames'):
+                read_store.cache(key, result)
             job.update(status='completed', source=None)
             read_store.save_job(folder, job)
             completed = True
@@ -207,14 +239,34 @@ def read_videos(args):
                     if name in (metadata or {}): fields[name] = metadata[name]
             return fields
 
-        def video_result(items, metadata=None, evidence=None, image_text=None):
+        def video_result(items, metadata=None, evidence=None, image_text=None, frames=None):
+            text_parts = [i['text'] for i in items if i.get('text')]
+            has_speech_or_subs = any(i.get('segments') for i in items)
+            if not text_parts and frames:
+                frame_ocr_lines = [f.get('ocr_text', '') for f in frames if f.get('ocr_text')]
+                if frame_ocr_lines:
+                    text_parts = frame_ocr_lines
+                    default_basis = 'video_keyframes_ocr'
+                else:
+                    text_parts = [
+                        f"[{f['timestamp_label']}] Frame {f['index']} ({f['relative_path']})"
+                        for f in frames
+                    ]
+                    default_basis = 'video_keyframes'
+            else:
+                default_basis = items[0]['content_basis'] if len(items) == 1 else 'multiple_video_sources' if items else 'post_text_and_ocr'
+            limitations = ['Source text and speech recognition may contain errors; visual-only events are not described.']
+            if frames:
+                limitations = ['Extracted representative keyframes; speech/text recognition may contain errors and unselected frames are not included.']
             result = {'reference': local.name if local else source_reference(url), 'site': site,
                       'kind': 'video' if items else 'post', 'acquisition': 'local_file' if local else 'existing_media_downloader',
-                      'videos': items, 'text': '\n\n'.join(i['text'] for i in items), 'content_complete': True,
-                      'content_basis': items[0]['content_basis'] if len(items) == 1 else 'multiple_video_sources' if items else 'post_text_and_ocr',
+                      'videos': items, 'text': '\n\n'.join(text_parts), 'content_complete': True,
+                      'content_basis': default_basis if (not items or not has_speech_or_subs and frames) else (items[0]['content_basis'] if len(items) == 1 else 'multiple_video_sources'),
                       'recognition_verified': False, 'video_count': len(items),
                       'source_count_verified': evidence is not None and evidence.expected_count is not None,
-                      'limitations': ['Source text and speech recognition may contain errors; visual-only events are not described.']}
+                      'limitations': limitations}
+            if frames:
+                result['frames'] = frames
             if site == 'Toutiao':
                 result['url'] = url
             result.update(content_metadata(metadata))
@@ -227,6 +279,7 @@ def read_videos(args):
             return result
 
         def metadata_consumer(metadata, resolved_url, resolved_site):
+            nonlocal prefetched_subtitles
             if metadata.get('_type') in {'playlist', 'multi_video'} or 'entries' in metadata:
                 raise ValueError('Read requires one selected video, not a playlist.')
             if metadata.get('is_live') or metadata.get('live_status') in {'is_live', 'is_upcoming', 'post_live'}:
@@ -236,6 +289,9 @@ def read_videos(args):
             found = read_formats.subtitles(metadata, language)
             if found:
                 cli.status('Text source', found['content_basis'])
+                if extract_frames:
+                    prefetched_subtitles = found
+                    return False
                 finish(video_result([{'index': 1, **found}], metadata))
                 return True
             if subtitle_mode == 'only':
@@ -244,16 +300,28 @@ def read_videos(args):
 
         def consume(files, records, evidence, resolved_url, resolved_site, metadata):
             motion = {name for _, name in evidence.live_pairs}
+            frame_video_exts = cli.VIDEO | {'.webm'}
             audio_files = [(p, record) for p, record in zip(files, records)
                            if p.suffix.lower() in cli.VIDEO | AUDIO and p.name not in motion]
             image_files = [p for p in files if p.suffix.lower() not in cli.VIDEO | AUDIO]
-            if audio_files and subtitle_mode == 'only':
+            if audio_files and subtitle_mode == 'only' and prefetched_subtitles is None:
                 raise ValueError('This channel did not expose complete subtitles for the selected language.')
-            if audio_files and (model is None or not all(cli.find_tool(t) for t in ('ffmpeg', 'ffprobe', 'whisper-cli'))):
+            need_asr = (
+                prefetched_subtitles is None
+                and any(
+                    record.get('audio') is True or not (extract_frames and p.suffix.lower() in frame_video_exts)
+                    for p, record in audio_files
+                )
+            )
+            if audio_files and need_asr and (model is None or not all(cli.find_tool(t) for t in ('ffmpeg', 'ffprobe', 'whisper-cli'))):
                 raise RuntimeError('No complete subtitles: configure the existing local model with linkget read config --model PATH.')
-            # Validate all downloaded audio before recognizing any item.
-            for _, record in audio_files:
+            if audio_files and extract_frames and not all(cli.find_tool(t) for t in ('ffmpeg', 'ffprobe')):
+                raise RuntimeError('Video keyframe extraction requires existing local ffmpeg and ffprobe tools.')
+            # Validate all downloaded media before processing any item.
+            for p, record in audio_files:
                 duration = float(record.get('duration') or 0)
+                if extract_frames and p.suffix.lower() in frame_video_exts and record.get('probe_ok') is True and math.isfinite(duration) and duration > 0:
+                    continue
                 if record.get('probe_ok') is not True or record.get('audio') is not True or not math.isfinite(duration) or duration <= 0:
                     raise RuntimeError('Every selected media file must pass format validation and contain audio.')
             inputs_path = folder / '.read-inputs.json'
@@ -287,25 +355,37 @@ def read_videos(args):
                                                     'image_count': len(image_files), 'expected_count': evidence.expected_count,
                                                     'source_transport': evidence.source_transport})
             items = []
+            all_frames = []
             for index, (path, record) in enumerate(audio_files, 1):
                 working = media_root / f'video-{index:03d}'
                 video = working / ('source' + path.suffix.lower())
-                cli.status('Transcribing', f'Media {index} / {len(audio_files)} · {float(record["duration"]):.0f}s')
-                expected = metadata.get('duration') if len(audio_files) == 1 else None
-                expected = float(expected) if expected is not None else None
-                if expected is not None and (not math.isfinite(expected) or expected <= 0):
-                    raise ValueError('The source returned an invalid duration.')
-                asr_options = {} if language == 'zh' else {'language': language}
-                if chunk_seconds != 600:
-                    asr_options['chunk_seconds'] = chunk_seconds
-                if vad_model:
-                    asr_options['vad_model'] = vad_model
-                recognized = {**toutiao.transcribe(video, working, model, expected, **asr_options)}
                 stored = read_store.read_json(inputs_path)
                 retained = stored['audio'][index - 1]
                 original_name = retained['original_name']
+                if prefetched_subtitles is not None and index == 1:
+                    recognized = dict(prefetched_subtitles)
+                elif extract_frames and path.suffix.lower() in frame_video_exts and record.get('audio') is not True:
+                    recognized = {
+                        'text': '',
+                        'segments': [],
+                        'content_complete': True,
+                        'content_basis': 'video_keyframes_ocr' if frame_ocr else 'video_keyframes',
+                        'recognition_verified': False,
+                    }
+                else:
+                    cli.status('Transcribing', f'Media {index} / {len(audio_files)} · {float(record["duration"]):.0f}s')
+                    expected = metadata.get('duration') if len(audio_files) == 1 else None
+                    expected = float(expected) if expected is not None else None
+                    if expected is not None and (not math.isfinite(expected) or expected <= 0):
+                        raise ValueError('The source returned an invalid duration.')
+                    asr_options = {} if language == 'zh' else {'language': language}
+                    if chunk_seconds != 600:
+                        asr_options['chunk_seconds'] = chunk_seconds
+                    if vad_model:
+                        asr_options['vad_model'] = vad_model
+                    recognized = {**toutiao.transcribe(video, working, model, expected, **asr_options)}
                 transport = stored.get('source_transport') or {}
-                if transport:
+                if transport and recognized.get('segments') is not None:
                     transfer = transport.get('files', {}).get(original_name)
                     actual_sha = read_store.digest(video)
                     actual_size = video.stat().st_size
@@ -331,13 +411,31 @@ def read_videos(args):
                                            'bytes': actual_size}}
                     recognized.update(source_file_sha256=actual_sha, source_file_bytes=actual_size,
                                       download_batch_id=transport['batch_id'])
-                items.append({'index': index, 'source_file': original_name, **recognized})
+                item_frames = []
+                if extract_frames and path.suffix.lower() in frame_video_exts:
+                    cli.status('Extracting frames', f'Media {index} / {len(audio_files)}')
+                    item_frames = read_frames.extract_keyframes(
+                        video,
+                        folder / 'frames',
+                        ffmpeg=cli.find_tool('ffmpeg'),
+                        ffprobe=cli.find_tool('ffprobe'),
+                        max_frames=max_frames,
+                        prefix=f'v{index}',
+                    )
+                    if frame_ocr and item_frames:
+                        cli.status('Reading frames', f'{len(item_frames)} keyframe(s) · local OCR')
+                        read_frames.annotate_frames_ocr(item_frames)
+                    all_frames.extend(item_frames)
+                item_entry = {'index': index, 'source_file': original_name, **recognized}
+                if item_frames:
+                    item_entry['frames'] = item_frames
+                items.append(item_entry)
             image_text = []
             if image_files and (ocr or not audio_files):
                 cli.status('Reading images', f'{len(image_files)} image(s) · local OCR')
                 copied = sorted((media_root / 'images').iterdir())
                 image_text = read_ocr.images(copied)
-            result = video_result(items, metadata, evidence, image_text)
+            result = video_result(items, metadata, evidence, image_text, frames=all_frames)
             stored = read_store.read_json(inputs_path)
             result.update(ignored_image_count=stored['image_count'] if audio_files and not ocr else 0,
                           ignored_motion_count=stored['motion_count'])
@@ -346,7 +444,7 @@ def read_videos(args):
             finish(result)
 
         try:
-            cached = None if getattr(args, 'refresh', False) or resume or args.keep_media else read_store.cached(key)
+            cached = None if (getattr(args, 'refresh', False) or resume or args.keep_media or extract_frames) else read_store.cached(key)
             if cached:
                 cli.status('Cache', 'Reusing checked source text (use --refresh to fetch again)')
                 finish(cached)
@@ -370,12 +468,57 @@ def read_videos(args):
                 return 0
             if local:
                 if local.suffix.lower() in cli.VIDEO | AUDIO:
-                    duration, audio = read_asr.probe(local)
-                    record = {'duration': duration, 'audio': audio, 'probe_ok': audio}
+                    if extract_frames and local.suffix.lower() in cli.VIDEO | {'.webm'}:
+                        info = read_frames.probe_video(local, ffprobe=cli.find_tool('ffprobe'))
+                        duration = info['duration']
+                        has_audio = None
+                        try:
+                            asr_dur, has_audio = read_asr.probe(local)
+                            if duration is None:
+                                duration = asr_dur
+                        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+                            has_audio = False
+                        record = {
+                            'duration': duration,
+                            'audio': bool(has_audio),
+                            'probe_ok': bool((info['has_video'] or has_audio) and duration),
+                        }
+                    else:
+                        duration, audio = read_asr.probe(local)
+                        record = {'duration': duration, 'audio': audio, 'probe_ok': audio}
                     consume([local], [record], DownloadResult(expected_count=1), url, site, {})
                 else:
                     consume([local], [{}], DownloadResult(expected_count=1), url, site, {})
                 return 0
+            if web_article_target:
+                cli.status('Fetching article', site, stream=sys.stderr)
+                item = web_article.read_article(url)
+                finish(item)
+                return 0
+            if wechat_article:
+                if wechat_browser_eligible and rendered_backend is not None:
+                    cli.status('Page reader', rendered_backend + ' · command option', stream=sys.stderr)
+                    item = rendered_page.read_wechat(url, backend=rendered_backend)
+                    finish({**item, 'site': 'WeChat', 'reference': url,
+                            'acquisition': 'browseros_neo_rendered_page' if rendered_backend == 'neo' else 'chrome_rendered_page',
+                            'content_basis': 'complete_browseros_neo_wechat_dom' if rendered_backend == 'neo' else 'complete_daily_chrome_wechat_dom',
+                            'limitations': ['Only this bounded WeChat article DOM was read; HTTP transfer completeness and comments were not verified.']})
+                    return 0
+                try:
+                    cli.status('Fetching WeChat article', 'direct HTTP', stream=sys.stderr)
+                    item = web_article.read_wechat_http(url)
+                    finish(item)
+                    return 0
+                except web_article.WeChatGateError:
+                    if wechat_browser_eligible and args.browser != 'none' and reader_choice and reader_choice['supported']:
+                        cli.status('Page reader', reader_choice['browser'] + ' · ' + reader_choice['source'], stream=sys.stderr)
+                        item = rendered_page.read_wechat(url, backend=reader_choice['browser'])
+                        finish({**item, 'site': 'WeChat', 'reference': url,
+                                'acquisition': 'browseros_neo_rendered_page' if reader_choice['browser'] == 'neo' else 'chrome_rendered_page',
+                                'content_basis': 'complete_browseros_neo_wechat_dom' if reader_choice['browser'] == 'neo' else 'complete_daily_chrome_wechat_dom',
+                                'limitations': ['Only this bounded WeChat article DOM was read; HTTP transfer completeness and comments were not verified.']})
+                        return 0
+                    raise
             if public_article:
                 cli.status('Page reader', reader_choice['browser']+' · '+reader_choice['source'], stream=sys.stderr)
                 item = rendered_page.read_public(url, backend=rendered_backend)
@@ -429,7 +572,7 @@ def read_videos(args):
                 return 0
             download_args = argparse.Namespace(link=url, folder=folder, browser=args.browser, profile=args.profile,
                                                date_now=False, live_photos=False, redownload=False,
-                                               read_audio=not args.keep_media, read_metadata_consumer=metadata_consumer)
+                                               read_audio=not (args.keep_media or extract_frames), read_metadata_consumer=metadata_consumer)
             code = cli.download(download_args, {}, media_consumer=consume)
             if code != 0:
                 job['status'] = 'cancelled' if code == 130 else 'failed'
@@ -561,6 +704,9 @@ An enabled AI fallback switches on provider outages; config --help lists options
     parser.add_argument('--chunk-seconds', type=int, default=600)
     parser.add_argument('--vad-model', type=Path, help='Existing optional speech activity model')
     parser.add_argument('--ocr', action='store_true', help='Also OCR images in mixed video/image posts; image-only reads use OCR')
+    parser.add_argument('--frames', action='store_true', help='Extract representative video keyframes with timestamps into frames/')
+    parser.add_argument('--max-frames', type=int, default=read_frames.DEFAULT_MAX_FRAMES, help='Maximum keyframes to extract per video (1-60; default: 12)')
+    parser.add_argument('--frame-ocr', action='store_true', help='Run local macOS Vision OCR on extracted keyframes (implies --frames)')
     parser.add_argument('--refresh', action='store_true', help='Bypass the 24-hour complete-content cache')
     parser.add_argument('--keep-media', action='store_true')
     parser.add_argument('--page-data', type=Path, help='Toutiao only: content-only page JSON')
@@ -661,6 +807,8 @@ def main(argv):
             parser.error('--profile requires an explicit browser')
         if args.language and not re.fullmatch(r'auto|[a-z]{2,3}', args.language):
             parser.error('Use auto or a Whisper language code')
+        if not read_frames.MIN_FRAMES <= args.max_frames <= read_frames.MAX_FRAMES:
+            parser.error(f'--max-frames must be between {read_frames.MIN_FRAMES} and {read_frames.MAX_FRAMES}.')
         if not batch:
             return read_videos(args)
         links = args.url

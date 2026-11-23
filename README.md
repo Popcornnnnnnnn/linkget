@@ -49,7 +49,7 @@ linkget read 'URL' --folder ./notes                  # extract subtitles, speech
 | `linkget batch [URL ...]` | Download multiple posts concurrently (`--jobs N`) |
 | `linkget tasks [TASK]` | Inspect download and background read task states |
 | `linkget retry [TASK]` / `linkget recover [TASK]` | Resume failed tasks or save verified staged media |
-| `linkget read URL --folder DIR` | Extract text/subtitles/ASR, `wait`, `show`, `summarize`, or `translate` ([docs/READ.md](docs/READ.md)) |
+| `linkget read URL --folder DIR` | Extract text/subtitles/ASR/keyframes, web & WeChat articles, `wait`, `show`, `summarize`, or `translate` ([docs/READ.md](docs/READ.md)) |
 | `linkget auth [SITE]` / `linkget logout [SITE\|all]` | Inspect, connect, or disconnect optional site logins |
 
 > Automation / AI agents: pass `--non-interactive --json` (or `--stdout` on `read`). See [Agent Skill](docs/AGENT_SKILL.md).

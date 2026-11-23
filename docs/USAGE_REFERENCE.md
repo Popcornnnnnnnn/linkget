@@ -49,6 +49,7 @@ linkget recover TASK --verify         # verify Photos managed originals without 
 - `--non-interactive` (or `LINKGET_NON_INTERACTIVE=1`) disables all interactive prompts and progress spinners even on a PTY, failing fast if input is missing.
 - `--json` emits one structured JSON object (`schema_version: 1`) on stdout, implies `--non-interactive`, and suppresses aligned status text on stdout/stderr (`sites`, `config`, `doctor`, `inspect`, `tasks`, `download`, `batch`, `retry`, `recover`, `compare`, `logout`, `read`).
 - `linkget inspect URL_OR_PATH [--audio] [--no-network] [--json]` checks routing, required/missing tools, saved-session existence, destination preview, and (for `yt-dlp` sites without `--no-network`) remote metadata without writing journals or downloading media. See [AGENT_SKILL.md](AGENT_SKILL.md).
+- `linkget read` also extracts timestamped video keyframes (`--frames`, `--max-frames N`, `--frame-ocr`) into `frames/`, reads general public web articles via stdlib HTML extraction, and reads WeChat Official Account articles (`mp.weixin.qq.com/s/...`) via direct HTTP with optional `/s/<id>` browser fallback. See [READ.md](READ.md).
 
 ## Evidence Reports & Live Photos
 

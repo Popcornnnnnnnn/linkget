@@ -138,12 +138,35 @@ def markdown(result):
     body = ''
     if videos:
         for index, video in enumerate(videos, 1):
+            segments = video.get('segments') or []
+            if not segments:
+                continue
             body += f'## Video {index}\n\n'
-            body += '\n\n'.join(f'<a id="v{index}-s{n}"></a>\n[{timestamp(s["start"]).split(".")[0]}] {s["text"]}' for n, s in enumerate(video['segments'], 1)) + '\n\n'
+            body += '\n\n'.join(f'<a id="v{index}-s{n}"></a>\n[{timestamp(s["start"]).split(".")[0]}] {s["text"]}' for n, s in enumerate(segments, 1)) + '\n\n'
         for index, image in enumerate(result.get('images', []), 1):
             body += f'<a id="image-{index}"></a>\n## Image {index}\n\n' + image.get('text', '') + '\n\n'
     else:
-        body = result.get('text', '') + '\n'
+        meta_parts = [part for part in (result.get('author'), result.get('published_at')) if part]
+        if meta_parts:
+            body += '_' + ' · '.join(meta_parts) + '_\n\n'
+        if result.get('markdown'):
+            body += result['markdown'].rstrip() + '\n'
+        else:
+            body += result.get('text', '') + '\n'
+    frames = result.get('frames') or []
+    if frames:
+        if body and not body.endswith('\n\n'):
+            body = body.rstrip() + '\n\n'
+        body += '## Keyframes\n\n'
+        for frame in frames:
+            idx = frame.get('index', '?')
+            label = frame.get('timestamp_label') or timestamp(float(frame.get('timestamp') or 0.0)).split('.')[0]
+            rel = frame.get('relative_path') or frame.get('path') or ''
+            body += f'<a id="frame-{idx}"></a>\n### [{label}] Frame {idx}\n\n![Frame {idx} ({label})]({rel})\n'
+            ocr_text = (frame.get('ocr_text') or '').strip()
+            if ocr_text:
+                body += '\n' + ocr_text + '\n'
+            body += '\n'
     return header + body
 
 
@@ -156,9 +179,12 @@ def export(folder, result, formats, basename='content'):
             write_text(folder / (basename + '.txt'), result.get('text', '') + '\n')
         elif format_ in {'srt', 'vtt'}:
             for index, video in enumerate(videos, 1):
+                segments = video.get('segments') or []
+                if not segments:
+                    continue
                 name = 'content' if len(videos) == 1 else f'video-{index:03d}'
                 lines = ['WEBVTT\n'] if format_ == 'vtt' else []
-                for number, cue in enumerate(video['segments'], 1):
+                for number, cue in enumerate(segments, 1):
                     lines.append(f'{number}\n{timestamp(cue["start"], format_ == "srt")} --> {timestamp(cue["end"], format_ == "srt")}\n{cue["text"]}\n')
                 write_text(folder / (name + '.' + format_),'\n'.join(lines))
 
