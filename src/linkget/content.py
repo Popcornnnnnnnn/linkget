@@ -12,13 +12,13 @@ import uuid
 from urllib.parse import parse_qs, urlsplit
 
 if __package__:
-    from . import agent_output, toutiao, rendered_page, read_store, read_formats, read_asr, read_frames, read_ocr, read_tasks, runtime, web_article
+    from . import agent_output, article_archive, toutiao, rendered_page, read_store, read_formats, read_asr, read_frames, read_ocr, read_tasks, runtime, web_article, x_article
     from .engines import route
     from .links import normalize_link
     from .media import reference, AUDIO, DownloadResult
     from .preflight import writable_directory
 else:
-    import agent_output, toutiao, rendered_page, read_store, read_formats, read_asr, read_frames, read_ocr, read_tasks, runtime, web_article
+    import agent_output, article_archive, toutiao, rendered_page, read_store, read_formats, read_asr, read_frames, read_ocr, read_tasks, runtime, web_article, x_article
     from engines import route
     from links import normalize_link
     from media import reference, AUDIO, DownloadResult
@@ -68,8 +68,9 @@ def read_videos(args):
         vad_model = vad_model.expanduser().resolve()
     if not 30 <= chunk_seconds <= 1800:
         raise ValueError('Chunk length must be between 30 and 1800 seconds.')
-    local, public_article, wechat_article, web_article_target = None, False, False, False
+    local, public_article, wechat_article, web_article_target, x_article_target = None, False, False, False, False
     wechat_browser_eligible = False
+    no_assets = bool(getattr(args, 'no_assets', False))
     if not re.search(r'https?://', args.url):
         local = Path(args.url).expanduser().resolve()
         retained = getattr(args, 'resume', False) and getattr(args, 'folder', None) and (args.folder / '.read-inputs.json').is_file()
@@ -89,6 +90,9 @@ def read_videos(args):
         elif cand_host == web_article.WECHAT_HOST:
             url, wechat_browser_eligible = web_article.canonical_wechat_url(candidate)
             site, wechat_article = 'WeChat', True
+        elif x_article.is_x_article_url(candidate):
+            url = x_article.canonical_x_url(candidate)
+            site, x_article_target = 'X Article', True
         elif web_article.is_known_media_host(cand_host):
             url = normalize_link(args.url)
             site, _, domain = route(url)
@@ -107,6 +111,7 @@ def read_videos(args):
     rendered_backend = getattr(args, 'rendered_backend', None)
     scoped_rendered = (site == 'Toutiao' or public_article) and not getattr(args, 'page_data', None)
     wechat_rendered = wechat_article and wechat_browser_eligible
+    x_rendered = x_article_target or (not local and x_article.is_x_status_url(url))
     reader_choice = (
         rendered_page.selection(
             rendered_backend,
@@ -117,8 +122,8 @@ def read_videos(args):
         if (scoped_rendered or wechat_rendered)
         else None
     )
-    if rendered_backend is not None and not (site == 'Toutiao' or public_article or wechat_rendered):
-        raise ValueError('--rendered-backend applies only to Toutiao, scoped public articles, and WeChat /s/<id> articles.')
+    if rendered_backend is not None and not (site == 'Toutiao' or public_article or wechat_rendered or x_rendered):
+        raise ValueError('--rendered-backend applies only to Toutiao, X Articles, scoped public articles, and WeChat /s/<id> articles.')
     if scoped_rendered:
         rendered_backend = rendered_page.selected_backend(rendered_backend, browser=args.browser)
     elif wechat_rendered and rendered_backend is not None:
@@ -147,7 +152,7 @@ def read_videos(args):
                    'frames': extract_frames, 'max_frames': max_frames, 'frame_ocr': frame_ocr,
                    'chunk_seconds': chunk_seconds, 'vad_model': str(vad_model) if vad_model else None,
                    'browser': args.browser, 'profile': args.profile,
-                   'rendered_backend': rendered_backend,
+                   'rendered_backend': rendered_backend, 'no_assets': no_assets,
                    'keep_media': args.keep_media, 'page_data': str(args.page_data) if getattr(args, 'page_data', None) else None}
         if resume:
             job = read_store.read_json(folder / '.read-job.json')
@@ -199,7 +204,7 @@ def read_videos(args):
             result.update(schema_version=read_store.SCHEMA, send_enabled=False)
             read_formats.export(folder, result, formats)
             read_store.write_json(output, result)
-            if not extract_frames and not result.get('frames'):
+            if not extract_frames and not result.get('frames') and not (result.get('files') or {}).get('html') and not result.get('assets_downloaded'):
                 read_store.cache(key, result)
             job.update(status='completed', source=None)
             read_store.save_job(folder, job)
@@ -490,45 +495,60 @@ def read_videos(args):
                 else:
                     consume([local], [{}], DownloadResult(expected_count=1), url, site, {})
                 return 0
+            def finish_article(item):
+                archived = article_archive.prepare_read_archive(
+                    folder,
+                    item,
+                    download_assets=not no_assets,
+                    ffprobe_bin=cli.find_tool('ffprobe'),
+                    formats=formats,
+                )
+                finish(archived)
+
+            if x_article_target:
+                cli.status('Fetching X Article', url, stream=sys.stderr)
+                item = cli._acquire_x_article(url, args, {}, cli.find_tool)
+                finish_article(item)
+                return 0
             if web_article_target:
                 cli.status('Fetching article', site, stream=sys.stderr)
                 item = web_article.read_article(url)
-                finish(item)
+                finish_article(item)
                 return 0
             if wechat_article:
                 if wechat_browser_eligible and rendered_backend is not None:
                     cli.status('Page reader', rendered_backend + ' · command option', stream=sys.stderr)
                     item = rendered_page.read_wechat(url, backend=rendered_backend)
-                    finish({**item, 'site': 'WeChat', 'reference': url,
-                            'acquisition': 'browseros_neo_rendered_page' if rendered_backend == 'neo' else 'chrome_rendered_page',
-                            'content_basis': 'complete_browseros_neo_wechat_dom' if rendered_backend == 'neo' else 'complete_daily_chrome_wechat_dom',
-                            'limitations': ['Only this bounded WeChat article DOM was read; HTTP transfer completeness and comments were not verified.']})
+                    finish_article({**item, 'site': 'WeChat', 'reference': url, 'is_wechat': True,
+                                    'acquisition': 'browseros_neo_rendered_page' if rendered_backend == 'neo' else 'chrome_rendered_page',
+                                    'content_basis': 'complete_browseros_neo_wechat_dom' if rendered_backend == 'neo' else 'complete_daily_chrome_wechat_dom',
+                                    'limitations': ['Only this bounded WeChat article DOM was read; HTTP transfer completeness and comments were not verified.']})
                     return 0
                 try:
                     cli.status('Fetching WeChat article', 'direct HTTP', stream=sys.stderr)
                     item = web_article.read_wechat_http(url)
-                    finish(item)
+                    finish_article(item)
                     return 0
                 except web_article.WeChatGateError:
                     if wechat_browser_eligible and args.browser != 'none' and reader_choice and reader_choice['supported']:
                         cli.status('Page reader', reader_choice['browser'] + ' · ' + reader_choice['source'], stream=sys.stderr)
                         item = rendered_page.read_wechat(url, backend=reader_choice['browser'])
-                        finish({**item, 'site': 'WeChat', 'reference': url,
-                                'acquisition': 'browseros_neo_rendered_page' if reader_choice['browser'] == 'neo' else 'chrome_rendered_page',
-                                'content_basis': 'complete_browseros_neo_wechat_dom' if reader_choice['browser'] == 'neo' else 'complete_daily_chrome_wechat_dom',
-                                'limitations': ['Only this bounded WeChat article DOM was read; HTTP transfer completeness and comments were not verified.']})
+                        finish_article({**item, 'site': 'WeChat', 'reference': url, 'is_wechat': True,
+                                        'acquisition': 'browseros_neo_rendered_page' if reader_choice['browser'] == 'neo' else 'chrome_rendered_page',
+                                        'content_basis': 'complete_browseros_neo_wechat_dom' if reader_choice['browser'] == 'neo' else 'complete_daily_chrome_wechat_dom',
+                                        'limitations': ['Only this bounded WeChat article DOM was read; HTTP transfer completeness and comments were not verified.']})
                         return 0
                     raise
             if public_article:
                 cli.status('Page reader', reader_choice['browser']+' · '+reader_choice['source'], stream=sys.stderr)
                 item = rendered_page.read_public(url, backend=rendered_backend)
                 item = rendered_page.validate_public_page(item, url)
-                finish({**item, 'site': site, 'reference': source_reference(url),
-                        'acquisition': 'browseros_neo_rendered_page' if rendered_backend == 'neo' else 'chrome_rendered_page',
-                        'content_basis': 'complete_browseros_neo_scoped_article_dom' if rendered_backend == 'neo' else 'complete_daily_chrome_scoped_article_dom',
-                        'read_scope': 'scoped_public_article_rendered_text_only',
-                        'limitations': ['Only this scoped article DOM was read; HTTP transfer completeness, '
-                                        'linked documents and embedded media were not verified.']})
+                finish_article({**item, 'site': site, 'reference': source_reference(url),
+                                'acquisition': 'browseros_neo_rendered_page' if rendered_backend == 'neo' else 'chrome_rendered_page',
+                                'content_basis': 'complete_browseros_neo_scoped_article_dom' if rendered_backend == 'neo' else 'complete_daily_chrome_scoped_article_dom',
+                                'read_scope': 'scoped_public_article_rendered_text_only',
+                                'limitations': ['Only this scoped article DOM was read; HTTP transfer completeness, '
+                                                'linked documents and embedded media were not verified.']})
                 return 0
             if site == 'Toutiao':
                 if args.browser not in {'auto', 'chrome'} and not args.page_data or args.profile:
@@ -538,7 +558,7 @@ def read_videos(args):
                 page = read_store.read_json(args.page_data) if args.page_data else toutiao.read_browser(url, backend=rendered_backend)
                 item = toutiao.validate_page(url, page)
                 if item['kind'] == 'article':
-                    finish({**item, 'site': site, 'reference': source_reference(url)})
+                    finish_article({**item, 'site': site, 'reference': source_reference(url)})
                 else:
                     if subtitle_mode == 'only':
                         raise ValueError('The Toutiao player did not expose complete source subtitles.')
@@ -571,8 +591,10 @@ def read_videos(args):
                         shutil.rmtree(temporary)
                 return 0
             download_args = argparse.Namespace(link=url, folder=folder, browser=args.browser, profile=args.profile,
+                                               rendered_backend=rendered_backend,
                                                date_now=False, live_photos=False, redownload=False,
-                                               read_audio=not (args.keep_media or extract_frames), read_metadata_consumer=metadata_consumer)
+                                               read_audio=not (args.keep_media or extract_frames), read_metadata_consumer=metadata_consumer,
+                                               read_article_consumer=finish_article)
             code = cli.download(download_args, {}, media_consumer=consume)
             if code != 0:
                 job['status'] = 'cancelled' if code == 130 else 'failed'
@@ -707,6 +729,7 @@ An enabled AI fallback switches on provider outages; config --help lists options
     parser.add_argument('--frames', action='store_true', help='Extract representative video keyframes with timestamps into frames/')
     parser.add_argument('--max-frames', type=int, default=read_frames.DEFAULT_MAX_FRAMES, help='Maximum keyframes to extract per video (1-60; default: 12)')
     parser.add_argument('--frame-ocr', action='store_true', help='Run local macOS Vision OCR on extracted keyframes (implies --frames)')
+    parser.add_argument('--no-assets', action='store_true', help='Article reads: skip downloading embedded images and videos')
     parser.add_argument('--refresh', action='store_true', help='Bypass the 24-hour complete-content cache')
     parser.add_argument('--keep-media', action='store_true')
     parser.add_argument('--page-data', type=Path, help='Toutiao only: content-only page JSON')

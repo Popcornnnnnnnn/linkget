@@ -28,7 +28,7 @@ Always pass `--non-interactive --json` (or set `LINKGET_NON_INTERACTIVE=1`) when
    Inspect creates no task receipts and downloads no media. Check:
    - `ok` / `supported`
    - `site`, `engine`, `canonical_url`
-   - `audio_only` / `effective_audio_mode`
+   - `audio_only` / `effective_audio_mode` / `supports_article_download`
    - `destination_preview` / `destination_error`
    - `metadata.duration`, `metadata.is_live`, `metadata.filesize_approx`, `metadata.subtitles_available`
    - `tools_missing`, `session_state`, `login_required`
@@ -42,6 +42,11 @@ Always pass `--non-interactive --json` (or set `LINKGET_NON_INTERACTIVE=1`) when
    # Audio-only extraction or music track download:
    linkget 'URL' --audio --audio-format mp3 --folder ./music --non-interactive --json
 
+   # Offline article archive (auto-detected for X Articles, WeChat, Toutiao/Zhihu, and public web pages;
+   # pass --article to force X status article mode upfront):
+   linkget 'https://x.com/USER/status/ID' --folder ./articles --non-interactive --json
+   linkget 'https://example.com/post' --article --no-assets --folder ./articles --non-interactive --json
+
    # Concurrent batch:
    linkget batch 'URL1' 'URL2' --folder ./downloads --non-interactive --json
 
@@ -49,7 +54,7 @@ Always pass `--non-interactive --json` (or set `LINKGET_NON_INTERACTIVE=1`) when
    linkget 'URL' --clip 0:30-2:00 --max-duration 10m --max-size 100MB --folder ./clips --non-interactive --json
    ```
 
-   On success (`ok: true`, exit `0`), read `task_id`, `destination`, `saved_files` (for single download), or `items` (for batch). On failure, read `error.category`, `error.message`, `error.next_step`, and `error.retryable`.
+   On success (`ok: true`, exit `0`), read `task_id`, `destination`, `saved_files` (for single download), or `items` (for batch); article downloads also include `article_folder`, `title`, `author`, `assets_downloaded`, and `assets_failed` (`article_folder` holds `article.md`, `article.html`, `content.txt`, `content.json`, `assets/`, and `source/`). On failure, read `error.category`, `error.message`, `error.next_step`, and `error.retryable`.
 
 4. **Read / transcribe content into agent context:**
 
@@ -61,8 +66,9 @@ Always pass `--non-interactive --json` (or set `LINKGET_NON_INTERACTIVE=1`) when
    # Read a video with keyframes (--frames / --max-frames / --frame-ocr):
    linkget read 'VIDEO_URL_OR_PATH' --frames --max-frames 12 --foreground --json
 
-   # Read general web articles or WeChat Official Account articles (mp.weixin.qq.com/s/...):
+   # Read general web articles, X Articles, or WeChat Official Account articles (--no-assets skips media):
    linkget read 'https://mp.weixin.qq.com/s/ARTICLE_ID' --stdout --non-interactive
+   linkget read 'https://x.com/USER/status/ID' --folder ./x-read --foreground --json
 
    # Asynchronous submit + wait + fetch:
    linkget read 'URL_OR_PATH' --json         # returns task_id immediately

@@ -15,7 +15,7 @@ import time
 from urllib.parse import urlsplit
 
 if __package__:
-    from . import accounts, agent_output, cleanup, inspect_url, jobs, destinations, mcp_server, media_limits, preflight, recovery, staging, transfers, ownership, rendered_page, runtime
+    from . import accounts, agent_output, article_archive, cleanup, inspect_url, jobs, destinations, mcp_server, media_limits, preflight, recovery, staging, transfers, ownership, rendered_page, runtime, web_article, x_article
     from .runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from .output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity
     from .batch import run_batch
@@ -36,7 +36,7 @@ if __package__:
     from .audio import AUDIO_FORMATS, prepare_audio
     from .live import prepare_pairs, save_pairs
 else:  # Homebrew launches this file directly.
-    import accounts, agent_output, cleanup, inspect_url, jobs, destinations, mcp_server, media_limits, preflight, recovery, staging, transfers, ownership, rendered_page, runtime
+    import accounts, agent_output, article_archive, cleanup, inspect_url, jobs, destinations, mcp_server, media_limits, preflight, recovery, staging, transfers, ownership, rendered_page, runtime, web_article, x_article
     from runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity
     from batch import run_batch
@@ -449,9 +449,351 @@ def resolve_audio_folder(explicit_folder=None):
     raise ValueError("Audio downloads require a folder. Use --folder [PATH] or set a default with linkget config --audio-folder PATH.")
 
 
+def configured_article_destination():
+    setting = accounts.preferences().get("article_destination")
+    if setting is None:
+        return None
+    if (not isinstance(setting, dict)
+            or setting.get("mode") not in {"cwd", "folder"}
+            or (setting.get("mode") == "folder"
+                and (not isinstance(setting.get("path"), str) or not Path(setting["path"]).is_absolute()))):
+        raise ValueError("Invalid default article destination. Run linkget config --article-folder PATH or --clear-article-folder.")
+    return setting
+
+
+def resolve_article_folder(explicit_folder=None):
+    if explicit_folder is True:
+        return Path.cwd().resolve()
+    if explicit_folder is not None:
+        return Path(explicit_folder).expanduser().resolve()
+    article_setting = configured_article_destination()
+    if article_setting is not None:
+        if article_setting["mode"] == "cwd":
+            return Path.cwd().resolve()
+        return Path(article_setting["path"]).expanduser().resolve()
+    setting = configured_destination()
+    if setting["mode"] == "cwd":
+        return Path.cwd().resolve()
+    if setting["mode"] == "folder":
+        return Path(setting["path"]).expanduser().resolve()
+    raise ValueError("Article downloads require a folder. Use --folder [PATH] or set a default with linkget config --article-folder PATH.")
+
+
+def _is_article_link_text(text, force_article=False):
+    try:
+        return article_archive.classify_article_target(text, force_article=force_article) is not None
+    except ValueError:
+        return False
+
+
+def _acquire_x_article(url, args, setup_results, find_tool, *, cookie_path=None):
+    blocked = set(accounts.preferences().get("blocked", []))
+    browser_mode = getattr(args, "browser", "auto")
+    rendered_backend = getattr(args, "rendered_backend", None)
+
+    def try_browser():
+        if browser_mode == "none" or "x.com" in blocked:
+            return None
+        choice = rendered_page.selection(backend=rendered_backend, browser=browser_mode)
+        if not choice.get("supported"):
+            return None
+        status("Page reader", choice["browser"] + " · " + choice["source"], stream=sys.stderr)
+        return batch_interaction(lambda: rendered_page.read_x_article(url, backend=choice["browser"]))
+
+    if x_article.status_url_for_gallery_dl(url) is None:
+        try:
+            browser_item = try_browser()
+        except (OSError, ValueError, RuntimeError) as error:
+            if "x_article_login_required" in str(error).lower():
+                raise LoginRequired("X login is required in your browser to read this article.") from None
+            raise
+        if browser_item is not None:
+            return browser_item
+        raise ValueError(
+            "Direct /i/article/ID links require a logged-in Chrome or BrowserOS Neo reader, "
+            "or use the post URL (https://x.com/<user>/status/<id>)."
+        )
+
+    gallery_dl_bin = find_tool("gallery-dl")
+    primary_error = None
+    if gallery_dl_bin:
+        session_dir = None
+        try:
+            active_cookie = cookie_path
+            candidate = None
+            if active_cookie is None and browser_mode not in {"auto", "none"} and "x.com" not in blocked:
+                cookie_spec = browser_spec(args, "gallery-dl", "x.com")
+                if cookie_spec:
+                    session_dir = tempfile.TemporaryDirectory(prefix="linkget-x-session-")
+                    candidate = Path(session_dir.name) / "cookies.txt"
+                    session = (setup_results or {}).get("x.com")
+                    if session is None:
+                        with activity("Preparing"):
+                            session = batch_interaction(lambda: prepare_session(gallery_dl_bin, cookie_spec, candidate, "x.com"))
+                    elif session.state == "valid":
+                        accounts.copy_saved("x.com", candidate)
+                    if session.state != "valid":
+                        if not (recover_login(args, "x.com", session.detail) and accounts.copy_saved("x.com", candidate)):
+                            raise LoginRequired(f"X Article: {session.detail}")
+                    else:
+                        def save_x_session():
+                            accounts.save(candidate, "x.com")
+                            accounts.remember_source("x.com", cookie_spec)
+                        batch_interaction(save_x_session)
+                    active_cookie = candidate
+            elif active_cookie is None and browser_mode == "auto" and "x.com" not in blocked:
+                session_dir = tempfile.TemporaryDirectory(prefix="linkget-x-session-")
+                candidate = Path(session_dir.name) / "cookies.txt"
+                if accounts.copy_saved("x.com", candidate):
+                    active_cookie = candidate
+
+            try:
+                result = x_article.fetch_via_gallery_dl(url, gallery_dl_bin, cookie_path=active_cookie)
+            except x_article.XArticleLoginRequired as error:
+                retried = None
+                if browser_mode != "none" and "x.com" not in blocked:
+                    if session_dir is None:
+                        session_dir = tempfile.TemporaryDirectory(prefix="linkget-x-session-")
+                        candidate = Path(session_dir.name) / "cookies.txt"
+                    refreshed_cookie = None
+                    reason = str(error)
+                    if browser_mode == "auto" and cookie_path is None and runtime.is_interactive():
+                        with activity("Checking"):
+                            state, _ = batch_interaction(lambda: accounts.import_auto(gallery_dl_bin, "x.com"))
+                        if state.state == "valid" and accounts.copy_saved("x.com", candidate):
+                            refreshed_cookie = candidate
+                        else:
+                            reason = state.detail
+                    if refreshed_cookie is None and recover_login(args, "x.com", reason) and accounts.copy_saved("x.com", candidate):
+                        refreshed_cookie = candidate
+                    if refreshed_cookie is not None:
+                        try:
+                            retried = x_article.fetch_via_gallery_dl(url, gallery_dl_bin, cookie_path=refreshed_cookie)
+                        except x_article.XArticleError as retry_err:
+                            error = retry_err
+                if retried is not None:
+                    result = retried
+                else:
+                    primary_error = error
+                    result = False
+            except x_article.XArticleError as error:
+                primary_error = error
+                result = False
+
+            if result is None:
+                raise ValueError("This X post is not an X Article. Omit --article to download normal post media.")
+            if isinstance(result, dict):
+                return result
+        finally:
+            if session_dir is not None:
+                session_dir.cleanup()
+
+    browser_error = None
+    try:
+        browser_item = try_browser()
+    except (OSError, ValueError, RuntimeError) as error:
+        browser_error = error
+        browser_item = None
+    if browser_item is not None:
+        return browser_item
+
+    if isinstance(primary_error, x_article.XArticleLoginRequired):
+        raise LoginRequired(str(primary_error)) from None
+    if primary_error is not None:
+        raise primary_error
+    if browser_error is not None:
+        raise browser_error
+    raise RuntimeError(installation_hint(["gallery-dl"]))
+
+
+def _acquire_article_for_download(url, target, args, setup_results):
+    kind = target["kind"]
+    if kind == "x_article":
+        return _acquire_x_article(url, args, setup_results, find_tool)
+    if kind == "web_article":
+        with activity("Fetching article"):
+            return web_article.read_article(url)
+
+    browser_mode = getattr(args, "browser", "auto")
+    rendered_backend = getattr(args, "rendered_backend", None)
+    reader_choice = (
+        rendered_page.selection(backend=rendered_backend, browser=browser_mode)
+        if browser_mode != "none"
+        else {"supported": False}
+    )
+
+    if kind == "wechat_article":
+        wechat_browser_eligible = bool(target.get("wechat_browser_eligible"))
+        if wechat_browser_eligible and rendered_backend is not None and browser_mode != "none":
+            status("Page reader", rendered_backend + " · command option", stream=sys.stderr)
+            item = batch_interaction(lambda: rendered_page.read_wechat(url, backend=rendered_backend))
+            return {
+                **item,
+                "site": "WeChat",
+                "reference": reference(url),
+                "is_wechat": True,
+                "acquisition": "browseros_neo_rendered_page" if rendered_backend == "neo" else "chrome_rendered_page",
+                "content_basis": "complete_browseros_neo_wechat_dom" if rendered_backend == "neo" else "complete_daily_chrome_wechat_dom",
+                "limitations": ["Only this bounded WeChat article DOM was read; HTTP transfer completeness and comments were not verified."],
+            }
+        try:
+            with activity("Fetching article"):
+                return web_article.read_wechat_http(url)
+        except web_article.WeChatGateError:
+            if wechat_browser_eligible and browser_mode != "none" and reader_choice.get("supported"):
+                backend = reader_choice["browser"]
+                status("Page reader", backend + " · " + reader_choice["source"], stream=sys.stderr)
+                item = batch_interaction(lambda: rendered_page.read_wechat(url, backend=backend))
+                return {
+                    **item,
+                    "site": "WeChat",
+                    "reference": reference(url),
+                    "is_wechat": True,
+                    "acquisition": "browseros_neo_rendered_page" if backend == "neo" else "chrome_rendered_page",
+                    "content_basis": "complete_browseros_neo_wechat_dom" if backend == "neo" else "complete_daily_chrome_wechat_dom",
+                    "limitations": ["Only this bounded WeChat article DOM was read; HTTP transfer completeness and comments were not verified."],
+                }
+            raise
+
+    if kind == "public_article":
+        if browser_mode == "none" or not reader_choice.get("supported"):
+            raise ValueError("This article requires a supported browser page reader (Chrome or BrowserOS Neo).")
+        backend = reader_choice["browser"]
+        status("Page reader", backend + " · " + reader_choice["source"], stream=sys.stderr)
+        item = batch_interaction(lambda: rendered_page.read_public(url, backend=backend))
+        item = rendered_page.validate_public_page(item, url)
+        return {
+            **item,
+            "site": target["site"],
+            "reference": reference(url),
+            "acquisition": "browseros_neo_rendered_page" if backend == "neo" else "chrome_rendered_page",
+            "content_basis": "complete_browseros_neo_scoped_article_dom" if backend == "neo" else "complete_daily_chrome_scoped_article_dom",
+            "read_scope": "scoped_public_article_rendered_text_only",
+            "limitations": [
+                "Only this scoped article DOM was read; HTTP transfer completeness, "
+                "linked documents and embedded media were not verified."
+            ],
+        }
+
+    if kind == "toutiao_article":
+        if __package__:
+            from . import read_store, toutiao
+        else:
+            import read_store, toutiao
+        page_data = getattr(args, "page_data", None)
+        if page_data:
+            page = read_store.read_json(page_data)
+        else:
+            if browser_mode == "none" or not reader_choice.get("supported"):
+                raise ValueError("Toutiao articles require a supported browser page reader or --page-data with --browser none.")
+            backend = reader_choice["browser"]
+            status("Page reader", backend + " · " + reader_choice["source"], stream=sys.stderr)
+            page = batch_interaction(lambda: toutiao.read_browser(url, backend=backend))
+        item = toutiao.validate_page(url, page)
+        if item.get("kind") != "article":
+            raise ValueError("This Toutiao link is not an article.")
+        return {**item, "site": target["site"], "reference": reference(url)}
+
+    raise ValueError(f"Unsupported article target kind: {kind}")
+
+
+def download_article_target(args, target, setup_results, evidence, started, *, prefetched_article=None, cookie_path=None):
+    if getattr(args, "_explicit_photos", False) or getattr(args, "photos", False):
+        raise ValueError("Articles cannot be imported into Photos. Use --folder [PATH] or omit --photos.")
+    if getattr(args, "date_now", False):
+        raise ValueError("--date-now applies to Photos imports only, not article downloads.")
+    if getattr(args, "live_photos", False):
+        raise ValueError("--live-photos cannot be used with article downloads.")
+    if getattr(args, "audio", False) or getattr(args, "audio_format", None):
+        raise ValueError("Article pages do not contain downloadable audio.")
+    if getattr(args, "clip", None) or getattr(args, "max_duration", None) or getattr(args, "max_size", None):
+        raise ValueError("--clip, --max-duration, and --max-size apply only to audio and video downloads, not articles.")
+    if getattr(args, "page_data", None) and target["kind"] != "toutiao_article":
+        raise ValueError("--page-data applies only to Douyin or Toutiao posts with --browser none.")
+
+    if getattr(args, "_explicit_folder", False) and getattr(args, "folder", None) is not None:
+        parent_folder = resolve_article_folder(args.folder)
+    elif getattr(args, "folder_from_default", False) or not getattr(args, "folder", None):
+        parent_folder = resolve_article_folder(None)
+    else:
+        parent_folder = resolve_article_folder(args.folder)
+    preflight.writable_directory(parent_folder)
+
+    url = target["url"]
+    evidence.update(reference=reference(url), site=target["site"])
+    status("Source", target["site"])
+    status("Destination", str(parent_folder))
+
+    if prefetched_article is not None:
+        article = prefetched_article
+    elif target["kind"] == "x_article" and cookie_path is not None:
+        article = _acquire_x_article(url, args, setup_results, find_tool, cookie_path=cookie_path)
+    else:
+        article = _acquire_article_for_download(url, target, args, setup_results)
+
+    bundle_dir = article_archive.allocate_bundle_dir(parent_folder, article)
+    try:
+        clean, written = article_archive.write_article_bundle(
+            bundle_dir,
+            article,
+            mode="download",
+            download_assets=not bool(getattr(args, "no_assets", False)),
+            ffprobe_bin=find_tool("ffprobe"),
+        )
+    except BaseException:
+        try:
+            if bundle_dir.exists() and not any(bundle_dir.iterdir()):
+                bundle_dir.rmdir()
+        except OSError:
+            pass
+        raise
+
+    written_sorted = [p for p in written if p.is_file()]
+    jobs.record(
+        destination_folder=str(bundle_dir),
+        destination_files=[{"path": str(p)} for p in written_sorted],
+    )
+    rel_files = []
+    for p in written_sorted:
+        try:
+            rel = str(p.relative_to(bundle_dir))
+        except ValueError:
+            rel = p.name
+        rel_files.append({"path": rel, "bytes": p.stat().st_size})
+    total_bytes = sum(entry["bytes"] for entry in rel_files)
+    evidence.update(
+        status="completed",
+        site=clean.get("site") or target["site"],
+        reference=clean.get("reference") or reference(url),
+        article_folder=str(bundle_dir),
+        title=clean.get("title"),
+        author=clean.get("author"),
+        saved_count=len(written_sorted),
+        skipped_count=0,
+        assets_downloaded=clean.get("assets_downloaded", 0),
+        assets_failed=clean.get("assets_failed", 0),
+        files=rel_files,
+    )
+    if clean.get("title"):
+        status("Article", clean["title"])
+    status("Folder", str(bundle_dir))
+    assets_dl = clean.get("assets_downloaded", 0)
+    assets_fail = clean.get("assets_failed", 0)
+    if getattr(args, "no_assets", False):
+        status("Assets", "Skipped (--no-assets)")
+    elif assets_dl or assets_fail:
+        asset_msg = f"{assets_dl} downloaded"
+        if assets_fail:
+            asset_msg += f" · {assets_fail} failed (kept original links)"
+        status("Assets", asset_msg, "33" if assets_fail else "32")
+    status("Done", f"{len(written_sorted)} files · {format_size(total_bytes)} · {time.monotonic() - started:.1f}s", "32")
+    return 0
+
+
 def configure(args, parser):
-    if args.link != ["config"] or args.browser != "auto" or args.profile or args.date_now or args.rendered_backend or args.live_photos or args.report:
-        parser.error("Use linkget config, linkget config --photos, linkget config --folder [PATH], or linkget config --audio-folder [PATH].")
+    if (args.link != ["config"] or args.browser != "auto" or args.profile or args.date_now
+            or args.rendered_backend or args.live_photos or args.report or args.article or args.no_assets):
+        parser.error("Use linkget config, linkget config --photos, linkget config --folder [PATH], linkget config --audio-folder [PATH], or linkget config --article-folder [PATH].")
     if args.photos:
         setting = {"mode": "photos"}
     elif args.folder is True:
@@ -480,6 +822,21 @@ def configure(args, parser):
     else:
         audio_setting = configured_audio_destination()
     changed_audio = args.clear_audio_folder or args.audio_folder is not None
+    if args.clear_article_folder:
+        article_setting = None
+        changes["article_destination"] = None
+    elif args.article_folder is True:
+        article_setting = {"mode": "cwd"}
+        changes["article_destination"] = article_setting
+    elif args.article_folder is not None:
+        article_folder = args.article_folder.expanduser().resolve()
+        if article_folder.exists() and not article_folder.is_dir():
+            raise ValueError(f"Not a folder: {article_folder}")
+        article_setting = {"mode": "folder", "path": str(article_folder)}
+        changes["article_destination"] = article_setting
+    else:
+        article_setting = configured_article_destination()
+    changed_article = args.clear_article_folder or args.article_folder is not None
     if args.reader_browser is not None:
         changes["reader_browser"] = args.reader_browser
     if changes:
@@ -490,8 +847,14 @@ def configure(args, parser):
         else "Current folder (where you run linkget)" if audio_setting["mode"] == "cwd"
         else audio_setting["path"]
     )
+    article_description = (
+        "Not set (uses folder default when set)" if article_setting is None
+        else "Current folder (where you run linkget)" if article_setting["mode"] == "cwd"
+        else article_setting["path"]
+    )
     status("Default", description)
     status("Audio default", audio_description)
+    status("Article default", article_description)
     preferences = accounts.preferences()
     choice = rendered_page.selection()
     sources = preferences.get('sources', {})
@@ -503,6 +866,7 @@ def configure(args, parser):
             "command": "config",
             "destination": setting,
             "audio_destination": audio_setting,
+            "article_destination": article_setting,
             "reader_browser": preferences.get("reader_browser", "auto"),
             "page_controller": choice,
             "login_browsers": names,
@@ -515,7 +879,7 @@ def configure(args, parser):
     status("Login browser sources", ", ".join(names) if names else preferences.get('browser') or "None configured")
     status("Selection", "Page option > browser option > environment > personal reader > saved browser > system default")
     status("Privacy", "Login refresh sources and page controller are separate; saved login validity was not checked.")
-    if changed_dest or changed_audio:
+    if changed_dest or changed_audio or changed_article:
         status("Saved", "Used when no --folder or --photos is specified.")
     else:
         print("\n  Change default:\n")
@@ -527,15 +891,17 @@ def configure(args, parser):
             ("linkget config --folder ~/Downloads", "Fixed folder; replace with your path"),
             ("linkget config --audio-folder ~/Music", "Default folder for audio and music downloads"),
             ("linkget config --clear-audio-folder", "Clear the saved default audio folder"),
+            ("linkget config --article-folder ~/Articles", "Default folder for article downloads"),
+            ("linkget config --clear-article-folder", "Clear the saved default article folder"),
         ]:
-            print(f"  {command:<40} {detail}")
+            print(f"  {command:<42} {detail}")
         print("\n  To override once, omit config. Your saved default stays unchanged.")
     return 0
 
 
 SUPPORTED_SITES = (
     ("Instagram", "Photos, videos and reels"),
-    ("X / Twitter", "Post photos and videos"),
+    ("X / Twitter", "Post photos, videos and X Articles"),
     ("Bilibili", "BV/av videos, Opus media and au audio"),
     ("TikTok", "Post photos and videos; share links"),
     ("Douyin", "Post photos and videos; share links"),
@@ -712,6 +1078,14 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                         help="config only: save the default audio folder; omit PATH for the current folder on each run")
     parser.add_argument("--clear-audio-folder", action="store_true",
                         help="config only: clear the saved default audio folder")
+    parser.add_argument("--article", action="store_true",
+                        help="download a web page or X post as an offline article archive")
+    parser.add_argument("--no-assets", action="store_true",
+                        help="article downloads only: skip downloading embedded images and videos")
+    parser.add_argument("--article-folder", nargs="?", const=True, type=Path,
+                        help="config only: save the default article folder; omit PATH for the current folder on each run")
+    parser.add_argument("--clear-article-folder", action="store_true",
+                        help="config only: clear the saved default article folder")
     parser.add_argument("--json", action="store_true", help="print structured JSON output on stdout (implies --non-interactive)")
     parser.add_argument("--non-interactive", action="store_true", help="never prompt or animate terminal spinners")
     parser.add_argument("--no-network", action="store_true", help="inspect only: skip resolving short links or probing remote metadata")
@@ -753,7 +1127,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     if command_help.show(parser, tokens):
         return 0
     for action in parser._actions:
-        if action.dest in {'reader_browser', 'probe_browser', 'check_session', 'audio_folder', 'clear_audio_folder', 'no_network', 'verify', 'item', 'redownload', 'older_than', 'dry_run', 'apply'}:
+        if action.dest in {'reader_browser', 'probe_browser', 'check_session', 'audio_folder', 'clear_audio_folder', 'article_folder', 'clear_article_folder', 'no_network', 'verify', 'item', 'redownload', 'older_than', 'dry_run', 'apply'}:
             action.help = argparse.SUPPRESS
     args = parser.parse_intermixed_args(tokens)
     if args.non_interactive or args.json:
@@ -796,6 +1170,10 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         parser.error("--audio-folder and --clear-audio-folder are saved with linkget config only.")
     if args.audio_folder is not None and args.clear_audio_folder:
         parser.error("Do not combine --audio-folder with --clear-audio-folder.")
+    if (args.article_folder is not None or args.clear_article_folder) and args.link != ["config"]:
+        parser.error("--article-folder and --clear-article-folder are saved with linkget config only.")
+    if args.article_folder is not None and args.clear_article_folder:
+        parser.error("Do not combine --article-folder with --clear-article-folder.")
     if args.audio_format is not None:
         args.audio = True
     if args.audio:
@@ -807,6 +1185,21 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             parser.error("--date-now applies to Photos imports only, not --audio.")
         if args.live_photos:
             parser.error("--live-photos cannot be combined with --audio.")
+    if args.article:
+        if args.link == ["config"]:
+            parser.error("Use linkget config --article-folder [PATH] to set the default article folder.")
+        if args.audio:
+            parser.error("Do not combine --article with --audio.")
+        if args.photos:
+            parser.error("Articles cannot be imported into Photos. Use --folder or linkget config --article-folder.")
+        if args.date_now:
+            parser.error("--date-now applies to Photos imports only, not --article.")
+        if args.live_photos:
+            parser.error("--live-photos cannot be combined with --article.")
+        if has_media_limits:
+            parser.error("--clip, --max-duration, and --max-size apply only to audio and video downloads, not --article.")
+    if args.no_assets and args.link and args.link[0] in {"inspect", "recover", "compare", "config", "auth", "logout", "doctor", "sites", "clean", "mcp", "login"}:
+        parser.error("--no-assets applies only to article downloads, batch, and retry.")
     if args.page_data:
         args.page_data = args.page_data.expanduser().resolve()
         if args.browser != "none" or len(args.link) not in {1, 2}:
@@ -829,15 +1222,18 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             parser.error("Use linkget inspect URL_OR_PATH.")
         if (args.photos or args.date_now or args.live_photos or args.report
                 or args.jobs is not None or args.verify or args.item is not None
-                or args.redownload or args.folder is not None or args.page_data is not None):
-            parser.error("Use --audio, --browser, --no-network, --json, or --non-interactive with linkget inspect.")
+                or args.redownload or args.folder is not None or args.page_data is not None
+                or args.no_assets):
+            parser.error("Use --audio, --article, --browser, --no-network, --json, or --non-interactive with linkget inspect.")
         payload = inspect_url.inspect_target(
             target,
             audio=args.audio,
+            article=args.article,
             browser=args.browser,
             no_network=args.no_network,
             find_tool=find_tool,
             resolve_audio_folder=resolve_audio_folder,
+            resolve_article_folder=resolve_article_folder,
             configured_destination=configured_destination,
         )
         payload["schema_version"] = agent_output.SCHEMA_VERSION
@@ -858,6 +1254,8 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 status("Canonical URL", "Short link unresolved (--no-network)")
             status("Audio mode", "Yes" if payload["effective_audio_mode"] else "No")
             status("Read support", "Yes" if payload["supports_read"] else "No")
+            if payload.get("supports_article_download"):
+                status("Article download", "Yes")
             status("Session", payload["session_state"])
             if payload.get("tools_required"):
                 tool_summary = ", ".join(payload["tools_required"]) + (
@@ -1025,8 +1423,8 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     if is_clean_cmd:
         if len(args.link) > 1:
             parser.error("Use linkget clean [--dry-run | --apply] [--older-than AGE] [--json].")
-        if (args.photos or args.date_now or args.live_photos or args.audio or args.folder is not None
-                or args.report is not None or args.page_data is not None or args.jobs is not None
+        if (args.photos or args.date_now or args.live_photos or args.audio or args.article or args.no_assets
+                or args.folder is not None or args.report is not None or args.page_data is not None or args.jobs is not None
                 or args.browser != "auto" or args.profile is not None or args.rendered_backend is not None):
             parser.error("Use --dry-run, --apply, --older-than, --json, or --non-interactive with linkget clean.")
         try:
@@ -1064,7 +1462,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     if is_mcp_cmd:
         if len(args.link) > 1:
             parser.error("Use linkget mcp.")
-        if (args.json or args.photos or args.date_now or args.live_photos or args.audio
+        if (args.json or args.photos or args.date_now or args.live_photos or args.audio or args.article or args.no_assets
                 or args.folder is not None or args.report is not None or args.page_data is not None
                 or args.jobs is not None or args.browser != "auto"
                 or args.profile is not None or args.rendered_backend is not None):
@@ -1109,9 +1507,9 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 report_failure(error)
             return 1
     if args.link == "sites":
-        toutiao_entry = ("Toutiao", "Article text / local video transcription via linkget read; configured page reader; Chrome and Neo supported")
-        wechat_entry = ("WeChat Official Accounts", "Article text via linkget read (direct HTTP with optional Chrome/Neo /s/<id> fallback)")
-        web_entry = ("Web articles", "General public HTTPS/HTTP article extraction and plain/Markdown reads via linkget read")
+        toutiao_entry = ("Toutiao", "Article downloads & reading, plus local video transcription via linkget read; Chrome and Neo supported")
+        wechat_entry = ("WeChat Official Accounts", "Article downloads & reading (direct HTTP with optional Chrome/Neo /s/<id> fallback)")
+        web_entry = ("Web articles", "General public HTTPS/HTTP article downloads and Markdown/HTML/plain reads via linkget read")
         extra_entries = [toutiao_entry, wechat_entry, web_entry]
         if args.json:
             agent_output.emit({
@@ -1133,7 +1531,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             status(site, content)
         for site, content in extra_entries:
             status(site, content)
-        print("\n  Use --audio (or --audio-format mp3|m4a|flac|wav|opus) to save audio from video posts to a folder.\n  Use linkget read for video speech/keyframes, Toutiao, WeChat Official Accounts, or web articles.\n  Pixiv is image-only. Availability varies by URL; read --help shows options.")
+        print("\n  Use --audio (or --audio-format mp3|m4a|flac|wav|opus) to save audio from video posts to a folder.\n  Use linkget URL [--article] --folder DIR to archive offline articles (Markdown, HTML, JSON, local images/videos).\n  Use linkget read for video speech/keyframes, Toutiao, WeChat Official Accounts, or web articles.\n  Pixiv is image-only. Availability varies by URL; read --help shows options.")
         return 0
     if args.profile and args.browser in {"auto", "none"}:
         parser.error("--profile requires an explicit --browser, such as chrome or firefox.")
@@ -1145,7 +1543,22 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         args._explicit_folder = args.folder is not None
         args._explicit_photos = bool(args.photos)
         args.folder_from_default = False
-        if not args.audio and (
+        is_article_run = bool(getattr(args, "article", False)) or (
+            not args.audio and (
+                (not is_batch and args.link and _is_article_link_text(args.link))
+                or (is_batch and batch_links and all(_is_article_link_text(link) for link in batch_links))
+            )
+        )
+        if is_article_run:
+            if args.photos:
+                raise ValueError("Articles cannot be imported into Photos. Use --folder or linkget config --article-folder.")
+            if args.date_now:
+                raise ValueError("--date-now applies to Photos imports only, not article downloads.")
+            if args.live_photos:
+                raise ValueError("--live-photos cannot be used with article downloads.")
+            if args.audio:
+                raise ValueError("Article pages do not contain downloadable audio.")
+        if not is_article_run and not args.audio and (
             (not is_batch and args.link and _is_audio_only_link_text(args.link))
             or (is_batch and batch_links and all(_is_audio_only_link_text(link) for link in batch_links))
         ):
@@ -1158,6 +1571,10 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             args.audio = True
         if args.audio:
             args.folder = resolve_audio_folder(args.folder)
+        elif is_article_run:
+            args.folder = resolve_article_folder(args.folder)
+            if not args._explicit_folder:
+                args.folder_from_default = True
         elif args.photos:
             args.folder = None
         elif args.folder is True:
@@ -1272,6 +1689,18 @@ def restore_options(args, journal, tokens):
             raise ValueError("--live-photos cannot be combined with --audio.")
         if args.folder is None:
             args.folder = resolve_audio_folder()
+    if getattr(args, "article", False):
+        if args.photos:
+            raise ValueError("Articles cannot be imported into Photos. Use --folder or linkget config --article-folder.")
+        if args.date_now:
+            raise ValueError("--date-now applies to Photos imports only, not --article.")
+        if args.live_photos:
+            raise ValueError("--live-photos cannot be combined with --article.")
+        if getattr(args, "audio", False):
+            raise ValueError("Do not combine --article with --audio.")
+        if args.folder is None:
+            args.folder = resolve_article_folder()
+            args.folder_from_default = True
     if args.folder is not None and args.date_now:
         raise ValueError("--date-now applies to Photos imports only.")
     if args.profile and args.browser in {"auto", "none"}:
@@ -1316,6 +1745,9 @@ def _agent_download_item(journal, index, evidence=None):
         "saved_files": dest_files,
         "files": ev.get("files", []),
     }
+    for opt_key in ("article_folder", "title", "author", "assets_downloaded", "assets_failed"):
+        if ev.get(opt_key) is not None:
+            item[opt_key] = ev[opt_key]
     failure_info = row.get("failure")
     if status_val != "completed":
         if isinstance(failure_info, dict):
@@ -1404,6 +1836,14 @@ def download(args, setup_results, records=None, media_consumer=None):
         started = time.monotonic()
         with activity("Resolving") if any(host in url for host in ("v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/", "xhslink.com", "xhslink.cn", "t.cn/", "on.soundcloud.com")) else nullcontext():
             url = normalize_link(url)
+        if media_consumer is None:
+            article_target = article_archive.classify_article_target(url, force_article=bool(getattr(args, "article", False)))
+            if article_target is not None:
+                domain = article_target.get("domain")
+                url = article_target["url"]
+                return download_article_target(args, article_target, setup_results, evidence, started)
+            if getattr(args, "article", False):
+                raise ValueError("--article supports X posts/articles, WeChat, Toutiao articles, Zhihu articles, or public web article URLs.")
         site, engine, domain = route(url)
         evidence.update(reference=reference(url), site=site)
         audio_mode = (media_consumer is None) and (getattr(args, "audio", False) or is_audio_only_site(site))
@@ -1584,6 +2024,70 @@ def download(args, setup_results, records=None, media_consumer=None):
                     if needs_login(log_text):
                         raise LoginRequired(f"{site} authentication response:\n" + log_text)
                     raise RuntimeError("Download failed.\n" + log_text)
+                if engine == "gallery-dl" and domain == "x.com" and not audio_mode and x_article.is_x_status_url(url):
+                    x_log_text = (stage / "download.log").read_text(errors="replace")
+                    x_article_detected = "Error while processing article data" in x_log_text
+                    probed_x_article = None
+                    if not x_article_detected:
+                        m_tid = re.search(r"/status/(\d+)", url)
+                        target_tid = m_tid.group(1) if m_tid else None
+                        for sidecar in sorted(media_dir.rglob("*.json")):
+                            if sidecar.is_symlink() or not sidecar.is_file():
+                                continue
+                            try:
+                                sidecar_data = json.loads(sidecar.read_text(errors="replace"))
+                            except (ValueError, OSError):
+                                continue
+                            if (isinstance(sidecar_data, dict)
+                                    and isinstance(sidecar_data.get("article"), dict)
+                                    and sidecar_data["article"]
+                                    and (target_tid is None or str(sidecar_data.get("tweet_id") or "") in {"", target_tid})):
+                                x_article_detected = True
+                                break
+                    if (not x_article_detected and cookie_path is not None and not needs_login(x_log_text)
+                            and not any(p.is_file() and not p.is_symlink() and p.suffix.lower() in (MEDIA | AUDIO)
+                                        for p in media_dir.rglob("*"))):
+                        try:
+                            probed_x_article = x_article.fetch_via_gallery_dl(
+                                url, tools["gallery-dl"], cookie_path=cookie_path
+                            )
+                            if probed_x_article is not None:
+                                x_article_detected = True
+                        except x_article.XArticleLoginRequired:
+                            x_article_detected = True
+                        except x_article.XArticleError:
+                            pass
+                    if x_article_detected:
+                        if stage is not None and stage.name.startswith("linkget-") and not stage.is_symlink():
+                            shutil.rmtree(stage, ignore_errors=True)
+                            jobs.record(stage=None, stage_identity=None)
+                            stage = None
+                        read_article_consumer = getattr(args, "read_article_consumer", None)
+                        if read_article_consumer is not None:
+                            if probed_x_article is None:
+                                probed_x_article = _acquire_x_article(
+                                    url, args, setup_results, find_tool, cookie_path=cookie_path
+                                )
+                            read_article_consumer(probed_x_article)
+                            evidence.update(status="completed")
+                            return 0
+                        x_target = {
+                            "kind": "x_article",
+                            "url": x_article.canonical_x_url(url),
+                            "site": "X Article",
+                            "engine": "x_article",
+                            "domain": "x.com",
+                            "supports_auth": True,
+                        }
+                        return download_article_target(
+                            args,
+                            x_target,
+                            setup_results,
+                            evidence,
+                            started,
+                            prefetched_article=probed_x_article,
+                            cookie_path=cookie_path,
+                        )
                 if media_consumer is not None:
                     if __package__:
                         from .read_formats import source_metadata

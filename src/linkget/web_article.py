@@ -1,6 +1,7 @@
 """Stdlib-only general web article & WeChat Official Account HTTP extractor with SSRF protection."""
 from codecs import lookup as lookup_codec
 from datetime import datetime, timezone
+import functools
 import html
 from html.parser import HTMLParser
 import http.client
@@ -9,8 +10,10 @@ import json
 from pathlib import Path
 import re
 import socket
+import subprocess
+import sys
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPHandler, HTTPRedirectHandler, HTTPSHandler, Request, build_opener, getproxies
 import zlib
 
 if __package__:
@@ -148,6 +151,9 @@ def is_wechat_article(url):
         return False
 
 
+_FAKE_IP_DNS_NET = ipaddress.ip_network('198.18.0.0/15')
+
+
 def _is_public_ip(addr_text):
     try:
         ip = ipaddress.ip_address(addr_text.split('%', 1)[0])
@@ -166,7 +172,40 @@ def _is_public_ip(addr_text):
     )
 
 
-def validate_public_web_url(url, *, resolve_dns=True):
+def _is_fake_ip_dns_address(addr_text):
+    """Identify RFC 2544 198.18.0.0/15 returned by local Fake-IP TUN DNS proxies."""
+    try:
+        ip = ipaddress.ip_address(addr_text.split('%', 1)[0])
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return isinstance(ip, ipaddress.IPv4Address) and ip in _FAKE_IP_DNS_NET
+
+
+@functools.lru_cache(maxsize=1)
+def _fake_ip_tun_active():
+    if sys.platform != 'darwin':
+        return False
+    try:
+        proc = subprocess.run(
+            ['/sbin/route', '-n', 'get', '198.18.0.1'],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        return proc.returncode == 0 and 'interface: utun' in (proc.stdout or '').lower()
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _fake_ip_proxy_active():
+    if any(k != 'no' and v for k, v in getproxies().items()):
+        return True
+    return _fake_ip_tun_active()
+
+
+def _validate_and_resolve_public_url(url, *, resolve_dns=True):
     if not isinstance(url, str) or not url.strip() or len(url) > MAX_URL_LENGTH:
         raise ValueError('A bounded http/https web article URL is required.')
     if any(ch.isspace() for ch in url):
@@ -195,7 +234,7 @@ def validate_public_web_url(url, *, resolve_dns=True):
     if is_literal_ip:
         if not _is_public_ip(host):
             raise ValueError('Refusing private, loopback, or link-local IP address.')
-        return url
+        return url, None
     try:
         packed_ip = socket.inet_aton(host)
         canonical_ip = socket.inet_ntoa(packed_ip)
@@ -204,7 +243,7 @@ def validate_public_web_url(url, *, resolve_dns=True):
     if canonical_ip is not None:
         if not _is_public_ip(canonical_ip):
             raise ValueError('Refusing private, loopback, or link-local IP address.')
-        return url
+        return url, None
     if '.' not in host:
         raise ValueError('Refusing unqualified or internal hostname.')
     if resolve_dns:
@@ -215,16 +254,84 @@ def validate_public_web_url(url, *, resolve_dns=True):
             raise ValueError(f'Could not resolve host {host}: {error}') from error
         if not infos:
             raise ValueError(f'Host {host} resolved to no network addresses.')
+        allow_fake_ip = _fake_ip_proxy_active()
         for info in infos:
             sockaddr = info[4]
-            if not sockaddr or not _is_public_ip(sockaddr[0]):
+            if not sockaddr or not (_is_public_ip(sockaddr[0]) or (allow_fake_ip and _is_fake_ip_dns_address(sockaddr[0]))):
                 raise ValueError('Refusing host resolving to private, loopback, or non-global address.')
-    return url
+        return url, (host, target_port, infos)
+    return url, None
+
+
+def validate_public_web_url(url, *, resolve_dns=True):
+    checked, _ = _validate_and_resolve_public_url(url, resolve_dns=resolve_dns)
+    return checked
+
+
+def _pinned_create_connection(pinned_map, address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None):
+    host, port = address
+    key = (str(host).lower().rstrip('.'), int(port))
+    infos = pinned_map.get(key)
+    if not infos:
+        return socket.create_connection(address, timeout, source_address)
+    last_err = None
+    for family, socktype, proto, _, sockaddr in infos:
+        sock = None
+        try:
+            sock = socket.socket(family, socktype, proto)
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as err:
+            last_err = err
+            if sock is not None:
+                sock.close()
+    if last_err is not None:
+        raise last_err
+    raise OSError(f'No pinned addresses available for {host}:{port}')
+
+
+class _PinnedHTTPHandler(HTTPHandler):
+    def __init__(self, pinned_map):
+        super().__init__()
+        self._pinned_map = pinned_map
+
+    def http_open(self, req):
+        pinned_map = self._pinned_map
+
+        class _Conn(http.client.HTTPConnection):
+            def _create_connection(self, address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None):
+                if getattr(self, '_tunnel_host', None):
+                    return socket.create_connection(address, timeout, source_address)
+                return _pinned_create_connection(pinned_map, address, timeout, source_address)
+
+        return self.do_open(_Conn, req)
+
+
+class _PinnedHTTPSHandler(HTTPSHandler):
+    def __init__(self, pinned_map):
+        super().__init__()
+        self._pinned_map = pinned_map
+
+    def https_open(self, req):
+        pinned_map = self._pinned_map
+
+        class _Conn(http.client.HTTPSConnection):
+            def _create_connection(self, address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None):
+                if getattr(self, '_tunnel_host', None):
+                    return socket.create_connection(address, timeout, source_address)
+                return _pinned_create_connection(pinned_map, address, timeout, source_address)
+
+        return self.do_open(_Conn, req, context=self._context)
 
 
 class _SafeRedirectHandler(HTTPRedirectHandler):
-    def __init__(self, *, resolve_dns=True):
+    def __init__(self, *, resolve_dns=True, pinned_map=None):
         self.resolve_dns = resolve_dns
+        self.pinned_map = pinned_map if pinned_map is not None else {}
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         count = getattr(req, '_linkget_redirect_count', 0) + 1
@@ -233,7 +340,10 @@ class _SafeRedirectHandler(HTTPRedirectHandler):
                 fp.close()
             raise ValueError('Too many HTTP redirects while fetching web article.')
         try:
-            validate_public_web_url(newurl, resolve_dns=self.resolve_dns)
+            _, resolved = _validate_and_resolve_public_url(newurl, resolve_dns=self.resolve_dns)
+            if resolved is not None:
+                rhost, rport, infos = resolved
+                self.pinned_map[(rhost, rport)] = infos
         except Exception:
             if fp is not None:
                 fp.close()
@@ -242,6 +352,18 @@ class _SafeRedirectHandler(HTTPRedirectHandler):
         if new_req is not None:
             new_req._linkget_redirect_count = count
         return new_req
+
+
+def build_safe_opener(*, resolve_dns=True, initial_resolved=None):
+    pinned_map = {}
+    if initial_resolved is not None:
+        rhost, rport, infos = initial_resolved
+        pinned_map[(rhost, rport)] = infos
+    return build_opener(
+        _SafeRedirectHandler(resolve_dns=resolve_dns, pinned_map=pinned_map),
+        _PinnedHTTPHandler(pinned_map),
+        _PinnedHTTPSHandler(pinned_map),
+    )
 
 
 def _bounded_read(response, max_bytes):
@@ -317,7 +439,7 @@ def _detect_charset(content_type, raw_bytes):
 
 def fetch_web_document(url, *, timeout=15, max_bytes=MAX_HTML_BYTES, opener=None, resolve_dns=None):
     should_resolve = (opener is None) if resolve_dns is None else resolve_dns
-    validate_public_web_url(url, resolve_dns=should_resolve)
+    _, resolved = _validate_and_resolve_public_url(url, resolve_dns=should_resolve)
     req = Request(
         url,
         headers={
@@ -327,7 +449,7 @@ def fetch_web_document(url, *, timeout=15, max_bytes=MAX_HTML_BYTES, opener=None
             'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
         },
     )
-    active_opener = opener if opener is not None else build_opener(_SafeRedirectHandler(resolve_dns=should_resolve))
+    active_opener = opener if opener is not None else build_safe_opener(resolve_dns=should_resolve, initial_resolved=resolved)
     try:
         with active_opener.open(req, timeout=timeout) as response:
             final_url = response.geturl() or url
@@ -369,6 +491,8 @@ class _DOMParser(HTMLParser):
         self._in_title = False
         self.meta = {}
         self.canonical_url = None
+        self.author_url = None
+        self.lang = None
         self.json_ld = []
         self._in_json_ld = False
         self._json_ld_parts = []
@@ -376,7 +500,11 @@ class _DOMParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
         attr_map = {k.lower(): (v if v is not None else '') for k, v in attrs if k}
-        if tag == 'title':
+        if tag == 'html':
+            lang = attr_map.get('lang', '').strip()
+            if lang and not self.lang:
+                self.lang = lang
+        elif tag == 'title':
             self._in_title = True
         elif tag == 'meta':
             key = (attr_map.get('property') or attr_map.get('name') or '').strip().lower()
@@ -387,6 +515,8 @@ class _DOMParser(HTMLParser):
             rels = {r.lower() for r in attr_map.get('rel', '').split()}
             if 'canonical' in rels and attr_map.get('href') and not self.canonical_url:
                 self.canonical_url = attr_map['href'].strip()
+            if 'author' in rels and attr_map.get('href') and not self.author_url:
+                self.author_url = attr_map['href'].strip()
         elif tag == 'script' and 'ld+json' in attr_map.get('type', '').lower():
             self._in_json_ld = True
             self._json_ld_parts = []
@@ -565,81 +695,430 @@ def _extract_pre_text(node):
     return html.unescape(''.join(parts)).strip('\n')
 
 
-def _render_container(container, base_url):
-    """Render both clean Markdown and plain text from a DOM subtree."""
+def _safe_resolved_http_url(raw, base_url):
+    if not isinstance(raw, str):
+        return None
+    candidate = raw.strip()
+    if not candidate or candidate.startswith(('data:', 'javascript:', 'vbscript:', '#')):
+        return None
+    resolved = urljoin(base_url, candidate)
+    try:
+        parsed = urlsplit(resolved)
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in {'http', 'https'} or not parsed.hostname:
+        return None
+    return resolved
+
+
+def _parse_srcset_best(srcset_value, base_url):
+    if not isinstance(srcset_value, str) or not srcset_value.strip():
+        return None
+    best_url = None
+    best_score = -1.0
+    for part in srcset_value.split(','):
+        tokens = part.strip().split()
+        if not tokens:
+            continue
+        url = _safe_resolved_http_url(tokens[0], base_url)
+        if not url:
+            continue
+        score = 1.0
+        if len(tokens) > 1:
+            desc = tokens[1].lower()
+            if desc.endswith('w') and desc[:-1].isdigit():
+                score = float(desc[:-1])
+            elif desc.endswith('x'):
+                try:
+                    score = float(desc[:-1]) * 1000.0
+                except ValueError:
+                    score = 1.0
+        if score > best_score:
+            best_score = score
+            best_url = url
+    return best_url
+
+
+def _is_tracking_pixel(attrs):
+    try:
+        w = int(str(attrs.get('width', '')).strip().rstrip('px'))
+        h = int(str(attrs.get('height', '')).strip().rstrip('px'))
+        if 0 <= w <= 2 and 0 <= h <= 2:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def _best_image_url(node, base_url):
+    if _is_tracking_pixel(node.attrs):
+        return None
+    for attr in ('data-srcset', 'srcset'):
+        found = _parse_srcset_best(node.attrs.get(attr), base_url)
+        if found:
+            return found
+    for attr in ('data-src', 'data-original', 'data-actualsrc', 'data-lazy-src', 'data-url'):
+        found = _safe_resolved_http_url(node.attrs.get(attr), base_url)
+        if found:
+            return found
+    return _safe_resolved_http_url(node.attrs.get('src'), base_url)
+
+
+def _picture_url(picture_node, base_url):
+    img = _find_first(picture_node, {'img'})
+    alt = (img.attrs.get('alt') or '').strip() if img is not None else ''
+    for child in picture_node.children:
+        if child.tag == 'source':
+            found = _parse_srcset_best(child.attrs.get('srcset') or child.attrs.get('data-srcset'), base_url)
+            if found:
+                return found, alt
+    if img is not None:
+        return _best_image_url(img, base_url), alt
+    return None, ''
+
+
+def _code_language(pre_node):
+    candidates = [pre_node.attrs.get('data-lang', ''), pre_node.attrs.get('class', '')]
+    for child in pre_node.children:
+        if child.tag == 'code':
+            candidates.append(child.attrs.get('data-lang', ''))
+            candidates.append(child.attrs.get('class', ''))
+    for raw in candidates:
+        m = re.search(r'\b(?:language|lang)-([A-Za-z0-9_+.#-]+)\b', str(raw), re.I)
+        if m:
+            return m.group(1)
+        if raw and re.fullmatch(r'[A-Za-z0-9_+.#-]{1,32}', str(raw).strip()) and ' ' not in str(raw).strip():
+            # Only treat bare token if it came from data-lang
+            pass
+    explicit = (pre_node.attrs.get('data-lang') or '').strip()
+    if explicit and re.fullmatch(r'[A-Za-z0-9_+.#-]{1,32}', explicit):
+        return explicit
+    return ''
+
+
+def _wrap_md_inline(text, marker):
+    if not text or not text.strip():
+        return text
+    lead_len = len(text) - len(text.lstrip())
+    trail_len = len(text) - len(text.rstrip())
+    lead = text[:lead_len]
+    trail = text[len(text) - trail_len:] if trail_len else ''
+    core = text[lead_len:len(text) - trail_len if trail_len else len(text)]
+    return f'{lead}{marker}{core}{marker}{trail}'
+
+
+def _render_container_rich(container, base_url, *, asset_map=None):
+    """Render clean Markdown, plain text, sanitized HTML body, and media manifest."""
     md_lines = []
     txt_lines = []
+    html_parts = []
+    media_items = []
+    seen_media = set()
 
-    def inline(cur, *, markdown_mode=True):
-        if cur.tag == '#text':
-            return html.unescape(cur.text)
-        if cur.tag in _NOISE_TAGS or _is_hidden(cur):
-            return ''
-        if cur.tag == 'br':
-            return '\n'
-        inner = ''.join(inline(child, markdown_mode=markdown_mode) for child in cur.children)
-        if not markdown_mode:
-            return inner
-        if cur.tag in {'strong', 'b'}:
-            text = inner.strip()
-            return f'**{text}**' if text else ''
-        if cur.tag in {'em', 'i'}:
-            text = inner.strip()
-            return f'*{text}*' if text else ''
-        if cur.tag == 'code':
-            text = inner.strip()
-            return f'`{text}`' if text else ''
-        if cur.tag == 'a':
-            label = re.sub(r'\s+', ' ', inner).strip()
-            href = (cur.attrs.get('href') or '').strip()
-            if not label:
-                return ''
-            resolved = urljoin(base_url, href) if href else ''
-            try:
-                scheme = urlsplit(resolved).scheme
-            except ValueError:
-                scheme = ''
-            if scheme in {'http', 'https'}:
-                return f'[{label}]({resolved})'
-            return label
-        return inner
+    def resolve_asset(url):
+        if asset_map and url in asset_map:
+            return asset_map[url]
+        return url
+
+    def record_media(item):
+        url = item.get('original_url')
+        if not url or url in seen_media:
+            return
+        seen_media.add(url)
+        media_items.append(item)
 
     def clean_inline(text):
         return re.sub(r'[ \t\r\f\v\u00a0\u202f]+', ' ', text).strip()
 
-    def walk_blocks(node, *, quote=False):
+    def inline(cur, *, mode='md'):
+        # mode in {'md', 'txt', 'html'}
+        if cur.tag == '#text':
+            raw = html.unescape(cur.text)
+            return html.escape(raw, quote=False) if mode == 'html' else raw
+        if cur.tag in _NOISE_TAGS or _is_hidden(cur):
+            return ''
+        if cur.tag == 'br':
+            return '<br>' if mode == 'html' else '\n'
+        if cur.tag == 'img':
+            orig = _best_image_url(cur, base_url)
+            if not orig:
+                return ''
+            alt = re.sub(r'\s+', ' ', (cur.attrs.get('alt') or '').strip())
+            record_media({'role': 'inline', 'media_type': 'image', 'original_url': orig, 'alt': alt or None})
+            src = resolve_asset(orig)
+            if mode == 'md':
+                safe_alt = alt.replace('[', '\\[').replace(']', '\\]')
+                return f'![{safe_alt}]({src})'
+            if mode == 'html':
+                return f'<img src="{html.escape(src, quote=True)}" alt="{html.escape(alt, quote=True)}" loading="lazy">'
+            return ''
+        if cur.tag == 'picture':
+            res = _picture_url(cur, base_url)
+            if isinstance(res, tuple):
+                orig, alt = res
+            else:
+                orig, alt = res, ''
+            if not orig:
+                return ''
+            record_media({'role': 'inline', 'media_type': 'image', 'original_url': orig, 'alt': alt or None})
+            src = resolve_asset(orig)
+            if mode == 'md':
+                return f'![{alt}]({src})'
+            if mode == 'html':
+                return f'<img src="{html.escape(src, quote=True)}" alt="{html.escape(alt, quote=True)}" loading="lazy">'
+            return ''
+
+        inner = ''.join(inline(child, mode=mode) for child in cur.children)
+        if mode == 'txt':
+            return inner
+        if cur.tag in {'strong', 'b'}:
+            if mode == 'html':
+                return f'<strong>{inner}</strong>' if inner.strip() else ''
+            return _wrap_md_inline(inner, '**')
+        if cur.tag in {'em', 'i'}:
+            if mode == 'html':
+                return f'<em>{inner}</em>' if inner.strip() else ''
+            return _wrap_md_inline(inner, '*')
+        if cur.tag in {'del', 's', 'strike'}:
+            if mode == 'html':
+                return f'<del>{inner}</del>' if inner.strip() else ''
+            return _wrap_md_inline(inner, '~~')
+        if cur.tag == 'mark':
+            if mode == 'html':
+                return f'<mark>{inner}</mark>' if inner.strip() else ''
+            return _wrap_md_inline(inner, '==')
+        if cur.tag in {'sup', 'sub'}:
+            if mode == 'html':
+                return f'<{cur.tag}>{inner}</{cur.tag}>' if inner.strip() else ''
+            return f'<{cur.tag}>{inner.strip()}</{cur.tag}>' if inner.strip() else ''
+        if cur.tag == 'code':
+            if mode == 'html':
+                return f'<code>{inner}</code>' if inner.strip() else ''
+            text = inner.strip()
+            if not text:
+                return ''
+            fence = '``' if '`' in text else '`'
+            pad = ' ' if (text.startswith('`') or text.endswith('`')) else ''
+            return f'{fence}{pad}{text}{pad}{fence}'
+        if cur.tag == 'a':
+            href = (cur.attrs.get('href') or '').strip()
+            resolved = _safe_resolved_http_url(href, base_url)
+            if mode == 'html':
+                if not inner.strip():
+                    return ''
+                if resolved:
+                    return f'<a href="{html.escape(resolved, quote=True)}" target="_blank" rel="noopener noreferrer">{inner}</a>'
+                return inner
+            label = re.sub(r'\s+', ' ', inner).strip()
+            if not label:
+                return ''
+            if resolved:
+                return f'[{label}]({resolved})'
+            return label
+        return inner
+
+    def extract_video(node, caption=None):
+        vurl = _safe_resolved_http_url(node.attrs.get('src'), base_url)
+        if not vurl:
+            for child in node.children:
+                if child.tag == 'source':
+                    vurl = _safe_resolved_http_url(child.attrs.get('src'), base_url)
+                    if vurl:
+                        break
+        if not vurl:
+            return False
+        poster_orig = _safe_resolved_http_url(node.attrs.get('poster'), base_url)
+        record_media({
+            'role': 'video',
+            'media_type': 'video',
+            'original_url': vurl,
+            'poster_url': poster_orig,
+            'caption': caption,
+        })
+        src = resolve_asset(vurl)
+        poster_src = resolve_asset(poster_orig) if poster_orig else None
+        label = caption or 'Video'
+        md_lines.extend(['', f'[Video: {label}]({src})'])
+        if poster_src:
+            md_lines.append(f'![{label} poster]({poster_src})')
+        md_lines.append('')
+        poster_attr = f' poster="{html.escape(poster_src, quote=True)}"' if poster_src else ''
+        fig_cap = f'<figcaption>{html.escape(caption)}</figcaption>' if caption else ''
+        html_parts.append(
+            f'<figure class="media-video"><video controls preload="metadata"{poster_attr}>'
+            f'<source src="{html.escape(src, quote=True)}"></video>{fig_cap}</figure>'
+        )
+        if caption:
+            txt_lines.extend(['', caption, ''])
+        return True
+
+    def render_table(table_node):
+        rows = []
+
+        def collect_rows(cur, in_head=False):
+            if cur.tag in _NOISE_TAGS or _is_hidden(cur):
+                return
+            if cur.tag == 'tr':
+                cells = []
+                row_is_header = in_head
+                for cell in cur.children:
+                    if cell.tag in {'th', 'td'}:
+                        if cell.tag == 'th':
+                            row_is_header = True
+                        cells.append((
+                            cell.tag,
+                            clean_inline(inline(cell, mode='md')),
+                            clean_inline(inline(cell, mode='txt')),
+                            inline(cell, mode='html').strip(),
+                        ))
+                if cells:
+                    rows.append((row_is_header, cells))
+                return
+            next_head = in_head or (cur.tag == 'thead')
+            for child in cur.children:
+                collect_rows(child, in_head=next_head)
+
+        collect_rows(table_node)
+        if not rows:
+            return
+        col_count = max(len(cells) for _, cells in rows)
+        if col_count == 0:
+            return
+
+        md_table = []
+        txt_table = []
+        html_rows_head = []
+        html_rows_body = []
+
+        def fmt_md_cell(val):
+            return val.replace('|', '\\|').replace('\n', ' ')
+
+        for idx, (is_hdr, cells) in enumerate(rows):
+            padded = list(cells) + [('td', '', '', '')] * (col_count - len(cells))
+            md_row = '| ' + ' | '.join(fmt_md_cell(c[1]) for c in padded) + ' |'
+            md_table.append(md_row)
+            if idx == 0:
+                md_table.append('| ' + ' | '.join('---' for _ in range(col_count)) + ' |')
+            txt_cells = [c[2] for c in padded if c[2]]
+            if txt_cells:
+                txt_table.append(' | '.join(txt_cells))
+            row_html = '<tr>' + ''.join(
+                f'<{"th" if (is_hdr or c[0] == "th") else "td"}>{c[3]}</{"th" if (is_hdr or c[0] == "th") else "td"}>'
+                for c in padded
+            ) + '</tr>'
+            if is_hdr and idx == 0:
+                html_rows_head.append(row_html)
+            else:
+                html_rows_body.append(row_html)
+
+        md_lines.extend(['', *md_table, ''])
+        txt_lines.extend(['', *txt_table, ''])
+        thead_html = f'<thead>{"".join(html_rows_head)}</thead>' if html_rows_head else ''
+        tbody_html = f'<tbody>{"".join(html_rows_body)}</tbody>' if html_rows_body else ''
+        html_parts.append(f'<div class="table-wrap"><table>{thead_html}{tbody_html}</table></div>')
+
+    def walk_blocks(node, *, quote=False, list_depth=0):
         if node.tag == '#text':
-            val = clean_inline(html.unescape(node.text))
+            raw = html.unescape(node.text)
+            val = clean_inline(raw)
             if val:
                 prefix = '> ' if quote else ''
                 md_lines.append(prefix + val)
                 txt_lines.append(val)
+                html_parts.append(f'<p>{html.escape(val, quote=False)}</p>')
             return
         if node.tag in _NOISE_TAGS or _is_hidden(node):
             return
+        if node.tag == 'img':
+            orig = _best_image_url(node, base_url)
+            if not orig:
+                return
+            alt = re.sub(r'\s+', ' ', (node.attrs.get('alt') or '').strip())
+            record_media({'role': 'inline', 'media_type': 'image', 'original_url': orig, 'alt': alt or None})
+            src = resolve_asset(orig)
+            prefix = '> ' if quote else ''
+            safe_alt = alt.replace('[', '\\[').replace(']', '\\]')
+            md_lines.extend(['', f'{prefix}![{safe_alt}]({src})', ''])
+            html_parts.append(f'<figure class="media-image"><img src="{html.escape(src, quote=True)}" alt="{html.escape(alt, quote=True)}" loading="lazy"></figure>')
+            return
+        if node.tag == 'picture':
+            res = _picture_url(node, base_url)
+            orig, alt = res if isinstance(res, tuple) else (res, '')
+            if orig:
+                record_media({'role': 'inline', 'media_type': 'image', 'original_url': orig, 'alt': alt or None})
+                src = resolve_asset(orig)
+                prefix = '> ' if quote else ''
+                md_lines.extend(['', f'{prefix}![{alt}]({src})', ''])
+                html_parts.append(f'<figure class="media-image"><img src="{html.escape(src, quote=True)}" alt="{html.escape(alt, quote=True)}" loading="lazy"></figure>')
+            return
+        if node.tag == 'video':
+            extract_video(node)
+            return
+        if node.tag == 'figure':
+            cap_node = _find_first(node, {'figcaption'})
+            cap_md = clean_inline(inline(cap_node, mode='md')) if cap_node else ''
+            cap_txt = clean_inline(inline(cap_node, mode='txt')) if cap_node else ''
+            cap_html = inline(cap_node, mode='html').strip() if cap_node else ''
+            vid_node = _find_first(node, {'video'})
+            if vid_node is not None and extract_video(vid_node, caption=cap_txt or None):
+                return
+            img_node = _find_first(node, {'img'})
+            pic_node = _find_first(node, {'picture'})
+            orig, alt = (None, '')
+            if pic_node is not None:
+                orig, alt = _picture_url(pic_node, base_url)
+            elif img_node is not None:
+                orig = _best_image_url(img_node, base_url)
+                alt = re.sub(r'\s+', ' ', (img_node.attrs.get('alt') or '').strip())
+            if orig:
+                record_media({'role': 'inline', 'media_type': 'image', 'original_url': orig, 'alt': (alt or cap_txt) or None, 'caption': cap_txt or None})
+                src = resolve_asset(orig)
+                label = (alt or cap_txt).replace('[', '\\[').replace(']', '\\]')
+                prefix = '> ' if quote else ''
+                md_lines.extend(['', f'{prefix}![{label}]({src})'])
+                if cap_md:
+                    md_lines.append(f'{prefix}*{cap_md}*')
+                md_lines.append('')
+                if cap_txt:
+                    txt_lines.extend(['', cap_txt, ''])
+                fig_cap = f'<figcaption>{cap_html}</figcaption>' if cap_html else ''
+                html_parts.append(
+                    f'<figure class="media-image"><img src="{html.escape(src, quote=True)}" '
+                    f'alt="{html.escape(alt or cap_txt, quote=True)}" loading="lazy">{fig_cap}</figure>'
+                )
+                return
+            for child in node.children:
+                walk_blocks(child, quote=quote, list_depth=list_depth)
+            return
+        if node.tag == 'table':
+            render_table(node)
+            return
         if node.tag in {'h1', 'h2', 'h3', 'h4', 'h5', 'h6'}:
-            val_md = clean_inline(inline(node, markdown_mode=True))
-            val_txt = clean_inline(inline(node, markdown_mode=False))
+            val_md = clean_inline(inline(node, mode='md'))
+            val_txt = clean_inline(inline(node, mode='txt'))
+            val_html = inline(node, mode='html').strip()
             if val_txt:
                 level = int(node.tag[1])
-                md_lines.append('')
-                md_lines.append(('> ' if quote else '') + '#' * level + ' ' + val_md)
-                md_lines.append('')
-                txt_lines.append('')
-                txt_lines.append(val_txt)
-                txt_lines.append('')
+                md_lines.extend(['', ('> ' if quote else '') + '#' * level + ' ' + val_md, ''])
+                txt_lines.extend(['', val_txt, ''])
+                html_parts.append(f'<h{level}>{val_html}</h{level}>')
             return
         if node.tag == 'pre':
             code_text = _extract_pre_text(node)
             if code_text:
-                md_lines.extend(['', '```', code_text, '```', ''])
+                lang = _code_language(node)
+                md_lines.extend(['', f'```{lang}', code_text, '```', ''])
                 txt_lines.extend(['', code_text, ''])
+                cls = f' class="language-{html.escape(lang, quote=True)}"' if lang else ''
+                html_parts.append(f'<pre><code{cls}>{html.escape(code_text, quote=False)}</code></pre>')
             return
         if node.tag == 'blockquote':
             md_lines.append('')
             txt_lines.append('')
+            html_parts.append('<blockquote>')
             for child in node.children:
-                walk_blocks(child, quote=True)
+                walk_blocks(child, quote=True, list_depth=list_depth)
+            html_parts.append('</blockquote>')
             md_lines.append('')
             txt_lines.append('')
             return
@@ -647,41 +1126,91 @@ def _render_container(container, base_url):
             md_lines.append('')
             txt_lines.append('')
             ordered = node.tag == 'ol'
+            tag_name = 'ol' if ordered else 'ul'
+            html_parts.append(f'<{tag_name}>')
             item_no = 0
+            indent = '  ' * list_depth
             for child in node.children:
                 if child.tag == 'li':
                     item_no += 1
                     bullet = f'{item_no}. ' if ordered else '- '
-                    val_md = clean_inline(inline(child, markdown_mode=True))
-                    val_txt = clean_inline(inline(child, markdown_mode=False))
+                    nested_lists = [c for c in child.children if c.tag in {'ul', 'ol'}]
+                    # Temporarily render non-nested inline children of <li>
+                    inline_copy = _Node('li', child.attrs)
+                    inline_copy.children = [c for c in child.children if c.tag not in {'ul', 'ol'}]
+                    val_md = clean_inline(inline(inline_copy, mode='md'))
+                    val_txt = clean_inline(inline(inline_copy, mode='txt'))
+                    val_html = inline(inline_copy, mode='html').strip()
+                    if val_md or val_txt:
+                        md_lines.append(('> ' if quote else '') + indent + bullet + val_md)
                     if val_txt:
-                        md_lines.append(('> ' if quote else '') + bullet + val_md)
-                        txt_lines.append(bullet + val_txt)
+                        txt_lines.append(indent + bullet + val_txt)
+                    html_parts.append(f'<li>{val_html}')
+                    for sub in nested_lists:
+                        walk_blocks(sub, quote=quote, list_depth=list_depth + 1)
+                    html_parts.append('</li>')
+            html_parts.append(f'</{tag_name}>')
+            md_lines.append('')
+            txt_lines.append('')
+            return
+        if node.tag == 'dl':
+            md_lines.append('')
+            txt_lines.append('')
+            html_parts.append('<dl>')
+            for child in node.children:
+                if child.tag in {'dt', 'dd'}:
+                    val_md = clean_inline(inline(child, mode='md'))
+                    val_txt = clean_inline(inline(child, mode='txt'))
+                    val_html = inline(child, mode='html').strip()
+                    if val_md:
+                        prefix = '**' if child.tag == 'dt' else ': '
+                        suffix = '**' if child.tag == 'dt' else ''
+                        md_lines.append(('> ' if quote else '') + f'{prefix}{val_md}{suffix}')
+                    if val_txt:
+                        txt_lines.append(val_txt)
+                    if val_html:
+                        html_parts.append(f'<{child.tag}>{val_html}</{child.tag}>')
+            html_parts.append('</dl>')
             md_lines.append('')
             txt_lines.append('')
             return
         if node.tag == 'hr':
             md_lines.extend(['', '---', ''])
+            html_parts.append('<hr>')
             return
-        if node.tag == 'p' or node.tag == 'figcaption':
-            has_nested_block = any(c.tag in {'p', 'div', 'ul', 'ol', 'pre', 'blockquote'} for c in node.children)
+        if node.tag in {'p', 'figcaption'}:
+            has_nested_block = any(c.tag in {'p', 'div', 'ul', 'ol', 'pre', 'blockquote', 'table', 'figure'} for c in node.children)
             if not has_nested_block:
-                val_md = clean_inline(inline(node, markdown_mode=True))
-                val_txt = clean_inline(inline(node, markdown_mode=False))
-                if val_txt:
+                val_md = clean_inline(inline(node, mode='md'))
+                val_txt = clean_inline(inline(node, mode='txt'))
+                val_html = inline(node, mode='html').strip()
+                if val_md or val_txt or val_html:
                     prefix = '> ' if quote else ''
-                    md_lines.extend(['', prefix + val_md, ''])
-                    txt_lines.extend(['', val_txt, ''])
+                    if val_md:
+                        md_lines.extend(['', prefix + val_md, ''])
+                    if val_txt:
+                        txt_lines.extend(['', val_txt, ''])
+                    if val_html:
+                        html_parts.append(f'<p>{val_html}</p>')
                 return
         for child in node.children:
-            walk_blocks(child, quote=quote)
+            walk_blocks(child, quote=quote, list_depth=list_depth)
 
     walk_blocks(container)
     md_text = re.sub(r'\n{3,}', '\n\n', '\n'.join(md_lines)).strip()
     plain_text = re.sub(r'\n{3,}', '\n\n', '\n'.join(txt_lines)).strip()
+    body_html = '\n'.join(html_parts).strip()
     if not plain_text:
         plain_text = _plain_node_text(container)
         md_text = md_text or plain_text
+        if not body_html and plain_text:
+            body_html = f'<p>{html.escape(plain_text, quote=False)}</p>'
+    return md_text, plain_text, body_html, media_items
+
+
+def _render_container(container, base_url):
+    """Render both clean Markdown and plain text from a DOM subtree."""
+    md_text, plain_text, _, _ = _render_container_rich(container, base_url)
     return md_text, plain_text
 
 
@@ -702,12 +1231,39 @@ def _parse_json_ld(blocks):
                 found['description'] = entry['description'].strip()
             if not found.get('datePublished') and isinstance(entry.get('datePublished'), str):
                 found['datePublished'] = entry['datePublished'].strip()
+            if not found.get('dateModified') and isinstance(entry.get('dateModified'), str):
+                found['dateModified'] = entry['dateModified'].strip()
+            if not found.get('inLanguage') and isinstance(entry.get('inLanguage'), str):
+                found['inLanguage'] = entry['inLanguage'].strip()
+            if not found.get('image'):
+                img = entry.get('image')
+                if isinstance(img, list) and img:
+                    img = img[0]
+                if isinstance(img, dict) and isinstance(img.get('url'), str):
+                    found['image'] = img['url'].strip()
+                elif isinstance(img, str):
+                    found['image'] = img.strip()
+            if not found.get('keywords'):
+                kw = entry.get('keywords')
+                if isinstance(kw, str) and kw.strip():
+                    found['keywords'] = [part.strip() for part in kw.split(',') if part.strip()]
+                elif isinstance(kw, list):
+                    cleaned = [str(item).strip() for item in kw if isinstance(item, str) and item.strip()]
+                    if cleaned:
+                        found['keywords'] = cleaned
+            if not found.get('publisher'):
+                pub = entry.get('publisher')
+                if isinstance(pub, dict) and isinstance(pub.get('name'), str):
+                    found['publisher'] = pub['name'].strip()
             if not found.get('author'):
                 author = entry.get('author')
                 if isinstance(author, list) and author:
                     author = author[0]
-                if isinstance(author, dict) and isinstance(author.get('name'), str):
-                    found['author'] = author['name'].strip()
+                if isinstance(author, dict):
+                    if isinstance(author.get('name'), str):
+                        found['author'] = author['name'].strip()
+                    if isinstance(author.get('url'), str) and not found.get('author_url'):
+                        found['author_url'] = author['url'].strip()
                 elif isinstance(author, str):
                     found['author'] = author.strip()
     return found
@@ -718,7 +1274,14 @@ def _js_string_var(raw_html, name):
     return html.unescape(match.group(1)).strip() if match else ''
 
 
-def extract_html_article(raw_html, url, *, wechat=False):
+def _merge_cover_into_media(cover_image, media_items, title):
+    items = list(media_items)
+    if cover_image and not any(item.get('original_url') == cover_image for item in items):
+        items.insert(0, {'role': 'cover', 'media_type': 'image', 'original_url': cover_image, 'alt': title})
+    return items
+
+
+def extract_html_article(raw_html, url, *, wechat=False, asset_map=None):
     parser = _DOMParser()
     parser.feed(raw_html or '')
     parser.close()
@@ -763,7 +1326,11 @@ def extract_html_article(raw_html, url, *, wechat=False):
                 except (ValueError, OverflowError, OSError):
                     published_at = None
 
-        markdown_body, plain_body = _render_container(body_node, url)
+        cover_image = _safe_resolved_http_url(
+            parser.meta.get('og:image') or parser.meta.get('twitter:image') or _js_string_var(raw_html, 'msg_cdn_url'),
+            url,
+        )
+        markdown_body, plain_body, body_html, media_items = _render_container_rich(body_node, url, asset_map=asset_map)
         text = plain_body.strip()
         if len(text) < 20:
             raise ValueError('The WeChat article contained no readable body text.')
@@ -772,11 +1339,20 @@ def extract_html_article(raw_html, url, *, wechat=False):
         return {
             'title': title,
             'author': author,
+            'author_url': None,
             'published_at': published_at,
+            'modified_at': None,
             'description': description if description and description != text else None,
             'canonical_url': canonical,
+            'site_name': parser.meta.get('og:site_name') or 'WeChat Official Account',
+            'language': parser.lang or None,
+            'keywords': None,
+            'cover_image': cover_image,
+            'media_items': _merge_cover_into_media(cover_image, media_items, title),
             'text': text,
             'markdown': markdown_body,
+            'body_html': body_html,
+            'raw_html': raw_html,
         }
 
     h1_node = _find_first(parser.root, {'h1'})
@@ -791,16 +1367,28 @@ def extract_html_article(raw_html, url, *, wechat=False):
         or 'Web Article'
     )
     author = parser.meta.get('author') or parser.meta.get('article:author') or ld.get('author') or None
+    author_url = _safe_resolved_http_url(parser.author_url or ld.get('author_url'), url)
     time_node = _find_first(parser.root, {'time'})
     published_at = (
         parser.meta.get('article:published_time')
         or ld.get('datePublished')
         or (time_node.attrs.get('datetime') or _plain_node_text(time_node) if time_node else None)
     ) or None
+    modified_at = parser.meta.get('article:modified_time') or ld.get('dateModified') or None
     description = parser.meta.get('description') or parser.meta.get('og:description') or ld.get('description') or None
+    site_name = parser.meta.get('og:site_name') or ld.get('publisher') or None
+    language = parser.lang or ld.get('inLanguage') or None
+    raw_kw = parser.meta.get('keywords') or parser.meta.get('article:tag')
+    keywords = ld.get('keywords') or (
+        [part.strip() for part in raw_kw.split(',') if part.strip()] if isinstance(raw_kw, str) and raw_kw.strip() else None
+    )
+    cover_image = _safe_resolved_http_url(
+        parser.meta.get('og:image') or parser.meta.get('twitter:image') or ld.get('image'),
+        url,
+    )
 
     container = _select_main_container(parser.root)
-    markdown_body, plain_body = _render_container(container, url)
+    markdown_body, plain_body, body_html, media_items = _render_container_rich(container, url, asset_map=asset_map)
     text = plain_body.strip()
     if len(text) < 40 or (len(text) < 120 and _BOT_SHELL_RE.search(text)):
         raise ValueError('Could not extract readable article text; the page may require interactive browser rendering.')
@@ -808,12 +1396,42 @@ def extract_html_article(raw_html, url, *, wechat=False):
     return {
         'title': title,
         'author': author,
+        'author_url': author_url,
         'published_at': published_at,
+        'modified_at': modified_at,
         'description': description,
         'canonical_url': canonical,
+        'site_name': site_name,
+        'language': language,
+        'keywords': keywords,
+        'cover_image': cover_image,
+        'media_items': _merge_cover_into_media(cover_image, media_items, title),
         'text': text,
         'markdown': markdown_body,
+        'body_html': body_html,
+        'raw_html': raw_html,
     }
+
+
+def render_fragment(fragment_html, base_url, *, asset_map=None):
+    """Parse and render a scoped HTML fragment into Markdown, plain text, body HTML, and media items."""
+    wrapped = f'<!doctype html><html><body><article>{fragment_html or ""}</article></body></html>'
+    parser = _DOMParser()
+    parser.feed(wrapped)
+    parser.close()
+    container = _find_first(parser.root, {'article'}) or parser.root
+    md_text, plain_text, body_html, media_items = _render_container_rich(container, base_url, asset_map=asset_map)
+    return {
+        'markdown': md_text,
+        'text': plain_text,
+        'body_html': body_html,
+        'media_items': media_items,
+    }
+
+
+def rerender_html_article(raw_html, base_url, *, wechat=False, asset_map=None):
+    """Re-render a stored HTML snapshot with local downloaded asset paths."""
+    return extract_html_article(raw_html, base_url, wechat=wechat, asset_map=asset_map)
 
 
 def _plain_text_article(body, url, mime):
@@ -851,6 +1469,7 @@ def read_article(url, *, opener=None, resolve_dns=None):
         parsed = extract_html_article(fetched['text'], final_url, wechat=False)
         basis = 'direct_http_article_dom'
     text = parsed['text']
+    fetched_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     return {
         'kind': 'article',
         'site': urlsplit(final_url).hostname or urlsplit(url).hostname or 'Web',
@@ -860,10 +1479,21 @@ def read_article(url, *, opener=None, resolve_dns=None):
         'reference': reference(final_url),
         'title': parsed['title'],
         'author': parsed['author'],
+        'author_url': parsed.get('author_url'),
         'published_at': parsed['published_at'],
+        'modified_at': parsed.get('modified_at'),
+        'fetched_at': fetched_at,
         'description': parsed['description'],
+        'site_name': parsed.get('site_name'),
+        'language': parsed.get('language'),
+        'keywords': parsed.get('keywords'),
+        'cover_image': parsed.get('cover_image'),
+        'media_items': parsed.get('media_items') or [],
         'text': text,
         'markdown': parsed['markdown'],
+        'body_html': parsed.get('body_html'),
+        'raw_html': parsed.get('raw_html'),
+        'is_wechat': False,
         'content_complete': True,
         'content_basis': basis,
         'acquisition': 'direct_http_fetch',
@@ -877,6 +1507,7 @@ def read_wechat_http(url, *, opener=None, resolve_dns=None):
     if fetched['content_type'] not in {'text/html', 'application/xhtml+xml'}:
         raise WeChatGateError('WeChat returned a non-HTML response; browser verification may be required.')
     parsed = extract_html_article(fetched['text'], fetched['final_url'], wechat=True)
+    fetched_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     return {
         'kind': 'article',
         'site': 'WeChat',
@@ -886,12 +1517,23 @@ def read_wechat_http(url, *, opener=None, resolve_dns=None):
         'reference': canonical,
         'title': parsed['title'],
         'author': parsed['author'],
+        'author_url': parsed.get('author_url'),
         'published_at': parsed['published_at'],
+        'modified_at': parsed.get('modified_at'),
+        'fetched_at': fetched_at,
         'description': parsed['description'],
+        'site_name': parsed.get('site_name'),
+        'language': parsed.get('language'),
+        'keywords': parsed.get('keywords'),
+        'cover_image': parsed.get('cover_image'),
+        'media_items': parsed.get('media_items') or [],
         'text': parsed['text'],
         'markdown': parsed['markdown'],
+        'body_html': parsed.get('body_html'),
+        'raw_html': parsed.get('raw_html'),
+        'is_wechat': True,
         'content_complete': True,
         'content_basis': 'direct_http_wechat_article_dom',
         'acquisition': 'direct_http_fetch',
-        'limitations': ['Direct HTTP WeChat fetch; dynamically lazy-loaded images or comments were not captured.'],
+        'limitations': ['Direct HTTP WeChat fetch; dynamically lazy-loaded comments were not captured.'],
     }

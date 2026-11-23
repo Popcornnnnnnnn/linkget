@@ -7,12 +7,12 @@ import tempfile
 from urllib.parse import parse_qs, urlsplit
 
 if __package__:
-    from . import accounts, audio as audio_mod, engines, links, preflight, read_asr, rendered_page, toutiao, web_article
+    from . import accounts, audio as audio_mod, engines, links, preflight, read_asr, rendered_page, toutiao, web_article, x_article
     from .agent_output import classify_error
     from .media import AUDIO, VIDEO, reference
     from .runtime import run_process
 else:
-    import accounts, audio as audio_mod, engines, links, preflight, read_asr, rendered_page, toutiao, web_article
+    import accounts, audio as audio_mod, engines, links, preflight, read_asr, rendered_page, toutiao, web_article, x_article
     from agent_output import classify_error
     from media import AUDIO, VIDEO, reference
     from runtime import run_process
@@ -50,6 +50,8 @@ def _session_state(domain, supports_auth):
 def _required_tools(engine, domain, audio_mode):
     if domain == "toutiao.com" or engine in {"article", "web_article"}:
         return []
+    if engine == "x_article":
+        return ["gallery-dl"]
     required = [] if engine in {"douyin", "xiaohongshu", "kuaishou", "pixiv"} else [engine]
     if engine == "yt-dlp" or audio_mode:
         required.extend(["ffmpeg", "ffprobe"])
@@ -171,10 +173,12 @@ def inspect_target(
     raw_input,
     *,
     audio=False,
+    article=False,
     browser="auto",
     no_network=False,
     find_tool=None,
     resolve_audio_folder=None,
+    resolve_article_folder=None,
     configured_destination=None,
 ):
     if find_tool is None:
@@ -214,6 +218,9 @@ def inspect_target(
         elif cand_host == web_article.WECHAT_HOST:
             url, _ = web_article.canonical_wechat_url(raw_url)
             site, engine, domain = "WeChat", "web_article", web_article.WECHAT_HOST
+        elif x_article.is_x_article_url(raw_url) or (article and x_article.is_x_status_url(raw_url)):
+            url = x_article.canonical_x_url(raw_url)
+            site, engine, domain = "X Article", "x_article", "x.com"
         elif no_network:
             url = links.canonical_post(raw_url) or raw_url
             if _is_short_url(url):
@@ -265,7 +272,7 @@ def inspect_target(
 
     audio_only = engines.is_audio_only_site(site) or (parsed_raw.hostname in links.SOUNDCLOUD_SHORT_HOSTS)
     effective_audio = bool(audio or audio_only)
-    if effective_audio and engine in {"pixiv", "article", "web_article"}:
+    if effective_audio and engine in {"pixiv", "article", "web_article", "x_article"}:
         msg = (
             "Pixiv artworks are images only and contain no audio."
             if engine == "pixiv"
@@ -274,6 +281,10 @@ def inspect_target(
         err = ValueError(msg)
         return {"ok": False, "supported": True, "site": site, "domain": domain, "canonical_url": url, "error": classify_error(err)}
 
+    is_article_target = (
+        engine in {"article", "web_article", "x_article"}
+        or (domain == "toutiao.com" and "/article/" in urlsplit(url).path)
+    )
     supports_auth = domain in accounts.SITES.values()
     tools_required = _required_tools(engine, domain, effective_audio)
     tools_missing = [name for name in tools_required if not find_tool(name)]
@@ -283,6 +294,8 @@ def inspect_target(
     try:
         if effective_audio and resolve_audio_folder is not None:
             dest_preview = str(resolve_audio_folder(None))
+        elif is_article_target and resolve_article_folder is not None:
+            dest_preview = str(resolve_article_folder(None))
         elif configured_destination is not None:
             setting = configured_destination()
             if setting["mode"] == "photos":
@@ -307,6 +320,7 @@ def inspect_target(
         "audio_only": audio_only,
         "effective_audio_mode": effective_audio,
         "supports_read": engine not in {"pixiv"},
+        "supports_article_download": is_article_target or domain == "x.com",
         "supports_auth": supports_auth,
         "session_state": _session_state(domain, supports_auth),
         "tools_required": tools_required,
