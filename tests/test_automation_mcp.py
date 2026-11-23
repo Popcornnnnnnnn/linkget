@@ -498,10 +498,13 @@ class Phase3AutomationMCPTests(unittest.TestCase):
         j_noid = jobs.Journal.create(["https://example.test/7"], args_ns)
         j_noid.update(1, status="completed", stage=str(s_noid), stage_identity=None)
 
-        # 8) Identity mismatch (recreated directory)
+        # 8) Identity mismatch (replaced directory with distinct inode on all filesystems)
         s_mis, _, id_old_mis = self._make_stage("mismatch", age_days=10)
+        s_mis_new, _, id_new_mis = self._make_stage("mismatch-new", age_days=10)
+        self.assertNotEqual(id_new_mis, id_old_mis)
         shutil.rmtree(s_mis)
-        s_mis, f_mis, _ = self._make_stage("mismatch", age_days=10)
+        s_mis_new.rename(s_mis)
+        f_mis = s_mis / "media.bin"
         j_mis = jobs.Journal.create(["https://example.test/8"], args_ns)
         j_mis.update(1, status="completed", stage=str(s_mis), stage_identity=id_old_mis)
 
@@ -581,7 +584,7 @@ class Phase3AutomationMCPTests(unittest.TestCase):
         dry = json.loads(out)
         self.assertTrue(dry["ok"])
         self.assertEqual(dry["mode"], "dry_run")
-        self.assertEqual(dry["eligible_count"], 3)  # s_ok, s_prev_old, s_curr_ok
+        self.assertEqual(dry["eligible_count"], 3, dry["eligible"])  # s_ok, s_prev_old, s_curr_ok
         self.assertEqual(dry["deleted_count"], 0)
         self.assertTrue(s_ok.exists())
         kept_reasons = {item["reason"] for item in dry["kept"]}
