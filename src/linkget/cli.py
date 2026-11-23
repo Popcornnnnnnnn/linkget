@@ -15,7 +15,7 @@ import time
 from urllib.parse import urlsplit
 
 if __package__:
-    from . import accounts, jobs, destinations, preflight, recovery, staging, transfers, ownership, rendered_page
+    from . import accounts, agent_output, inspect_url, jobs, destinations, preflight, recovery, staging, transfers, ownership, rendered_page, runtime
     from .runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from .output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity
     from .batch import run_batch
@@ -36,7 +36,7 @@ if __package__:
     from .audio import AUDIO_FORMATS, prepare_audio
     from .live import prepare_pairs, save_pairs
 else:  # Homebrew launches this file directly.
-    import accounts, jobs, destinations, preflight, recovery, staging, transfers, ownership, rendered_page
+    import accounts, agent_output, inspect_url, jobs, destinations, preflight, recovery, staging, transfers, ownership, rendered_page, runtime
     from runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity
     from batch import run_batch
@@ -60,14 +60,14 @@ else:  # Homebrew launches this file directly.
 
 def login_guidance(args, domain, url, reason):
     status("Stopped", redact(reason), "33", stream=sys.stderr)
+    if domain not in LOGIN_URLS:
+        status("Next", "This site uses public access in linkget; check the URL or open it in your browser.", stream=sys.stderr)
+        return
     if args.browser == "none":
         status("Next", "Public-only mode is enabled. Run without --browser none to use a browser login.", stream=sys.stderr)
-    elif not sys.stdin.isatty():
-        if domain in LOGIN_URLS:
-            sign_in_link(domain, stream=sys.stderr)
-            status("Next", "Run linkget in an interactive terminal to connect a browser and continue.", stream=sys.stderr)
-        else:
-            status("Next", "This site uses public access in linkget; check the URL or open it in your browser.", stream=sys.stderr)
+    elif not runtime.is_interactive():
+        sign_in_link(domain, stream=sys.stderr)
+        status("Next", "Run linkget in an interactive terminal to connect a browser and continue.", stream=sys.stderr)
 
 
 def report_failure(error, phase=None):
@@ -79,8 +79,10 @@ def report_failure(error, phase=None):
 
 def record_failure(args, error, phase):
     failure = classify(error, phase=phase)
+    args._last_failure = (error, phase)
     jobs.record(failure={'category': failure.category, 'message': failure.message,
-                         'next_step': failure.next_step, 'phase': phase})
+                         'next_step': failure.next_step, 'phase': phase,
+                         'retryable': bool(failure.retryable)})
     if phase == 'download':
         args._retry_failure = failure
         cause, seen = error, set()
@@ -137,7 +139,7 @@ def show_logins(args=None, detailed_site=None):
             futures = {site: executor.submit(accounts.status, domain) for site, domain in pending.items()}
             results = {site: future.result() for site, future in futures.items()}
     rejected = [pending[site] for site, state in results.items() if state.state == "invalid"]
-    if rejected and args is not None and sys.stdin.isatty() and args.browser != "none":
+    if rejected and args is not None and runtime.is_interactive() and args.browser != "none":
         tool = find_tool("gallery-dl")
         if tool:
             with activity("Refreshing"):
@@ -167,14 +169,22 @@ def account_command(args, parser):
         states = show_logins(args, detailed_site=sites[0] if sites else None)
         if sites:
             site = sites[0]
-            if states[site] != "valid" and sys.stdin.isatty() and args.browser != "none":
+            if states[site] != "valid" and runtime.is_interactive() and args.browser != "none":
                 if recover_login(args, accounts.SITES[site], "Connect " + site, proactive=True):
                     login_result(site, accounts.Session("valid", "Valid"))
         return 0
     if len(sites) != 1 or sites[0] not in {*accounts.SITES, "all"}:
         parser.error("Use linkget logout SITE, or linkget logout all.")
     accounts.logout(sites[0])
-    status("Disconnected", f"{sites[0]} · saved login removed; automatic browser access disabled")
+    if getattr(args, "json", False):
+        agent_output.emit({
+            "schema_version": agent_output.SCHEMA_VERSION,
+            "ok": True,
+            "command": "logout",
+            "target": sites[0],
+        })
+    else:
+        status("Disconnected", f"{sites[0]} · saved login removed; automatic browser access disabled")
     return 0
 
 
@@ -212,7 +222,7 @@ def browser_access_help(browser):
 
 
 def first_run(args):
-    if args.browser == "none" or not sys.stdin.isatty() or accounts.preferences().get("setup"):
+    if args.browser == "none" or not runtime.is_interactive() or accounts.preferences().get("setup"):
         return
     print("\n  Welcome to linkget\n\n  Connect a browser to use your existing website logins.\n  Only supported websites are saved locally. You can skip this.\n")
     browser = args.browser if args.browser != "auto" else choose_browser()
@@ -261,7 +271,7 @@ def recover_login(args, domain, reason, proactive=False):
 
 def recover_login_interactive(args, domain, reason, proactive=False):
     """Connect a site from account management or resume a download in place."""
-    if not sys.stdin.isatty() or args.browser == "none":
+    if not runtime.is_interactive() or args.browser == "none":
         return False
     settings = accounts.preferences()
     site = next(site for site, site_domain in accounts.SITES.items() if site_domain == domain)
@@ -339,14 +349,14 @@ def installation_hint(missing):
     return "Missing tools: " + ", ".join(missing) + "\nInstall: brew install " + " ".join(formulae) + "\nNeed Homebrew? Visit https://brew.sh/, then run linkget doctor."
 
 
-def doctor(args=None):
+def collect_doctor(args=None):
     missing = []
-    print("  Tools\n")
+    tools_info = {}
     for name in ("gallery-dl", "yt-dlp", "ffmpeg", "ffprobe", "deno"):
         path = find_tool(name)
         if not path:
             missing.append(name)
-            status(name, "Missing", "33")
+            tools_info[name] = {"available": False, "path": None, "version": None}
             continue
         try:
             check = subprocess.run([path, "-version" if name in {"ffmpeg", "ffprobe"} else "--version"], text=True, capture_output=True, timeout=10)
@@ -355,22 +365,52 @@ def doctor(args=None):
             version = check.stdout.splitlines()[0]
             if name in {"ffmpeg", "ffprobe"}:
                 version = version.split(" Copyright", 1)[0].removeprefix(name + " version ")
-            status(name, version, "32")
+            tools_info[name] = {"available": True, "path": path, "version": version}
         except (OSError, RuntimeError, subprocess.TimeoutExpired):
             missing.append(name)
-            status(name, f"Could not run: {path}", "33")
-    if missing:
-        print()
-        status("Setup needed", installation_hint(missing), "33")
+            tools_info[name] = {"available": False, "path": path, "version": None, "error": f"Could not run: {path}"}
     if __package__:
         from . import diagnostics
     else:
         import diagnostics
-    rows, diagnostic_code = diagnostics.inspect(args)
+    diag_data, rows, diagnostic_code = diagnostics.inspect_data(args)
+    code = 1 if missing else diagnostic_code
+    payload = {
+        "schema_version": agent_output.SCHEMA_VERSION,
+        "ok": code == 0,
+        "command": "doctor",
+        "version": VERSION,
+        "python": sys.version.split()[0],
+        "platform": sys.platform,
+        "tools": tools_info,
+        "missing_tools": missing,
+        **diag_data,
+    }
+    return payload, rows, code
+
+
+def _print_doctor(payload, rows):
+    print("  Tools\n")
+    for name, info in payload["tools"].items():
+        if info["available"]:
+            status(name, info["version"], "32")
+        elif info.get("error"):
+            status(name, info["error"], "33")
+        else:
+            status(name, "Missing", "33")
+    if payload["missing_tools"]:
+        print()
+        status("Setup needed", installation_hint(payload["missing_tools"]), "33")
     print()
     for label, detail in rows:
         status(label, detail)
-    return 1 if missing else diagnostic_code
+
+
+def doctor(args=None):
+    payload, rows, code = collect_doctor(args)
+    if not runtime.json_mode():
+        _print_doctor(payload, rows)
+    return code
 
 
 def configured_destination():
@@ -454,10 +494,24 @@ def configure(args, parser):
     status("Audio default", audio_description)
     preferences = accounts.preferences()
     choice = rendered_page.selection()
+    sources = preferences.get('sources', {})
+    names = sorted({value.split('/', 1)[0].split(':', 1)[0] for value in sources.values() if isinstance(value, str)})
+    if getattr(args, "json", False):
+        agent_output.emit({
+            "schema_version": agent_output.SCHEMA_VERSION,
+            "ok": True,
+            "command": "config",
+            "destination": setting,
+            "audio_destination": audio_setting,
+            "reader_browser": preferences.get("reader_browser", "auto"),
+            "page_controller": choice,
+            "login_browsers": names,
+            "saved_browser": preferences.get("browser"),
+            "changed": bool(changes),
+        })
+        return 0
     status("Page preference", preferences.get("reader_browser", "auto"))
     status("Effective reader", choice['browser'] + " · " + choice['source'] + ("" if choice['supported'] else " · controller unavailable"))
-    sources = preferences.get('sources', {})
-    names = sorted({value.split('/',1)[0].split(':',1)[0] for value in sources.values() if isinstance(value,str)})
     status("Login browser sources", ", ".join(names) if names else preferences.get('browser') or "None configured")
     status("Selection", "Page option > browser option > environment > personal reader > saved browser > system default")
     status("Privacy", "Login refresh sources and page controller are separate; saved login validity was not checked.")
@@ -479,7 +533,51 @@ def configure(args, parser):
     return 0
 
 
+SUPPORTED_SITES = (
+    ("Instagram", "Photos, videos and reels"),
+    ("X / Twitter", "Post photos and videos"),
+    ("Bilibili", "BV/av videos, Opus media and au audio"),
+    ("TikTok", "Post photos and videos; share links"),
+    ("Douyin", "Post photos and videos; share links"),
+    ("Kuaishou", "Post videos; image galleries not supported"),
+    ("Xiaohongshu", "Note photos and videos; xhslink shares"),
+    ("Weibo", "Post photos and videos; t.cn shares"),
+    ("YouTube", "Videos and Shorts; youtu.be links"),
+    ("YouTube Music", "Single music.youtube.com tracks (audio)"),
+    ("Bilibili Audio", "Single /audio/au... tracks (audio)"),
+    ("SoundCloud", "Single tracks and on.soundcloud.com shares (audio)"),
+    ("Bandcamp", "Single *.bandcamp.com/track/... tracks (audio)"),
+    ("Reddit", "Post photos and videos"),
+    ("Lofter", "Post photos and videos (trial)"),
+    ("Pixiv", "Artwork images (trial); Ugoira not supported"),
+    ("Pinterest", "Pins and boards"),
+)
+
+
+def _is_audio_only_link_text(text):
+    try:
+        urls = re.findall(r'https?://[^\s<>"，。]+', (text or "").strip())
+        if len(urls) != 1:
+            return False
+        candidate = urls[0].rstrip(".,;!）)")
+        target = canonical_post(candidate) or candidate
+        if urlsplit(target).hostname in SOUNDCLOUD_SHORT_HOSTS:
+            return True
+        site, _, _ = route(target)
+        return is_audio_only_site(site)
+    except ValueError:
+        return False
+
+
 def main(argv=None):
+    saved_modes = runtime.snapshot_modes()
+    try:
+        return _main(argv)
+    finally:
+        runtime.restore_modes(saved_modes)
+
+
+def _main(argv=None):
     if os.environ.get('LINKGET_GUI_JOB') == '1':
         try:
             os.setsid()
@@ -512,8 +610,11 @@ def main(argv=None):
   help                 Show this help (also -h or --help)
   version              Show detailed local build and source identity
   sites                List supported sites and media
+  inspect URL          Inspect one URL or local file without downloading
   read URL --folder D  Read/transcribe in the background (read --help)
   read status [TASK]   Show background reading progress and results
+  read wait [TASK]     Wait for a background read task to finish
+  read show [TARGET]   Print completed read content to stdout
   read logs TASK       Show a background read task's log
   read cancel TASK     Cancel a background read task; preserve checkpoints
   read batch [LINK ...] Read multiple posts or local files in the background
@@ -539,15 +640,18 @@ Account sites: instagram, x, bilibili, tiktok, douyin, xiaohongshu, weibo, youtu
 
 Examples:
   linkget                              Paste a link or sharing text at the prompt
+  linkget inspect URL --json           Inspect routing/metadata before downloading
   linkget https://v.douyin.com/CODE/    Save to the configured default
   linkget URL --photos                 Save to Photos this time
   linkget URL --folder                 Save to the current folder
   linkget URL --folder ~/Downloads     Save to a folder
   linkget URL --audio --folder ~/Music Save original audio stream with tags & cover
   linkget URL --audio-format mp3       Convert extracted audio to MP3
+  linkget URL --non-interactive --json Machine-readable download without prompts
   linkget batch URL1 URL2 --folder     Download multiple posts
   linkget batch --folder ~/Downloads   Paste links; blank line starts downloads
   linkget read URL                     Submit a background content read
+  linkget read URL --stdout            Run read and print Markdown to stdout
   linkget read recording.m4a           Transcribe local audio in the background
   linkget read translate DIR --language zh Translate saved text into Chinese
   linkget read status TASK             Check progress and find result paths
@@ -581,6 +685,9 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                         help="config only: save the default audio folder; omit PATH for the current folder on each run")
     parser.add_argument("--clear-audio-folder", action="store_true",
                         help="config only: clear the saved default audio folder")
+    parser.add_argument("--json", action="store_true", help="print structured JSON output on stdout (implies --non-interactive)")
+    parser.add_argument("--non-interactive", action="store_true", help="never prompt or animate terminal spinners")
+    parser.add_argument("--no-network", action="store_true", help="inspect only: skip resolving short links or probing remote metadata")
     parser.add_argument("--browser", choices=["auto", "none", "chrome", "firefox", "safari", "edge", "brave"], default="auto", help="auto: public first, then saved login and browser refresh if needed; none: public only; specify a browser to use its login")
     parser.add_argument("--probe-browser", choices=["neo", "chrome"], help="doctor only: explicitly inspect one browser connection or OS access without opening a page")
     parser.add_argument("--check-session", choices=list(accounts.SITES), help="doctor only: explicitly verify one saved website session; no browser export")
@@ -604,12 +711,18 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         from . import command_help
     else:
         import command_help
-    if command_help.show(parser,tokens):
+    if command_help.show(parser, tokens):
         return 0
     for action in parser._actions:
-        if action.dest in {'reader_browser', 'probe_browser', 'check_session', 'audio_folder', 'clear_audio_folder', 'verify', 'item', 'redownload'}:
+        if action.dest in {'reader_browser', 'probe_browser', 'check_session', 'audio_folder', 'clear_audio_folder', 'no_network', 'verify', 'item', 'redownload'}:
             action.help = argparse.SUPPRESS
     args = parser.parse_intermixed_args(tokens)
+    if args.non_interactive or args.json:
+        runtime.set_non_interactive(True)
+    if args.json:
+        runtime.set_json_mode(True)
+    if args.no_network and (not args.link or args.link[0] != "inspect"):
+        parser.error("--no-network applies to linkget inspect only.")
     if (args.probe_browser or args.check_session) and args.link != ["doctor"]:
         parser.error("Live diagnostic checks require linkget doctor.")
     if args.reader_browser is not None and args.link != ["config"]:
@@ -645,6 +758,62 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         parser.error("--redownload applies to linkget retry only.")
     if (args.verify or args.item is not None) and (not args.link or args.link[0] != "recover"):
         parser.error("--verify and --item apply to linkget recover TASK only.")
+    if args.link and args.link[0] == "inspect":
+        target = " ".join(args.link[1:]).strip()
+        if not target:
+            parser.error("Use linkget inspect URL_OR_PATH.")
+        if (args.photos or args.date_now or args.live_photos or args.report
+                or args.jobs is not None or args.verify or args.item is not None
+                or args.redownload or args.folder is not None or args.page_data is not None):
+            parser.error("Use --audio, --browser, --no-network, --json, or --non-interactive with linkget inspect.")
+        payload = inspect_url.inspect_target(
+            target,
+            audio=args.audio,
+            browser=args.browser,
+            no_network=args.no_network,
+            find_tool=find_tool,
+            resolve_audio_folder=resolve_audio_folder,
+            configured_destination=configured_destination,
+        )
+        payload["schema_version"] = agent_output.SCHEMA_VERSION
+        payload["command"] = "inspect"
+        if args.json:
+            agent_output.emit(payload)
+        elif not payload.get("ok"):
+            err = payload.get("error") or {}
+            status(err.get("label", "Error"), err.get("message", "Could not inspect target."), "31", stream=sys.stderr)
+            if err.get("next_step"):
+                status("Next", err["next_step"], stream=sys.stderr)
+        else:
+            status("Site", payload["site"])
+            status("Engine", payload["engine"])
+            if payload.get("canonical_url"):
+                status("Canonical URL", payload["canonical_url"])
+            elif payload.get("short_link_unresolved"):
+                status("Canonical URL", "Short link unresolved (--no-network)")
+            status("Audio mode", "Yes" if payload["effective_audio_mode"] else "No")
+            status("Read support", "Yes" if payload["supports_read"] else "No")
+            status("Session", payload["session_state"])
+            if payload.get("tools_required"):
+                tool_summary = ", ".join(payload["tools_required"]) + (
+                    f" (missing: {', '.join(payload['tools_missing'])})" if payload.get("tools_missing") else " · ready"
+                )
+                status("Tools", tool_summary)
+            if payload.get("destination_preview"):
+                status("Destination", payload["destination_preview"])
+            elif payload.get("destination_error"):
+                status("Destination", payload["destination_error"], "33")
+            status("Probe", payload["probe_status"])
+            meta = payload.get("metadata") or {}
+            if meta.get("title"):
+                status("Title", meta["title"])
+            if meta.get("artist") or meta.get("uploader"):
+                status("Creator", meta.get("artist") or meta.get("uploader"))
+            if meta.get("duration") is not None:
+                status("Duration", f"{meta['duration']}s")
+            if meta.get("subtitles_available"):
+                status("Subtitles", ", ".join(meta["subtitles_available"]))
+        return 0 if payload.get("ok") else 1
     if args.link and args.link[0] in {"retry", "recover"}:
         command, *identifiers = args.link
         if len(identifiers) > 1:
@@ -653,7 +822,16 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             if command == "recover" and not identifiers:
                 if args.verify or args.item:
                     parser.error("Select a task: linkget recover TASK.")
-                return recovery.listing(status)
+                pending_tasks = []
+                code = recovery.listing(status, records=pending_tasks)
+                if args.json:
+                    agent_output.emit({
+                        "schema_version": agent_output.SCHEMA_VERSION,
+                        "ok": code == 0,
+                        "command": "recover",
+                        "tasks": pending_tasks,
+                    })
+                return code
             journal = jobs.select(identifiers[0] if identifiers else None)
             if command == "recover" and any(token.split("=", 1)[0] == "--audio-format" for token in tokens):
                 raise ValueError("--audio-format cannot be used with recover; use linkget retry TASK --redownload --audio-format FORMAT.")
@@ -676,8 +854,19 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 else:
                     preflight.destination(args, find_tool)
             if command == "recover":
-                return recovery.restore(journal, args, status, save_folder, import_photos,
-                                        audio_folder_resolver=resolve_audio_folder)
+                recover_records = []
+                code = recovery.restore(journal, args, status, save_folder, import_photos,
+                                        audio_folder_resolver=resolve_audio_folder, records=recover_records)
+                if args.json:
+                    agent_output.emit({
+                        "schema_version": agent_output.SCHEMA_VERSION,
+                        "ok": code == 0,
+                        "command": "recover",
+                        "task_id": journal.identifier,
+                        "exit_code": code,
+                        "items": recover_records,
+                    })
+                return code
             args._journal = journal
             args._indices = journal.incomplete()
             links = [journal.data["items"][i - 1]["input"] for i in args._indices]
@@ -685,12 +874,32 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             code = batch_download(args, parser, links, records) if links else 0
             if args.report:
                 write_report(args.report, VERSION, records, code)
+            if args.json:
+                batch_records = getattr(args, "_batch_records", {})
+                items_payload = [
+                    _agent_download_item(journal, idx, batch_records.get(idx))
+                    for idx in args._indices
+                ]
+                agent_output.emit({
+                    "schema_version": agent_output.SCHEMA_VERSION,
+                    "ok": code == 0,
+                    "command": "retry",
+                    "task_id": journal.identifier,
+                    "exit_code": code,
+                    "items": items_payload,
+                })
             return code
         except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
-            report_failure(error)
+            if args.json:
+                agent_output.emit(agent_output.error_payload(command, error))
+            else:
+                report_failure(error)
             return 1
         except (KeyboardInterrupt, EOFError):
-            status("Cancelled", "Recovery stopped; retained files are safe", "33")
+            if args.json:
+                agent_output.emit(agent_output.error_payload(command, KeyboardInterrupt("Cancelled"), exit_code=130))
+            else:
+                status("Cancelled", "Recovery stopped; retained files are safe", "33")
             return 130
     if args.link == ["help"]:
         parser.print_help()
@@ -700,6 +909,14 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             parser.error("Use linkget compare FIRST.json SECOND.json.")
         try:
             rows = compare_reports(*(json.loads(Path(path).expanduser().read_text()) for path in args.link[1:]))
+            if args.json:
+                agent_output.emit({
+                    "schema_version": agent_output.SCHEMA_VERSION,
+                    "ok": True,
+                    "command": "compare",
+                    "rows": rows,
+                })
+                return 0
             for index, row in enumerate(rows, 1):
                 status("Item", str(index))
                 status("Comparison", row["result"])
@@ -709,13 +926,19 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             status("Quality", "Uploader maximum and watermark absence remain unverified.")
             return 0
         except (OSError, ValueError, KeyError, TypeError) as error:
-            report_failure(error)
+            if args.json:
+                agent_output.emit(agent_output.error_payload("compare", error))
+            else:
+                report_failure(error)
             return 1
     if args.link and args.link[0] == "config":
         try:
             return configure(args, parser)
         except (OSError, ValueError, RuntimeError) as error:
-            status("Error", redact(error), "31", stream=sys.stderr)
+            if args.json:
+                agent_output.emit(agent_output.error_payload("config", error))
+            else:
+                status("Error", redact(error), "31", stream=sys.stderr)
             return 1
     if args.link and args.link[0] == "login":
         parser.error("Browser connection is now part of the normal flow. Run linkget or linkget URL.")
@@ -723,10 +946,16 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         try:
             return account_command(args, parser)
         except (OSError, ValueError, RuntimeError) as error:
-            status("Error", redact(error), "31", stream=sys.stderr)
+            if args.json:
+                agent_output.emit(agent_output.error_payload(args.link[0], error))
+            else:
+                status("Error", redact(error), "31", stream=sys.stderr)
             return 1
         except (KeyboardInterrupt, EOFError):
-            status("Cancelled", "Stopped", "33", stream=sys.stderr)
+            if args.json:
+                agent_output.emit(agent_output.error_payload(args.link[0], KeyboardInterrupt("Stopped"), exit_code=130))
+            else:
+                status("Cancelled", "Stopped", "33", stream=sys.stderr)
             return 130
     is_batch = bool(args.link and args.link[0] == "batch")
     batch_links = args.link[1:] if is_batch else []
@@ -734,43 +963,59 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         parser.error("Unknown command. Use linkget sites, linkget auth, linkget config, or linkget help. To download, paste a post URL.")
     args.link = " ".join(args.link)
     if args.link == "doctor":
-        code = doctor(args)
-        if args.folder is not None or args.photos or args.live_photos or args.audio:
-            try:
-                if args.audio:
-                    args.folder = resolve_audio_folder(args.folder)
-                elif args.folder is True:
-                    args.folder = Path.cwd()
-                preflight.destination(args, find_tool)
-                status("Destination", "Writable · " + str(args.folder or originals_directory()))
-                if args.photos:
-                    status("Photos", "Automation and managed-copy checks run at import time")
-            except (OSError, ValueError, RuntimeError) as error:
+        try:
+            doc_payload, doc_rows, code = collect_doctor(args)
+            if not args.json:
+                _print_doctor(doc_payload, doc_rows)
+            if args.folder is not None or args.photos or args.live_photos or args.audio:
+                try:
+                    if args.audio:
+                        args.folder = resolve_audio_folder(args.folder)
+                    elif args.folder is True:
+                        args.folder = Path.cwd()
+                    preflight.destination(args, find_tool)
+                    dest_path = str(args.folder or originals_directory())
+                    doc_payload["destination"] = {"ok": True, "path": dest_path, "photos": bool(args.photos)}
+                    if not args.json:
+                        status("Destination", "Writable · " + dest_path)
+                        if args.photos:
+                            status("Photos", "Automation and managed-copy checks run at import time")
+                except (OSError, ValueError, RuntimeError) as error:
+                    code = 1
+                    doc_payload["ok"] = False
+                    doc_payload["destination"] = {"ok": False, "error": agent_output.classify_error(error)}
+                    if not args.json:
+                        report_failure(error)
+            if args.json:
+                agent_output.emit(doc_payload)
+            return code
+        except (OSError, ValueError, RuntimeError) as error:
+            if args.json:
+                agent_output.emit(agent_output.error_payload("doctor", error))
+            else:
                 report_failure(error)
-                return 1
-        return code
+            return 1
     if args.link == "sites":
-        for site, content in [
-            ("Instagram", "Photos, videos and reels"),
-            ("X / Twitter", "Post photos and videos"),
-            ("Bilibili", "BV/av videos, Opus media and au audio"),
-            ("TikTok", "Post photos and videos; share links"),
-            ("Douyin", "Post photos and videos; share links"),
-            ("Kuaishou", "Post videos; image galleries not supported"),
-            ("Xiaohongshu", "Note photos and videos; xhslink shares"),
-            ("Weibo", "Post photos and videos; t.cn shares"),
-            ("YouTube", "Videos and Shorts; youtu.be links"),
-            ("YouTube Music", "Single music.youtube.com tracks (audio)"),
-            ("Bilibili Audio", "Single /audio/au... tracks (audio)"),
-            ("SoundCloud", "Single tracks and on.soundcloud.com shares (audio)"),
-            ("Bandcamp", "Single *.bandcamp.com/track/... tracks (audio)"),
-            ("Reddit", "Post photos and videos"),
-            ("Lofter", "Post photos and videos (trial)"),
-            ("Pixiv", "Artwork images (trial); Ugoira not supported"),
-            ("Pinterest", "Pins and boards"),
-        ]:
+        toutiao_entry = ("Toutiao", "Article text / local video transcription via linkget read; configured page reader; Chrome and Neo supported")
+        if args.json:
+            agent_output.emit({
+                "schema_version": agent_output.SCHEMA_VERSION,
+                "ok": True,
+                "command": "sites",
+                "sites": [
+                    {
+                        "name": site,
+                        "content": content,
+                        "audio_only": is_audio_only_site(site),
+                        "supports_read": site != "Pixiv",
+                    }
+                    for site, content in [*SUPPORTED_SITES, toutiao_entry]
+                ],
+            })
+            return 0
+        for site, content in SUPPORTED_SITES:
             status(site, content)
-        status("Toutiao", "Article text / local video transcription via linkget read; configured page reader; Chrome and Neo supported")
+        status(*toutiao_entry)
         print("\n  Use --audio (or --audio-format mp3|m4a|flac|wav|opus) to save audio from video posts to a folder.\n  Use linkget read for video speech on these channels, or Toutiao article text.\n  Pixiv is image-only. Availability varies by URL; read --help shows transcription options.")
         return 0
     if args.profile and args.browser in {"auto", "none"}:
@@ -782,29 +1027,18 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             raise ValueError("The report's parent folder does not exist. Choose an existing folder.")
         args._explicit_folder = args.folder is not None
         args._explicit_photos = bool(args.photos)
-        args._folder_from_default = False
-        if not is_batch and not args.audio and args.link:
-            audio_only_target = False
-            try:
-                urls = re.findall(r'https?://[^\s<>"，。]+', args.link.strip())
-                if len(urls) == 1:
-                    candidate = urls[0].rstrip(".,;!）)")
-                    target = canonical_post(candidate) or candidate
-                    if urlsplit(target).hostname in SOUNDCLOUD_SHORT_HOSTS:
-                        audio_only_target = True
-                    else:
-                        site, _, _ = route(target)
-                        audio_only_target = is_audio_only_site(site)
-            except ValueError:
-                pass
-            if audio_only_target:
-                if args.photos:
-                    raise ValueError("Audio files cannot be imported into Photos. Use --folder or linkget config --audio-folder.")
-                if args.date_now:
-                    raise ValueError("--date-now applies to Photos imports only, not audio downloads.")
-                if args.live_photos:
-                    raise ValueError("--live-photos cannot be used with audio downloads.")
-                args.audio = True
+        args.folder_from_default = False
+        if not args.audio and (
+            (not is_batch and args.link and _is_audio_only_link_text(args.link))
+            or (is_batch and batch_links and all(_is_audio_only_link_text(link) for link in batch_links))
+        ):
+            if args.photos:
+                raise ValueError("Audio files cannot be imported into Photos. Use --folder or linkget config --audio-folder.")
+            if args.date_now:
+                raise ValueError("--date-now applies to Photos imports only, not audio downloads.")
+            if args.live_photos:
+                raise ValueError("--live-photos cannot be used with audio downloads.")
+            args.audio = True
         if args.audio:
             args.folder = resolve_audio_folder(args.folder)
         elif args.photos:
@@ -815,16 +1049,41 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             setting = configured_destination()
             if setting["mode"] == "cwd":
                 args.folder = Path.cwd()
-                args._folder_from_default = True
+                args.folder_from_default = True
             elif setting["mode"] == "folder":
                 args.folder = Path(setting["path"])
-                args._folder_from_default = True
+                args.folder_from_default = True
         if args.folder is not None and args.date_now:
+            if args.json:
+                raise ValueError("--date-now applies to Photos imports. Use --photos --date-now to override a folder default.")
             parser.error("--date-now applies to Photos imports. Use --photos --date-now to override a folder default.")
         preflight.destination(args, find_tool)
         records = []
         if is_batch:
             code = batch_download(args, parser, batch_links, records)
+            if args.report:
+                write_report(args.report, VERSION, records, code)
+                status("Report", str(args.report.expanduser().resolve()))
+            if args.json:
+                batch_journal = getattr(args, "_batch_journal", None)
+                batch_records = getattr(args, "_batch_records", {})
+                if batch_journal is not None:
+                    items_payload = [
+                        _agent_download_item(batch_journal, pos + 1, batch_records.get(pos + 1))
+                        for pos in range(len(batch_journal.data["items"]))
+                    ]
+                else:
+                    items_payload = records
+                agent_output.emit({
+                    "schema_version": agent_output.SCHEMA_VERSION,
+                    "ok": code == 0,
+                    "command": "batch",
+                    "task_id": getattr(args, "_batch_journal_id", None),
+                    "exit_code": code,
+                    "completed_count": sum(1 for item in items_payload if item.get("status") == "completed"),
+                    "failed_count": sum(1 for item in items_payload if item.get("status") != "completed"),
+                    "items": items_payload,
+                })
         else:
             journal = jobs.Journal.create([args.link], args)
             with journal.claim(), jobs.item(journal, 1):
@@ -832,15 +1091,31 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 jobs.record(status="completed" if code == 0 else "cancelled" if code == 130 else "failed")
             if code:
                 status("Retry", "linkget retry " + journal.identifier, "33")
-        if args.report:
-            write_report(args.report, VERSION, records, code)
-            status("Report", str(args.report.expanduser().resolve()))
+            if args.report:
+                write_report(args.report, VERSION, records, code)
+                status("Report", str(args.report.expanduser().resolve()))
+            if args.json:
+                item_payload = _agent_download_item(journal, 1, records[0] if records else None)
+                agent_output.emit({
+                    "schema_version": agent_output.SCHEMA_VERSION,
+                    "ok": code == 0,
+                    "command": "download",
+                    "task_id": journal.identifier,
+                    "exit_code": code,
+                    **item_payload,
+                })
         return code
     except (OSError, ValueError, RuntimeError) as error:
-        report_failure(error)
+        if args.json:
+            agent_output.emit(agent_output.error_payload("batch" if is_batch else "download", error))
+        else:
+            report_failure(error)
         return 1
     except (KeyboardInterrupt, EOFError):
-        status("Cancelled", "Download stopped", "33", stream=sys.stderr)
+        if args.json:
+            agent_output.emit(agent_output.error_payload("batch" if is_batch else "download", KeyboardInterrupt("Download stopped"), exit_code=130))
+        else:
+            status("Cancelled", "Download stopped", "33", stream=sys.stderr)
         return 130
 
 
@@ -850,13 +1125,16 @@ def restore_options(args, journal, tokens):
     args._reader_browser_override = any(token.split("=", 1)[0] == "--browser" for token in tokens)
     args._explicit_photos = any(token.split("=", 1)[0] == "--photos" for token in tokens)
     args._explicit_folder = any(token.split("=", 1)[0] == "--folder" for token in tokens)
-    args._folder_from_default = False
+    args._explicit_audio_format = any(token.split("=", 1)[0] == "--audio-format" for token in tokens)
+    args.folder_from_default = False
     for name in jobs.OPTIONS:
         flags = {"--" + name.replace("_", "-")}
         if name == "folder":
             flags.add("--photos")
         if not any(token.split("=", 1)[0] in flags for token in tokens) and name in saved:
             setattr(args, name, saved[name])
+    if args._explicit_folder or args._explicit_photos:
+        args.folder_from_default = False
     if getattr(args, "audio_format", None) is not None:
         args.audio = True
     if args._reader_browser_override and not args._rendered_backend_override:
@@ -899,6 +1177,43 @@ def import_photos(files, date_now, live_pairs=None):
     return destinations.import_photos(files, date_now, live_pairs, retain_originals, verify_library_copies)
 
 
+def _agent_download_item(journal, index, evidence=None):
+    row = journal.data["items"][index - 1]
+    ev = dict(evidence or {})
+    dest = row.get("destination_folder") or journal.data["options"].get("folder") or "Photos"
+    dest_files = [
+        entry["path"] for entry in row.get("destination_files", [])
+        if isinstance(entry, dict) and entry.get("path")
+    ]
+    status_val = ev.get("status") or row.get("status")
+    item = {
+        "item": index,
+        "status": status_val,
+        "site": ev.get("site"),
+        "reference": ev.get("reference"),
+        "destination": str(dest),
+        "audio_mode": bool(ev.get("audio_mode") or journal.data["options"].get("audio")),
+        "saved_count": ev.get("saved_count", 0),
+        "skipped_count": ev.get("skipped_count", 0),
+        "saved_files": dest_files,
+        "files": ev.get("files", []),
+    }
+    failure_info = row.get("failure")
+    if status_val != "completed":
+        if isinstance(failure_info, dict):
+            cat = failure_info.get("category", "unknown")
+            item["error"] = {
+                "category": cat,
+                "message": failure_info.get("message", "Unknown"),
+                "next_step": failure_info.get("next_step", ""),
+                "phase": failure_info.get("phase"),
+                "retryable": bool(failure_info.get("retryable", cat in {"rate_limit", "network"})),
+            }
+        elif ev.get("failure"):
+            item["error"] = {"category": ev["failure"], "retryable": ev["failure"] in {"rate_limit", "network"}}
+    return item
+
+
 def batch_download(args, parser, links, records=None):
     return run_batch(args, parser, links, records, download, first_run, status, jobs.Journal.create)
 
@@ -907,6 +1222,7 @@ def download(args, setup_results, records=None, media_consumer=None):
     phase = "download"
     args._retry_failure = None
     args._retry_after = None
+    args._last_failure = None
     stage = None
     session_dir = None
     info_path = None
@@ -921,14 +1237,37 @@ def download(args, setup_results, records=None, media_consumer=None):
             journal, index = current
             ready = journal.data["items"][index - 1].get("ready")
             if ready and not args.redownload:
+                if (getattr(args, "_explicit_audio_format", False)
+                        and args.audio_format != journal.data["options"].get("audio_format")):
+                    raise ValueError(
+                        f"--audio-format cannot be changed without --redownload; "
+                        f"use linkget retry {journal.identifier} --redownload --audio-format {args.audio_format}."
+                    )
                 # A failed save already has a checked complete set. Retry the save.
                 phase = "save"
+                restore_records = []
                 result = recovery.restore(journal, args, status, save_folder, import_photos,
                                           claimed=True, indices=[index],
-                                          audio_folder_resolver=resolve_audio_folder)
+                                          audio_folder_resolver=resolve_audio_folder,
+                                          records=restore_records)
                 evidence.update(ready.get("evidence", {}), status="completed" if result == 0 else "failed")
+                if restore_records:
+                    for key in ("saved_count", "skipped_count", "audio_mode"):
+                        if key in restore_records[0]:
+                            evidence[key] = restore_records[0][key]
+                    if result != 0 and restore_records[0].get("error"):
+                        err = RuntimeError(restore_records[0]["error"])
+                        record_failure(args, err, phase)
+                        evidence["failure"] = classify(err, phase=phase).category
                 return result
-        url = args.link or (input("  Paste a link (no quotes needed): ") if sys.stdin.isatty() else sys.stdin.read())
+        if args.link:
+            url = args.link
+        elif runtime.is_interactive():
+            url = input("  Paste a link (no quotes needed): ")
+        elif not sys.stdin.isatty():
+            url = sys.stdin.read()
+        else:
+            raise ValueError("A link is required in non-interactive mode.")
         if current:
             staging.remember_earlier(status)
             previous = journal.data["items"][index - 1]
@@ -979,7 +1318,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                 folder = args.folder.expanduser().resolve()
             elif existing_dest:
                 folder = Path(existing_dest).expanduser().resolve()
-            elif not args.folder or getattr(args, "_folder_from_default", False):
+            elif not args.folder or getattr(args, "folder_from_default", False):
                 folder = resolve_audio_folder(None)
             else:
                 folder = args.folder.expanduser().resolve()
@@ -1033,7 +1372,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                 download_info = DownloadResult()
                 media_dir = stage / ("media" if attempt == 0 else f"signed-in-media-{attempt}")
                 media_dir.mkdir()
-                if not getattr(_batch, "state", None):
+                if not getattr(_batch, "state", None) and not runtime.quiet_status():
                     print()
                 log_path = stage / 'download.log'
                 if log_path.exists():
@@ -1135,7 +1474,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                         raise LoginRequired(f"{site} requires a signed-in account to download this post.")
                     if domain == "tiktok.com":
                         raise RuntimeError("TikTok returned no downloadable media. Open the post in your browser and check its availability or website verification, then retry.")
-                    raise RuntimeError("No photos or videos were downloaded from this post.")
+                    raise RuntimeError("No audio was downloaded from this post." if audio_mode else "No photos or videos were downloaded from this post.")
                 if download_info.expected_count is not None and len(files) != download_info.expected_count:
                     raise RuntimeError(f"Incomplete media set: {len(files)} / {download_info.expected_count} files. Files have been kept.")
                 break
@@ -1183,7 +1522,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                         cookie_path = candidate
                         continue
                 reason = str(failure)
-                if not tried_browser and sys.stdin.isatty():
+                if not tried_browser and runtime.is_interactive():
                     tried_browser = True
                     exporter = find_tool("gallery-dl")
                     if exporter:

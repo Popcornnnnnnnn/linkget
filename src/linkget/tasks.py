@@ -8,11 +8,11 @@ import shlex
 import time
 
 if __package__:
-    from . import jobs, read_tasks, staging, retention
+    from . import agent_output, jobs, read_tasks, staging, retention
     from .failures import redact
     from .output import format_size
 else:
-    import jobs, read_tasks, staging, retention
+    import agent_output, jobs, read_tasks, staging, retention
     from failures import redact
     from output import format_size
 
@@ -149,18 +149,95 @@ def show_read(value, *, preview=False):
     print('')
 
 
+def download_summary(journal, *, preview=False):
+    active = claimed(journal)
+    rows = journal.data['items']
+    complete = sum(row['status'] == 'completed' for row in rows)
+    state = 'running' if active else 'needs_attention' if complete < len(rows) else 'completed'
+    destination = journal.data['options'].get('folder') or 'Photos'
+    items = []
+    for index, row in enumerate(rows, 1):
+        item_state = row['status']
+        if not active and item_state == 'running':
+            item_state = 'interrupted'
+        failure = row.get('failure')
+        failure_info = None
+        if isinstance(failure, dict) and row['status'] != 'completed':
+            failure_info = {
+                'category': failure.get('category'),
+                'message': display(failure.get('message', 'Unknown')),
+                'next_step': display(failure.get('next_step', 'Inspect retained files.')),
+                'phase': failure.get('phase'),
+            }
+        entry = {
+            'item': index,
+            'status': item_state,
+            'destination': display(row.get('destination_folder') or destination),
+            'failure': failure_info,
+            'retained_paths': [],
+            'saved_files': [item.get('path') for item in row.get('destination_files', []) if isinstance(item, dict) and item.get('path')],
+        }
+        try:
+            paths = list(staging.paths(row))
+        except (ValueError, TypeError):
+            paths = []
+        receipt = row.get('receipt') or {}
+        if isinstance(receipt, dict) and isinstance(receipt.get('staged'), list):
+            paths.extend(r['path'] for r in receipt['staged'] if isinstance(r, dict) and isinstance(r.get('path'), str))
+        entry['retained_paths'] = [str(p) for p in dict.fromkeys(paths)]
+        if preview:
+            entry['cleanup_preview'] = retention.preview(journal, index, active)
+        items.append(entry)
+    return {
+        'kind': 'download',
+        'id': journal.identifier,
+        'status': state,
+        'completed_items': complete,
+        'total_items': len(rows),
+        'destination': display(destination),
+        'audio': bool(journal.data['options'].get('audio')),
+        'audio_format': journal.data['options'].get('audio_format'),
+        'items': items,
+    }
+
+
+def read_summary(value, *, preview=False):
+    identifier = value['id']
+    state = value['status']
+    if state not in read_tasks.TERMINAL and not read_tasks.active(value) and (state == 'running' or time.time() - value.get('created', 0) > 10):
+        state = 'worker_unconfirmed'
+    outputs = [str(p) for p in value.get('outputs', [])]
+    source = value.get('source_folder')
+    result = {
+        'kind': 'read',
+        'id': identifier,
+        'task_kind': value['kind'],
+        'status': state,
+        'phase': value.get('phase', value['kind']),
+        'outputs': outputs,
+        'source_folder': source if isinstance(source, str) and Path(source).is_absolute() else None,
+        'failure': display(value['failure']) if value.get('failure') else None,
+    }
+    if preview:
+        result['cleanup_preview'] = 'must_keep_read_outputs'
+    return result
+
+
 def main(argv):
     parser = argparse.ArgumentParser(prog='linkget tasks', description='View download and read tasks without retrying, saving or removing files. No source links or share tokens are displayed.')
     parser.add_argument('task', nargs='?')
     parser.add_argument('--cleanup-preview',action='store_true',help='Read-only preview for one task; media/results/profile/installers are excluded. No deletion.')
     parser.add_argument('--kind', choices=['download', 'read'])
     parser.add_argument('--limit', type=int, default=20, help='Latest tasks across both kinds; default: 20')
+    parser.add_argument('--json', action='store_true', help='Print machine-readable task summaries on stdout')
+    parser.add_argument('--non-interactive', action='store_true', help='Never prompt or animate terminal spinners')
     args = parser.parse_args(argv)
     if args.cleanup_preview and not args.task:
         parser.error('Select one task: linkget tasks TASK --cleanup-preview.')
     if not 1 <= args.limit <= 1000:
         parser.error('--limit must be between 1 and 1000.')
     entries = []
+    warnings = []
     for kind, root in [('download', jobs.directory()), ('read', read_tasks.directory())]:
         if args.kind and kind != args.kind:
             continue
@@ -172,10 +249,28 @@ def main(argv):
                 created = value.data.get('created_ns', 0) / 1e9 if kind == 'download' else value.get('created', 0)
                 entries.append((created, kind, value))
             except (OSError, ValueError, RuntimeError, KeyError, TypeError):
-                print(f'Unreadable {kind} receipt; retained files were not touched.')
+                warnings.append(f'Unreadable {kind} receipt; retained files were not touched.')
+                if not args.json:
+                    print(warnings[-1])
+    selected = sorted(entries, key=lambda row: row[0], reverse=True)[:args.limit]
+    if args.json:
+        tasks_payload = [
+            download_summary(value, preview=args.cleanup_preview) if kind == 'download'
+            else read_summary(value, preview=args.cleanup_preview)
+            for _, kind, value in selected
+        ]
+        ok = not (args.task and not selected)
+        agent_output.emit({
+            'schema_version': agent_output.SCHEMA_VERSION,
+            'ok': ok,
+            'command': 'tasks',
+            'tasks': tasks_payload,
+            'warnings': warnings,
+        })
+        return int(not ok)
     if args.cleanup_preview:
         print('Read-only cleanup preview: no files or receipts are changed. Candidates are observations, not new ownership or deletion authority.')
-    for _, kind, value in sorted(entries, key=lambda row: row[0], reverse=True)[:args.limit]:
+    for _, kind, value in selected:
         (show_download if kind == 'download' else show_read)(value,preview=args.cleanup_preview)
     if not entries:
         print('No matching tasks.' if args.task else 'No tasks.')

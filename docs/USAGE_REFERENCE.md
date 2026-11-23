@@ -44,6 +44,12 @@ linkget recover TASK --verify         # verify Photos managed originals without 
 - Cleanup of staging files (`~/Library/Application Support/linkget/originals/`) occurs only when writer-origin evidence and verified saved copies (byte-checked against folder outputs or Photos managed library originals) both pass. See [RELIABILITY.md](RELIABILITY.md).
 - Preflight checks destination writability and (with `--live-photos`) ExifTool and Swift availability (`linkget doctor --folder PATH` or `--photos --live-photos`).
 
+## Machine / Agent Mode (`--non-interactive`, `--json`, `inspect`)
+
+- `--non-interactive` (or `LINKGET_NON_INTERACTIVE=1`) disables all interactive prompts and progress spinners even on a PTY, failing fast if input is missing.
+- `--json` emits one structured JSON object (`schema_version: 1`) on stdout, implies `--non-interactive`, and suppresses aligned status text on stdout/stderr (`sites`, `config`, `doctor`, `inspect`, `tasks`, `download`, `batch`, `retry`, `recover`, `compare`, `logout`, `read`).
+- `linkget inspect URL_OR_PATH [--audio] [--no-network] [--json]` checks routing, required/missing tools, saved-session existence, destination preview, and (for `yt-dlp` sites without `--no-network`) remote metadata without writing journals or downloading media. See [AGENT_SKILL.md](AGENT_SKILL.md).
+
 ## Evidence Reports & Live Photos
 
 ```sh

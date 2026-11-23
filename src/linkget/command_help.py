@@ -2,29 +2,32 @@
 import argparse
 from copy import copy
 
-COMMON={'folder','photos','audio','audio_format','browser','profile','live_photos','date_now','report'}
+COMMON={'folder','photos','audio','audio_format','browser','profile','live_photos','date_now','report','json','non_interactive'}
 SPECS={
  'config':('View or save personal defaults. Omit options for a read-only query.',
-           {'folder','photos','audio_folder','clear_audio_folder','reader_browser'},
+           {'folder','photos','audio_folder','clear_audio_folder','reader_browser','json','non_interactive'},
            'linkget config\nlinkget config --reader-browser neo\nlinkget config --folder ~/Downloads\nlinkget config --audio-folder ~/Music\nThese settings are permanent. One-time page override: linkget URL --rendered-backend chrome.\n--reader-browser is configuration only; omit config for one-time --folder/--photos.'),
  'doctor':('Inspect local tools, page-controller selection and saved-session metadata. Default: no website or browser requests.',
-           {'folder','photos','audio','audio_format','live_photos','browser','rendered_backend','probe_browser','check_session'},
+           {'folder','photos','audio','audio_format','live_photos','browser','rendered_backend','probe_browser','check_session','json','non_interactive'},
            'linkget doctor\nlinkget doctor --probe-browser neo\nlinkget doctor --check-session bilibili\nConnection/control checks do not establish actual article or website availability.'),
+ 'inspect':('Inspect one link without downloading or modifying files. Returns routing, session, tool, destination, and optional metadata.',
+            {'audio','audio_format','browser','no_network','json','non_interactive'},
+            'linkget inspect URL\nlinkget inspect URL --no-network --json\nlinkget inspect URL --audio --json'),
  'retry':('Retry unfinished download items; preserve checked retained resources and frozen controller choices.',
           COMMON|{'jobs','redownload','rendered_backend','page_data'},
           'linkget retry TASK\nlinkget retry TASK --rendered-backend neo\nlinkget retry TASK --redownload\nUse read retry for retained reading folders.'),
  'recover':('List retained downloads or save a complete checked task. --verify verifies Photos originals and can remove verified staged copies.',
-            COMMON|{'verify','item'},
+            (COMMON-{'audio_format'})|{'verify','item'},
             'linkget recover\nlinkget recover TASK --folder ~/Downloads\nlinkget recover TASK --verify\nUse tasks for read-only inspection; recovery can save or remove checked staging files.'),
  'batch':('Download multiple posts with bounded concurrency and per-site pacing.',
           COMMON|{'jobs','rendered_backend'},
           'linkget batch URL URL --folder ~/Downloads\nlinkget batch --jobs 2\nOmit links to paste one per line. Each item keeps its task/recovery evidence.'),
  'auth':('Check saved logins and public access. Select a site for explicit connection. No profile is copied by help.',
-         {'browser','profile'},'linkget auth\nlinkget auth bilibili\nNoninteractive checks do not automatically export browser credentials.'),
+         {'browser','profile','non_interactive'},'linkget auth\nlinkget auth bilibili\nNoninteractive checks do not automatically export browser credentials.'),
  'logout':('Remove the selected saved login and block automatic browser access until explicitly reconnected.',
-           set(),'linkget logout bilibili\nlinkget logout all'),
- 'compare':('Compare two existing evidence reports without downloading.',set(),'linkget compare first.json second.json'),
- 'sites':('List supported media routes and their scope.',set(),'linkget sites'),
+           {'json','non_interactive'},'linkget logout bilibili\nlinkget logout all'),
+ 'compare':('Compare two existing evidence reports without downloading.',{'json','non_interactive'},'linkget compare first.json second.json'),
+ 'sites':('List supported media routes and their scope.',{'json','non_interactive'},'linkget sites'),
 }
 
 
@@ -37,6 +40,7 @@ def show(parser,tokens):
         formatter_class=argparse.RawDescriptionHelpFormatter,epilog='Examples:\n'+examples)
     if command in {'retry','recover'}:focused.add_argument('task',nargs='?',metavar='TASK')
     elif command=='batch':focused.add_argument('links',nargs='*',metavar='LINK')
+    elif command=='inspect':focused.add_argument('target',metavar='URL_OR_PATH')
     elif command in {'auth','logout'}:focused.add_argument('site',nargs='?' if command=='auth' else None,metavar='SITE')
     elif command=='compare':focused.add_argument('reports',nargs=2,metavar='REPORT')
     destination=focused.add_mutually_exclusive_group() if {'folder','photos'}<=options else None

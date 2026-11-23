@@ -44,12 +44,15 @@ linkget read 'URL' --folder ./notes                  # extract subtitles, speech
 | --- | --- |
 | `linkget help` / `linkget COMMAND --help` | Show usage or subcommand options |
 | `linkget sites` / `linkget doctor` | List supported sites or inspect local tools & sessions |
+| `linkget inspect URL` | Inspect routing, metadata, tools, and session state without downloading |
 | `linkget config [--photos \| --folder [PATH] \| --audio-folder [PATH]]` | Show or change defaults for media, audio, and reader browser |
 | `linkget batch [URL ...]` | Download multiple posts concurrently (`--jobs N`) |
 | `linkget tasks [TASK]` | Inspect download and background read task states |
 | `linkget retry [TASK]` / `linkget recover [TASK]` | Resume failed tasks or save verified staged media |
-| `linkget read URL --folder DIR` | Extract text/subtitles/ASR, `summarize`, or `translate` ([docs/READ.md](docs/READ.md)) |
+| `linkget read URL --folder DIR` | Extract text/subtitles/ASR, `wait`, `show`, `summarize`, or `translate` ([docs/READ.md](docs/READ.md)) |
 | `linkget auth [SITE]` / `linkget logout [SITE\|all]` | Inspect, connect, or disconnect optional site logins |
+
+> Automation / AI agents: pass `--non-interactive --json` (or `--stdout` on `read`). See [Agent Skill](docs/AGENT_SKILL.md).
 
 ## Supported Sites (Single Posts)
 
@@ -84,5 +87,5 @@ uv build
 ## Documentation
 
 - [Detailed Usage & Reference](docs/USAGE_REFERENCE.md) — batch panel rules, recovery, `--report`, `--live-photos`, browser auth, and site heuristics
-- [Installation](docs/INSTALL.md) · [Reading Mode](docs/READ.md) · [Testing Scope](docs/TESTING.md) · [Reliability](docs/RELIABILITY.md) · [Media Validation](docs/MEDIA_VALIDATION.md)
+- [Installation](docs/INSTALL.md) · [Reading Mode](docs/READ.md) · [Agent Skill](docs/AGENT_SKILL.md) · [Testing Scope](docs/TESTING.md) · [Reliability](docs/RELIABILITY.md) · [Media Validation](docs/MEDIA_VALIDATION.md)
 - Bugs & support: [GitHub Issues](https://github.com/Popcornnnnnnnn/linkget/issues) (include `linkget --version` and `linkget doctor`; never attach cookies)

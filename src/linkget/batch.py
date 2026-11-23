@@ -11,13 +11,13 @@ import re
 from urllib.parse import urlsplit
 PROGRESS_INTERVAL = 5
 if __package__:
-    from .runtime import _batch, check_batch_cancelled
+    from .runtime import _batch, check_batch_cancelled, is_interactive, json_mode, non_interactive
     from .failures import retry_delay
     from . import jobs
     from .output import downloaded_bytes, format_size, BatchPanel
     from .links import ResolutionCache
 else:
-    from runtime import _batch, check_batch_cancelled
+    from runtime import _batch, check_batch_cancelled, is_interactive, json_mode, non_interactive
     from failures import retry_delay
     import jobs
     from output import downloaded_bytes, format_size, BatchPanel
@@ -72,15 +72,19 @@ def retry_wait(delay, state):
 
 def run_batch(args, parser, links, records, download, first_run, status, journal_factory):
     if not links:
-        if sys.stdin.isatty():
+        if is_interactive():
             print("\n  Paste one link or sharing text per line. Blank line starts downloads.\n")
             while line := input("  > ").strip():
                 links.append(line)
-        else:
+        elif not sys.stdin.isatty():
             links = [line.strip() for line in sys.stdin.read().splitlines() if line.strip()]
     if not links:
+        if json_mode():
+            raise ValueError("The batch is empty. Supply links or pipe them on stdin.")
         parser.error("The batch is empty. Supply links or paste one per line.")
     journal = journal_factory(links, args)
+    args._batch_journal = journal
+    args._batch_journal_id = journal.identifier
     with journal.claim():
         indices = getattr(args, "_indices", list(range(1, len(links) + 1)))
         # Selection is refreshed under the task lock.
@@ -99,7 +103,8 @@ def _run(args, pairs, records, download, first_run, status, journal):
              "output": threading.RLock(), "saving": threading.Lock(), "progress": {},
              "resolution_cache": ResolutionCache()}
     panel = (BatchPanel(pairs, str(args.folder.expanduser().resolve()) if args.folder else "Photos")
-             if sys.stdout.isatty() and os.environ.get("TERM") != "dumb" else None)
+             if (not json_mode() and not non_interactive()
+                 and sys.stdout.isatty() and os.environ.get("TERM") != "dumb") else None)
     state["panel"] = panel
     item_records = {index: [] for index, _ in pairs}
     results = {}
@@ -237,6 +242,7 @@ def _run(args, pairs, records, download, first_run, status, journal):
                 results[index] = future.result()
         if records is not None:
             records.extend(record for item in item_records.values() for record in item)
+        args._batch_records = {index: item_records[index][0] for index, _ in pairs if item_records[index]}
         for index, _ in pairs:
             if index not in results:
                 journal.update(index, status="cancelled" if state["cancelled"].is_set() else "failed")

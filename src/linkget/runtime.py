@@ -4,9 +4,57 @@ import threading
 import os
 import signal
 import subprocess
+import sys
 import time
 
 _batch = threading.local()
+_non_interactive = False
+_json_mode = False
+_quiet_status = False
+
+
+def set_non_interactive(enabled):
+    global _non_interactive
+    _non_interactive = bool(enabled)
+
+
+def non_interactive():
+    env = os.environ.get("LINKGET_NON_INTERACTIVE", "").strip().lower()
+    return _non_interactive or env in {"1", "true", "yes"}
+
+
+def set_json_mode(enabled):
+    global _json_mode
+    _json_mode = bool(enabled)
+
+
+def json_mode():
+    return _json_mode
+
+
+def set_quiet_status(enabled):
+    global _quiet_status
+    _quiet_status = bool(enabled)
+
+
+def quiet_status():
+    return _quiet_status or _json_mode
+
+
+def is_interactive(stream=None):
+    if non_interactive() or json_mode():
+        return False
+    target = stream if stream is not None else sys.stdin
+    return bool(target.isatty())
+
+
+def snapshot_modes():
+    return (_non_interactive, _json_mode, _quiet_status)
+
+
+def restore_modes(state):
+    global _non_interactive, _json_mode, _quiet_status
+    _non_interactive, _json_mode, _quiet_status = state
 
 def batch_lock(name):
     state = getattr(_batch, "state", None)
