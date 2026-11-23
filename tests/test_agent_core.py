@@ -39,7 +39,7 @@ class AgentCoreTests(unittest.TestCase):
         with patch.object(sys.stdin, "isatty", return_value=True), \
                 patch("builtins.input", side_effect=AssertionError("should not prompt")), \
                 patch.object(sys.stdin, "read", side_effect=AssertionError("should not block on tty stdin.read")):
-            code, out, err = self.run_cli("--non-interactive", "--browser", "none")
+            code, out, err = self.run_cli("--non-interactive", "--folder", str(self.root / "dl"), "--browser", "none")
             self.assertEqual(code, 1)
             self.assertIn("link is required", out + err)
 
