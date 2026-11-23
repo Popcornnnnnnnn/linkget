@@ -5,14 +5,14 @@ import subprocess
 from urllib.parse import urlsplit
 
 if __package__:
-    from . import jobs, staging, transfers, ownership
+    from . import jobs, media_limits, staging, transfers, ownership
     from .failures import redact
     from .photos import originals_directory, verify_library_copies, digest
     from .media import inspect_files
     from .live import prepare_pairs, save_pairs
     from .output import saving_activity, batch_media
 else:
-    import jobs, staging, transfers, ownership
+    import jobs, media_limits, staging, transfers, ownership
     from failures import redact
     from photos import originals_directory, verify_library_copies, digest
     from media import inspect_files
@@ -188,6 +188,10 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                         batch_media(files)
                         if any(record.get("probe_ok") is False for record in inspected):
                             raise RuntimeError("Retained media failed format validation; files have been kept.")
+                        max_dur = media_limits.parse_duration(args.max_duration) if getattr(args, "max_duration", None) else None
+                        max_size = media_limits.parse_size(args.max_size) if getattr(args, "max_size", None) else None
+                        if max_dur is not None or max_size is not None:
+                            media_limits.check_file_limits(files, inspected, max_duration=max_dur, max_size=max_size)
                         pairs = []
                         if not is_audio_item and args.live_photos and ready.get("live_pairs"):
                             prepared = ready.get("prepared", [])

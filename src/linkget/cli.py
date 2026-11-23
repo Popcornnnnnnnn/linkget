@@ -15,7 +15,7 @@ import time
 from urllib.parse import urlsplit
 
 if __package__:
-    from . import accounts, agent_output, inspect_url, jobs, destinations, preflight, recovery, staging, transfers, ownership, rendered_page, runtime
+    from . import accounts, agent_output, cleanup, inspect_url, jobs, destinations, mcp_server, media_limits, preflight, recovery, staging, transfers, ownership, rendered_page, runtime
     from .runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from .output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity
     from .batch import run_batch
@@ -36,7 +36,7 @@ if __package__:
     from .audio import AUDIO_FORMATS, prepare_audio
     from .live import prepare_pairs, save_pairs
 else:  # Homebrew launches this file directly.
-    import accounts, agent_output, inspect_url, jobs, destinations, preflight, recovery, staging, transfers, ownership, rendered_page, runtime
+    import accounts, agent_output, cleanup, inspect_url, jobs, destinations, mcp_server, media_limits, preflight, recovery, staging, transfers, ownership, rendered_page, runtime
     from runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity
     from batch import run_batch
@@ -630,6 +630,8 @@ def _main(argv=None):
   tasks [TASK]         View download and background read tasks
   retry [TASK]         Retry unfinished items from the latest or specified task
   recover [TASK]       List kept files, or save a complete retained task
+  clean                Preview or remove old completed temporary staging dirs
+  mcp                  Run a stdio JSON-RPC 2.0 MCP server for AI agents
   compare A.json B.json Compare reports for the same links
   auth                 Check logins and public access without sign-in prompts
   auth SITE            Connect one website explicitly (e.g. auth bilibili)
@@ -702,6 +704,18 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     parser.add_argument("--verify", action="store_true", help="recover: verify existing Photos originals before cleaning staged copies")
     parser.add_argument("--item", type=int, metavar="N", help="recover: save or verify only one unfinished item")
     parser.add_argument("--redownload", action="store_true", help="retry: download again instead of reusing a complete retained set")
+    parser.add_argument("--clip", metavar="START-END",
+                        help="clip video/audio to START-END (for example 0:30-2:00 or 10-45)")
+    parser.add_argument("--max-duration", metavar="DURATION",
+                        help="refuse downloads longer than DURATION (for example 10m, 90s, or 1:30)")
+    parser.add_argument("--max-size", metavar="SIZE",
+                        help="refuse downloads larger than SIZE (for example 100MB or 1.5GB)")
+    parser.add_argument("--older-than", metavar="AGE",
+                        help="clean only: minimum age of completed temporary stages (default: 7d)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="clean only: preview eligible temporary stages without deleting (default)")
+    parser.add_argument("--apply", action="store_true",
+                        help="clean only: delete eligible old temporary stages")
     tokens = list(sys.argv[1:] if argv is None else argv)
     # An HTTP URL immediately after bare --folder is the post, never a directory.
     for index in range(len(tokens) - 2, -1, -1):
@@ -714,13 +728,39 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     if command_help.show(parser, tokens):
         return 0
     for action in parser._actions:
-        if action.dest in {'reader_browser', 'probe_browser', 'check_session', 'audio_folder', 'clear_audio_folder', 'no_network', 'verify', 'item', 'redownload'}:
+        if action.dest in {'reader_browser', 'probe_browser', 'check_session', 'audio_folder', 'clear_audio_folder', 'no_network', 'verify', 'item', 'redownload', 'older_than', 'dry_run', 'apply'}:
             action.help = argparse.SUPPRESS
     args = parser.parse_intermixed_args(tokens)
     if args.non_interactive or args.json:
         runtime.set_non_interactive(True)
     if args.json:
         runtime.set_json_mode(True)
+    is_clean_cmd = bool(args.link and args.link[0] == "clean")
+    is_mcp_cmd = bool(args.link and args.link[0] == "mcp")
+    if (args.older_than is not None or args.dry_run or args.apply) and not is_clean_cmd:
+        parser.error("--older-than, --dry-run, and --apply apply to linkget clean only.")
+    if args.dry_run and args.apply:
+        parser.error("Do not combine --dry-run with --apply.")
+    has_media_limits = bool(args.clip is not None or args.max_duration is not None or args.max_size is not None)
+    if has_media_limits and args.link and args.link[0] in {"inspect", "recover", "compare", "config", "auth", "logout", "doctor", "sites", "clean", "mcp", "login"}:
+        parser.error("--clip, --max-duration, and --max-size apply only to downloads, batch, and retry.")
+    if args.clip is not None:
+        try:
+            media_limits.parse_clip(args.clip)
+        except ValueError as error:
+            parser.error(str(error))
+        if args.live_photos:
+            parser.error("--clip cannot be combined with --live-photos.")
+    if args.max_duration is not None:
+        try:
+            media_limits.parse_duration(args.max_duration)
+        except ValueError as error:
+            parser.error(str(error))
+    if args.max_size is not None:
+        try:
+            media_limits.parse_size(args.max_size)
+        except ValueError as error:
+            parser.error(str(error))
     if args.no_network and (not args.link or args.link[0] != "inspect"):
         parser.error("--no-network applies to linkget inspect only.")
     if (args.probe_browser or args.check_session) and args.link != ["doctor"]:
@@ -957,6 +997,54 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             else:
                 status("Cancelled", "Stopped", "33", stream=sys.stderr)
             return 130
+    if is_clean_cmd:
+        if len(args.link) > 1:
+            parser.error("Use linkget clean [--dry-run | --apply] [--older-than AGE] [--json].")
+        if (args.photos or args.date_now or args.live_photos or args.audio or args.folder is not None
+                or args.report is not None or args.page_data is not None or args.jobs is not None
+                or args.browser != "auto" or args.profile is not None or args.rendered_backend is not None):
+            parser.error("Use --dry-run, --apply, --older-than, --json, or --non-interactive with linkget clean.")
+        try:
+            age_spec = args.older_than if args.older_than is not None else cleanup.DEFAULT_OLDER_THAN
+            media_limits.parse_age(age_spec)
+        except ValueError as error:
+            parser.error(str(error))
+        try:
+            result = cleanup.inspect_and_clean(older_than=args.older_than, apply=args.apply)
+            payload = {
+                "schema_version": agent_output.SCHEMA_VERSION,
+                "command": "clean",
+                **result,
+            }
+            if args.json:
+                agent_output.emit(payload)
+            else:
+                mode_label = "Applied" if args.apply else "Dry run"
+                status("Clean", f"{mode_label} (older than {result['older_than']})")
+                status("Eligible", f"{result['eligible_count']} stages · {format_size(result['reclaimable_bytes'])}")
+                if args.apply:
+                    status("Removed", f"{result['deleted_count']} stages · {format_size(result['freed_bytes'])}")
+                else:
+                    status("Hint", "Pass --apply to remove eligible completed temporary stages.")
+                status("Kept", str(result["kept_count"]))
+                for err in result.get("errors", []):
+                    status("Warning", err.get("message", "Could not clean stage."), "33", stream=sys.stderr)
+            return 0 if result.get("ok", True) else 1
+        except (OSError, ValueError, RuntimeError) as error:
+            if args.json:
+                agent_output.emit(agent_output.error_payload("clean", error))
+            else:
+                report_failure(error)
+            return 1
+    if is_mcp_cmd:
+        if len(args.link) > 1:
+            parser.error("Use linkget mcp.")
+        if (args.json or args.photos or args.date_now or args.live_photos or args.audio
+                or args.folder is not None or args.report is not None or args.page_data is not None
+                or args.jobs is not None or args.browser != "auto"
+                or args.profile is not None or args.rendered_backend is not None):
+            parser.error("linkget mcp takes no download flags; configure tool options per JSON-RPC call.")
+        return mcp_server.serve()
     is_batch = bool(args.link and args.link[0] == "batch")
     batch_links = args.link[1:] if is_batch else []
     if args.link and not is_batch and not any("http://" in item or "https://" in item for item in args.link) and args.link not in (["doctor"], ["sites"]):
@@ -1130,6 +1218,7 @@ def restore_options(args, journal, tokens):
     args._explicit_photos = any(token.split("=", 1)[0] == "--photos" for token in tokens)
     args._explicit_folder = any(token.split("=", 1)[0] == "--folder" for token in tokens)
     args._explicit_audio_format = any(token.split("=", 1)[0] == "--audio-format" for token in tokens)
+    args._explicit_clip = any(token.split("=", 1)[0] == "--clip" for token in tokens)
     args.folder_from_default = False
     for name in jobs.OPTIONS:
         flags = {"--" + name.replace("_", "-")}
@@ -1247,6 +1336,12 @@ def download(args, setup_results, records=None, media_consumer=None):
                         f"--audio-format cannot be changed without --redownload; "
                         f"use linkget retry {journal.identifier} --redownload --audio-format {args.audio_format}."
                     )
+                if (getattr(args, "_explicit_clip", False)
+                        and args.clip != journal.data["options"].get("clip")):
+                    raise ValueError(
+                        f"--clip cannot be changed without --redownload; "
+                        f"use linkget retry {journal.identifier} --redownload --clip {args.clip}."
+                    )
                 # A failed save already has a checked complete set. Retry the save.
                 phase = "save"
                 restore_records = []
@@ -1287,6 +1382,14 @@ def download(args, setup_results, records=None, media_consumer=None):
         site, engine, domain = route(url)
         evidence.update(reference=reference(url), site=site)
         audio_mode = (media_consumer is None) and (getattr(args, "audio", False) or is_audio_only_site(site))
+        clip_range = media_limits.parse_clip(args.clip) if (media_consumer is None and getattr(args, "clip", None)) else None
+        max_dur_s = media_limits.parse_duration(args.max_duration) if (media_consumer is None and getattr(args, "max_duration", None)) else None
+        max_size_b = media_limits.parse_size(args.max_size) if (media_consumer is None and getattr(args, "max_size", None)) else None
+        if clip_range is not None:
+            if engine == "pixiv":
+                raise ValueError("--clip applies to audio and video media, not Pixiv image artworks.")
+            if getattr(args, "live_photos", False):
+                raise ValueError("--clip cannot be combined with --live-photos.")
         if audio_mode:
             if getattr(args, "photos", False):
                 raise ValueError("Audio files cannot be imported into Photos. Use --folder or linkget config --audio-folder.")
@@ -1302,7 +1405,10 @@ def download(args, setup_results, records=None, media_consumer=None):
         provided_item = load_douyin_page(page_data, url) if page_data else None
         if not audio_mode and not args.folder and sys.platform != "darwin":
             raise ValueError("Photos is available on macOS only. Use --folder to choose a destination.")
-        required = ([] if engine in {"douyin", "xiaohongshu", "kuaishou", "pixiv"} else [engine]) + (["ffmpeg", "ffprobe"] if (engine == "yt-dlp" or audio_mode) else [])
+        required = ([] if engine in {"douyin", "xiaohongshu", "kuaishou", "pixiv"} else [engine]) + (
+            ["ffmpeg", "ffprobe"] if (engine == "yt-dlp" or audio_mode or clip_range is not None)
+            else (["ffprobe"] if max_dur_s is not None else [])
+        )
         if domain == "reddit.com" and engine == "gallery-dl":
             required.extend(["yt-dlp", "ffmpeg"])
         if domain == "youtube.com":
@@ -1406,6 +1512,13 @@ def download(args, setup_results, records=None, media_consumer=None):
                         if reader and reader(json.loads(info_path.read_text()), url, site):
                             evidence.update(status='completed')
                             return 0
+                        if media_consumer is None and (max_dur_s is not None or max_size_b is not None or clip_range is not None):
+                            media_limits.check_metadata_limits(
+                                json.loads(info_path.read_text()),
+                                max_duration=max_dur_s,
+                                max_size=max_size_b,
+                                clip=clip_range,
+                            )
                         quality = selected_quality(info_path, audio_only=True) if audio_mode else selected_quality(info_path)
                         if quality:
                             status("Quality", quality)
@@ -1439,7 +1552,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                                 raise
                             result = None
                         else:
-                            result = run_process(command, stdout=log, stderr=subprocess.STDOUT)
+                            result = run_process(command, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
                 if result is not None and result.returncode:
                     tail = (stage / "download.log").read_text(errors="replace").splitlines()[-8:]
                     log_text = "\n".join(tail)
@@ -1542,6 +1655,20 @@ def download(args, setup_results, records=None, media_consumer=None):
                     continue
                 raise LoginRequired(reason) from None
         transfers.verify(files)
+        if clip_range is not None and engine != "yt-dlp" and media_consumer is None:
+            phase = 'postprocess'
+            with activity("Clipping"):
+                files = media_limits.clip_media_files(
+                    files,
+                    download_info.live_pairs,
+                    stage / "clipped",
+                    clip=clip_range,
+                    ffmpeg=tools.get("ffmpeg"),
+                    ffprobe=tools.get("ffprobe"),
+                )
+            download_info.live_pairs = []
+            download_info.expected_count = len(files)
+            phase = 'download'
         panel_metadata = dict(download_info.metadata)
         if audio_mode and media_consumer is None:
             metadata_by_file = {}
@@ -1589,6 +1716,8 @@ def download(args, setup_results, records=None, media_consumer=None):
         if any(record.get('probe_ok') is False for record in media_records):
             transfers.invalidate([path for path, record in zip(files, media_records) if record.get('probe_ok') is False])
             raise RuntimeError("The downloaded media did not pass format validation. Files have been kept; nothing was saved or imported.")
+        if media_consumer is None and (max_dur_s is not None or max_size_b is not None):
+            media_limits.check_file_limits(files, media_records, max_duration=max_dur_s, max_size=max_size_b)
         status("Quality", quality_summary(media_records))
         count_text = f"{len(files)} / {download_info.expected_count} files" if download_info.expected_count is not None else f"{len(files)} files · source count unknown"
         status("Media count", count_text)

@@ -49,6 +49,8 @@ linkget read 'URL' --folder ./notes                  # extract subtitles, speech
 | `linkget batch [URL ...]` | Download multiple posts concurrently (`--jobs N`) |
 | `linkget tasks [TASK]` | Inspect download and background read task states |
 | `linkget retry [TASK]` / `linkget recover [TASK]` | Resume failed tasks or save verified staged media |
+| `linkget clean [--apply] [--older-than 7d]` | Preview or remove old completed temporary staging folders |
+| `linkget mcp` | Run a stdlib JSON-RPC 2.0 stdio MCP server (`inspect_url`, `download_media`, `read_content`, `get_task`, `doctor`) |
 | `linkget read URL --folder DIR` | Extract text/subtitles/ASR/keyframes, web & WeChat articles, `wait`, `show`, `summarize`, or `translate` ([docs/READ.md](docs/READ.md)) |
 | `linkget auth [SITE]` / `linkget logout [SITE\|all]` | Inspect, connect, or disconnect optional site logins |
 

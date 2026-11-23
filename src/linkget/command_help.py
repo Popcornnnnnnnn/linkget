@@ -2,7 +2,7 @@
 import argparse
 from copy import copy
 
-COMMON={'folder','photos','audio','audio_format','browser','profile','live_photos','date_now','report','json','non_interactive'}
+COMMON={'folder','photos','audio','audio_format','browser','profile','live_photos','date_now','report','json','non_interactive','clip','max_duration','max_size'}
 SPECS={
  'config':('View or save personal defaults. Omit options for a read-only query.',
            {'folder','photos','audio_folder','clear_audio_folder','reader_browser','json','non_interactive'},
@@ -17,11 +17,17 @@ SPECS={
           COMMON|{'jobs','redownload','rendered_backend','page_data'},
           'linkget retry TASK\nlinkget retry TASK --rendered-backend neo\nlinkget retry TASK --redownload\nUse read retry for retained reading folders.'),
  'recover':('List retained downloads or save a complete checked task. --verify verifies Photos originals and can remove verified staged copies.',
-            (COMMON-{'audio_format'})|{'verify','item'},
+            (COMMON-{'audio_format','clip','max_duration','max_size'})|{'verify','item'},
             'linkget recover\nlinkget recover TASK --folder ~/Downloads\nlinkget recover TASK --verify\nUse tasks for read-only inspection; recovery can save or remove checked staging files.'),
  'batch':('Download multiple posts with bounded concurrency and per-site pacing.',
           COMMON|{'jobs','rendered_backend'},
           'linkget batch URL URL --folder ~/Downloads\nlinkget batch --jobs 2\nOmit links to paste one per line. Each item keeps its task/recovery evidence.'),
+ 'clean':('Inspect or remove old temporary staging directories from completed tasks while preserving active, incomplete, unverified-Photos, symlink, and user folders.',
+          {'older_than','dry_run','apply','json','non_interactive'},
+          'linkget clean\nlinkget clean --older-than 7d --json\nlinkget clean --apply --older-than 3d --json\nDefault is a read-only dry run. Pass --apply to delete eligible linkget-* staging folders.'),
+ 'mcp':('Start a thin stdlib JSON-RPC 2.0 stdio MCP server exposing inspect_url, download_media, read_content, get_task, and doctor.',
+        set(),
+        'linkget mcp\nSpeak newline-delimited JSON-RPC 2.0 or Content-Length-framed MCP messages on stdin/stdout.'),
  'auth':('Check saved logins and public access. Select a site for explicit connection. No profile is copied by help.',
          {'browser','profile','non_interactive'},'linkget auth\nlinkget auth bilibili\nNoninteractive checks do not automatically export browser credentials.'),
  'logout':('Remove the selected saved login and block automatic browser access until explicitly reconnected.',
