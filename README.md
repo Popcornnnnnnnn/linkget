@@ -1,15 +1,15 @@
 # linkget
 
-Save photos and videos from a post link to **macOS Photos** or a local folder.
+Save photos, videos, and audio from a post or music link to **macOS Photos** or a local folder.
 A local-first macOS CLI (`MIT` · current stable release `v0.3.0`) with browser session reuse, completeness checks, and no hosted service.
 
 ```mermaid
 flowchart LR
-    A["Post Link / Batch / Share Text"] --> B["Resolver & Optional Browser Session"]
+    A["Post / Music Link · Batch · Share Text"] --> B["Resolver & Optional Browser Session"]
     B --> C["Download Engines (gallery-dl · yt-dlp · native)"]
-    C --> D["ffprobe & Completeness Check"]
+    C --> D["ffprobe & Completeness Check (+ Optional Audio Extract/Tag)"]
     D -->|"--photos"| E["macOS Photos (byte-verified cleanup)"]
-    D -->|"--folder"| F["Local Folder (+ optional Live Photos)"]
+    D -->|"--folder / --audio"| F["Local Folder (+ Live Photos or Tagged Audio)"]
 ```
 
 ## Install
@@ -28,6 +28,8 @@ See [docs/INSTALL.md](docs/INSTALL.md) for wheel installation, upgrades, and uni
 ```sh
 linkget                                              # interactive prompt (defaults to Photos)
 linkget 'https://www.bilibili.com/video/BV1bK411W797/' --folder ~/Downloads
+linkget 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' --audio --folder ~/Music
+linkget 'https://soundcloud.com/artist/track'        # music links download audio automatically
 linkget --photos --live-photos                       # package picture + motion pairs
 linkget batch                                        # paste one URL per line, blank line to start
 linkget retry                                        # retry unfinished items from latest task
@@ -42,7 +44,7 @@ linkget read 'URL' --folder ./notes                  # extract subtitles, speech
 | --- | --- |
 | `linkget help` / `linkget COMMAND --help` | Show usage or subcommand options |
 | `linkget sites` / `linkget doctor` | List supported sites or inspect local tools & sessions |
-| `linkget config [--photos \| --folder [PATH]]` | Show or change the default destination & reader browser |
+| `linkget config [--photos \| --folder [PATH] \| --audio-folder [PATH]]` | Show or change defaults for media, audio, and reader browser |
 | `linkget batch [URL ...]` | Download multiple posts concurrently (`--jobs N`) |
 | `linkget tasks [TASK]` | Inspect download and background read task states |
 | `linkget retry [TASK]` / `linkget recover [TASK]` | Resume failed tasks or save verified staged media |
@@ -55,12 +57,14 @@ linkget read 'URL' --folder ./notes                  # extract subtitles, speech
 | --- | --- | --- |
 | Instagram | Photos, videos, Reels | — |
 | X / Twitter | Photos, videos | — |
-| Bilibili | Video (`BV`/`av`) & Opus | Login exposes higher quality; one part per URL |
+| Bilibili | Video (`BV`/`av`), Opus, Audio (`au`) | Login exposes higher quality; one part or track per URL |
 | TikTok | Photo posts, videos | Supports share links |
 | Douyin | Photo posts, videos | Clean playback ranking; optional BrowserOS neo / Chrome fallback |
 | Xiaohongshu *(trial)* | Image sets, videos | Keep full link including `xsec_token` |
 | Weibo | Photos, videos | Heuristic watermark-free JPEG selection ([audit](docs/WEIBO_IMAGE_AUDIT.md)) |
-| YouTube | Single videos, Shorts | Playlist-only URLs and streams excluded |
+| YouTube / YouTube Music | Single videos, Shorts, Music tracks | Playlist-only URLs and streams excluded; `music.youtube.com` auto-audio |
+| SoundCloud | Single tracks | Public tracks and `on.soundcloud.com` shares; sets excluded |
+| Bandcamp | Single tracks | Public `/track/` links; albums excluded |
 | Reddit *(trial)* | Photos, galleries, videos | Via `gallery-dl` |
 | Kuaishou *(trial)* | `/short-video/` videos | HEVC preferred at equal resolution |
 | LOFTER *(trial)* | Photos, videos | Via `gallery-dl` |

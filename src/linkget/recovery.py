@@ -76,7 +76,7 @@ def remove_verified(records, root):
     return removed
 
 
-def restore(journal, args, status, save_folder, import_photos, claimed=False, indices=None):
+def restore(journal, args, status, save_folder, import_photos, claimed=False, indices=None, audio_folder_resolver=None):
     failures = 0
     with nullcontext() if claimed else journal.claim():
         indices = (sorted(set(journal.incomplete() + (journal.needs_verification() if args.verify else [])))
@@ -94,6 +94,11 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                 with jobs.item(journal, index):
                     staging.remember_earlier(status)
                     if args.verify:
+                        ready_ev = (row.get("ready") or {}).get("evidence", {})
+                        media = ready_ev.get("files", [])
+                        if (getattr(args, "audio", False) or ready_ev.get("audio_mode") is True
+                                or (bool(media) and all(record.get("kind") == "audio" for record in media))):
+                            raise ValueError("--verify applies to Photos imports only, not audio files.")
                         receipt = row.get("receipt")
                         if not receipt or not receipt.get("identifiers"):
                             raise ValueError("No Photos import identifiers; use recover without --verify to save again.")
@@ -123,6 +128,7 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                         status("Verified", f"Item {index} · Photos originals match · {removed} staged copies removed{retention}")
                         if row.get("stage"):
                             status("Files kept", row["stage"])
+                        cleanup_folder = args.folder
                     else:
                         ready = row.get("ready")
                         if not ready:
@@ -133,12 +139,36 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                         douyin = (evidence.get('site') == 'Douyin'
                                   or source.hostname in {'douyin.com', 'www.douyin.com', 'v.douyin.com'})
                         media = evidence.get('files', [])
-                        ordinary_video = bool(media) and all(record.get('kind') == 'video' for record in media)
-                        if (douyin and not ordinary_video and (args.folder is None or args.live_photos)
-                                and evidence.get('motion_metadata_complete') is not True):
-                            raise ValueError("Retained Douyin motion completeness is unknown. Refresh connector page data "
-                                             "and retry --redownload before Photos import or Live Photo packaging; "
-                                             "separate files can still be recovered with --folder.")
+                        saved_audio = (evidence.get("audio_mode") is True
+                                       or (bool(media) and all(record.get("kind") == "audio" for record in media)))
+                        if getattr(args, "audio", False) and not saved_audio:
+                            raise ValueError("The retained download is not audio; use linkget retry TASK --redownload --audio.")
+                        is_audio_item = saved_audio
+                        if is_audio_item:
+                            if getattr(args, "_explicit_photos", False) or getattr(args, "photos", False):
+                                raise ValueError("Audio files cannot be imported into Photos. Use --folder.")
+                            if getattr(args, "live_photos", False):
+                                raise ValueError("--live-photos cannot be used with audio downloads.")
+                            target_folder = args.folder
+                            if target_folder is None and row.get("destination_folder"):
+                                target_folder = Path(row["destination_folder"])
+                            if target_folder is None and audio_folder_resolver is not None:
+                                target_folder = audio_folder_resolver()
+                            if target_folder is None:
+                                raise ValueError("Audio recovery requires a folder. Pass --folder PATH or set linkget config --audio-folder PATH.")
+                            if __package__:
+                                from . import preflight
+                            else:
+                                import preflight
+                            target_folder = preflight.writable_directory(target_folder)
+                        else:
+                            target_folder = args.folder
+                            ordinary_video = bool(media) and all(record.get('kind') == 'video' for record in media)
+                            if (douyin and not ordinary_video and (target_folder is None or args.live_photos)
+                                    and evidence.get('motion_metadata_complete') is not True):
+                                raise ValueError("Retained Douyin motion completeness is unknown. Refresh connector page data "
+                                                 "and retry --redownload before Photos import or Live Photo packaging; "
+                                                 "separate files can still be recovered with --folder.")
                         stage = Path(row.get("stage", ""))
                         if not stage.name.startswith("linkget-") or stage.is_symlink() or not stage.is_dir():
                             raise ValueError("The recorded staging folder is unavailable; use retry --redownload.")
@@ -149,7 +179,7 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                         if any(record.get("probe_ok") is False for record in inspected):
                             raise RuntimeError("Retained media failed format validation; files have been kept.")
                         pairs = []
-                        if args.live_photos and ready.get("live_pairs"):
+                        if not is_audio_item and args.live_photos and ready.get("live_pairs"):
                             prepared = ready.get("prepared", [])
                             if prepared:
                                 pairs = [jobs.verified_files(pair, stage) for pair in prepared]
@@ -163,11 +193,11 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                                 ready["prepared"] = [jobs.snapshot(pair) for pair in pairs]
                                 jobs.record(ready=ready)
                         jobs.record(destination_files=[])
-                        with saving_activity("Saving" if args.folder is not None else "Importing"):
-                            if args.folder is not None:
-                                saved, skipped = save_folder(files, args.folder)
+                        with saving_activity("Saving" if target_folder is not None else "Importing"):
+                            if target_folder is not None:
+                                saved, skipped = save_folder(files, target_folder)
                                 if pairs:
-                                    save_pairs(pairs, args.folder / "Live Photos")
+                                    save_pairs(pairs, target_folder / "Live Photos")
                             elif pairs:
                                 saved, skipped = import_photos(files, args.date_now, dict(zip(map(tuple, ready["live_pairs"]), pairs)))
                             else:
@@ -175,12 +205,13 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                         transfers.verify(files)
                         transfers.verify_outputs()
                         # All output saves passed; remove only the exact checked downloads.
-                        if not staging.contains(stage, args.folder):
+                        if not staging.contains(stage, target_folder):
                             remove_verified(ready["files"], stage)
                             for pair in ready.get("prepared", []):
                                 remove_verified(pair, stage)
+                        cleanup_folder = target_folder
                         status("Recovered", f"Item {index} · {len(saved)} saved · {skipped} duplicates")
-                    staging.cleanup(status, args.folder, photos_verified=args.verify)
+                    staging.cleanup(status, cleanup_folder, photos_verified=args.verify)
                     jobs.record(status="completed")
             except (OSError, ValueError, RuntimeError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
                 failures += 1

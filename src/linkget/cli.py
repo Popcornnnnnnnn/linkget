@@ -12,18 +12,19 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import urlsplit
 
 if __package__:
     from . import accounts, jobs, destinations, preflight, recovery, staging, transfers, ownership, rendered_page
     from .runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from .output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity
     from .batch import run_batch
-    from .engines import route, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login
+    from .engines import SITES, route, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login, is_audio_only_site
     from .photos import originals_directory, retain_originals, verify_library_copies
     from .failures import classify, redact
     from .version import VERSION
     from .session import LOGIN_URLS, prepare_session
-    from .links import normalize_link
+    from .links import SOUNDCLOUD_SHORT_HOSTS, canonical_post, normalize_link
     from .douyin import download as download_douyin, MediaUnavailable as DouyinMediaUnavailable
     from .douyin_browser import read_item as read_douyin_browser, load_item as load_douyin_page
     from .douyin import DownloadInterrupted as DouyinDownloadInterrupted
@@ -31,19 +32,20 @@ if __package__:
     from .kuaishou import download as download_kuaishou, BrowserRequired as KuaishouBrowserRequired
     from .pixiv import download as download_pixiv, BrowserRequired as PixivBrowserRequired
     from .weibo import prefer_clean_images
-    from .media import VIDEO, MEDIA, DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
+    from .media import VIDEO, MEDIA, AUDIO, DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
+    from .audio import AUDIO_FORMATS, prepare_audio
     from .live import prepare_pairs, save_pairs
 else:  # Homebrew launches this file directly.
     import accounts, jobs, destinations, preflight, recovery, staging, transfers, ownership, rendered_page
     from runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity
     from batch import run_batch
-    from engines import route, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login
+    from engines import SITES, route, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login, is_audio_only_site
     from photos import originals_directory, retain_originals, verify_library_copies
     from failures import classify, redact
     from version import VERSION
     from session import LOGIN_URLS, prepare_session
-    from links import normalize_link
+    from links import SOUNDCLOUD_SHORT_HOSTS, canonical_post, normalize_link
     from douyin import download as download_douyin, MediaUnavailable as DouyinMediaUnavailable
     from douyin_browser import read_item as read_douyin_browser, load_item as load_douyin_page
     from douyin import DownloadInterrupted as DouyinDownloadInterrupted
@@ -51,10 +53,9 @@ else:  # Homebrew launches this file directly.
     from kuaishou import download as download_kuaishou, BrowserRequired as KuaishouBrowserRequired
     from pixiv import download as download_pixiv, BrowserRequired as PixivBrowserRequired
     from weibo import prefer_clean_images
-    from media import VIDEO, MEDIA, DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
+    from media import VIDEO, MEDIA, AUDIO, DownloadResult, inspect_files, quality_summary, gallery_evidence, reference, compare_reports, write_report
+    from audio import AUDIO_FORMATS, prepare_audio
     from live import prepare_pairs, save_pairs
-
-SITES = "Instagram, X/Twitter, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, Weibo, Reddit, Lofter, Pixiv and Pinterest posts; YouTube videos and Shorts"
 
 
 def login_guidance(args, domain, url, reason):
@@ -62,8 +63,11 @@ def login_guidance(args, domain, url, reason):
     if args.browser == "none":
         status("Next", "Public-only mode is enabled. Run without --browser none to use a browser login.", stream=sys.stderr)
     elif not sys.stdin.isatty():
-        sign_in_link(domain, stream=sys.stderr)
-        status("Next", "Run linkget in an interactive terminal to connect a browser and continue.", stream=sys.stderr)
+        if domain in LOGIN_URLS:
+            sign_in_link(domain, stream=sys.stderr)
+            status("Next", "Run linkget in an interactive terminal to connect a browser and continue.", stream=sys.stderr)
+        else:
+            status("Next", "This site uses public access in linkget; check the URL or open it in your browser.", stream=sys.stderr)
 
 
 def report_failure(error, phase=None):
@@ -378,9 +382,36 @@ def configured_destination():
     return setting
 
 
+def configured_audio_destination():
+    setting = accounts.preferences().get("audio_destination")
+    if setting is None:
+        return None
+    if not isinstance(setting, dict) or setting.get("mode") not in {"cwd", "folder"}:
+        raise ValueError("Invalid default audio folder. Run linkget config --audio-folder [PATH] or --clear-audio-folder.")
+    if setting["mode"] == "folder" and (not isinstance(setting.get("path"), str) or not Path(setting["path"]).is_absolute()):
+        raise ValueError("Invalid default audio folder. Run linkget config --audio-folder PATH.")
+    return setting
+
+
+def resolve_audio_folder(explicit_folder=None):
+    if explicit_folder is True:
+        return Path.cwd()
+    if explicit_folder is not None:
+        return Path(explicit_folder).expanduser().resolve()
+    audio_setting = configured_audio_destination()
+    if audio_setting is not None:
+        return Path.cwd() if audio_setting["mode"] == "cwd" else Path(audio_setting["path"])
+    setting = configured_destination()
+    if setting["mode"] == "cwd":
+        return Path.cwd()
+    if setting["mode"] == "folder":
+        return Path(setting["path"])
+    raise ValueError("Audio downloads require a folder. Use --folder [PATH] or set a default with linkget config --audio-folder PATH.")
+
+
 def configure(args, parser):
-    if args.link != ["config"] or args.browser != "auto" or args.profile or args.date_now or args.rendered_backend:
-        parser.error("Use linkget config, linkget config --photos, or linkget config --folder [PATH].")
+    if args.link != ["config"] or args.browser != "auto" or args.profile or args.date_now or args.rendered_backend or args.live_photos or args.report:
+        parser.error("Use linkget config, linkget config --photos, linkget config --folder [PATH], or linkget config --audio-folder [PATH].")
     if args.photos:
         setting = {"mode": "photos"}
     elif args.folder is True:
@@ -392,14 +423,35 @@ def configure(args, parser):
         setting = {"mode": "folder", "path": str(folder)}
     else:
         setting = configured_destination()
-    changed = args.photos or args.folder is not None
-    changes = {"destination": setting} if changed else {}
+    changed_dest = args.photos or args.folder is not None
+    changes = {"destination": setting} if changed_dest else {}
+    if args.clear_audio_folder:
+        audio_setting = None
+        changes["audio_destination"] = None
+    elif args.audio_folder is True:
+        audio_setting = {"mode": "cwd"}
+        changes["audio_destination"] = audio_setting
+    elif args.audio_folder is not None:
+        audio_folder = args.audio_folder.expanduser().resolve()
+        if audio_folder.exists() and not audio_folder.is_dir():
+            raise ValueError(f"Not a folder: {audio_folder}")
+        audio_setting = {"mode": "folder", "path": str(audio_folder)}
+        changes["audio_destination"] = audio_setting
+    else:
+        audio_setting = configured_audio_destination()
+    changed_audio = args.clear_audio_folder or args.audio_folder is not None
     if args.reader_browser is not None:
         changes["reader_browser"] = args.reader_browser
     if changes:
         accounts.set_preferences(**changes)
     description = {"photos": "Photos", "cwd": "Current folder (where you run linkget)", "folder": setting.get("path")}[setting["mode"]]
+    audio_description = (
+        "Not set (uses folder default when set)" if audio_setting is None
+        else "Current folder (where you run linkget)" if audio_setting["mode"] == "cwd"
+        else audio_setting["path"]
+    )
     status("Default", description)
+    status("Audio default", audio_description)
     preferences = accounts.preferences()
     choice = rendered_page.selection()
     status("Page preference", preferences.get("reader_browser", "auto"))
@@ -409,7 +461,7 @@ def configure(args, parser):
     status("Login browser sources", ", ".join(names) if names else preferences.get('browser') or "None configured")
     status("Selection", "Page option > browser option > environment > personal reader > saved browser > system default")
     status("Privacy", "Login refresh sources and page controller are separate; saved login validity was not checked.")
-    if changed:
+    if changed_dest or changed_audio:
         status("Saved", "Used when no --folder or --photos is specified.")
     else:
         print("\n  Change default:\n")
@@ -419,8 +471,10 @@ def configure(args, parser):
             ("linkget config --photos", "Photos"),
             ("linkget config --folder", "Current folder on each run"),
             ("linkget config --folder ~/Downloads", "Fixed folder; replace with your path"),
+            ("linkget config --audio-folder ~/Music", "Default folder for audio and music downloads"),
+            ("linkget config --clear-audio-folder", "Clear the saved default audio folder"),
         ]:
-            print(f"  {command:<36} {detail}")
+            print(f"  {command:<40} {detail}")
         print("\n  To override once, omit config. Your saved default stays unchanged.")
     return 0
 
@@ -452,7 +506,7 @@ def main(argv=None):
         return read_content(tokens[1:])
     parser = argparse.ArgumentParser(
         prog="linkget",
-        description="Save photos and videos from supported sites to macOS Photos or a folder.",
+        description="Save photos, videos, and audio from supported sites to macOS Photos or a folder.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Commands:
   help                 Show this help (also -h or --help)
@@ -489,6 +543,8 @@ Examples:
   linkget URL --photos                 Save to Photos this time
   linkget URL --folder                 Save to the current folder
   linkget URL --folder ~/Downloads     Save to a folder
+  linkget URL --audio --folder ~/Music Save original audio stream with tags & cover
+  linkget URL --audio-format mp3       Convert extracted audio to MP3
   linkget batch URL1 URL2 --folder     Download multiple posts
   linkget batch --folder ~/Downloads   Paste links; blank line starts downloads
   linkget read URL                     Submit a background content read
@@ -502,6 +558,7 @@ Examples:
   linkget config --photos              Default to Photos (initial setting)
   linkget config --folder              Default to the current folder each time
   linkget config --folder ~/Downloads  Default to a fixed folder
+  linkget config --audio-folder ~/Music Default folder for audio and music downloads
 
 Read processing runs in the background by default and returns a task ID.
 Closing the terminal does not stop it; use read status/logs/cancel to manage it.
@@ -517,6 +574,13 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     destination_options.add_argument("--folder", nargs="?", const=True, type=Path,
                                      help="save to FOLDER, or the current folder if omitted; overrides the default")
     destination_options.add_argument("--photos", action="store_true", help="save to Photos; overrides the default")
+    parser.add_argument("--audio", action="store_true", help="save audio only to a folder (music links enable this automatically)")
+    parser.add_argument("--audio-format", choices=list(AUDIO_FORMATS), metavar="FORMAT",
+                        help="convert audio to FORMAT (" + ", ".join(AUDIO_FORMATS) + "); implies --audio")
+    parser.add_argument("--audio-folder", nargs="?", const=True, type=Path,
+                        help="config only: save the default audio folder; omit PATH for the current folder on each run")
+    parser.add_argument("--clear-audio-folder", action="store_true",
+                        help="config only: clear the saved default audio folder")
     parser.add_argument("--browser", choices=["auto", "none", "chrome", "firefox", "safari", "edge", "brave"], default="auto", help="auto: public first, then saved login and browser refresh if needed; none: public only; specify a browser to use its login")
     parser.add_argument("--probe-browser", choices=["neo", "chrome"], help="doctor only: explicitly inspect one browser connection or OS access without opening a page")
     parser.add_argument("--check-session", choices=list(accounts.SITES), help="doctor only: explicitly verify one saved website session; no browser export")
@@ -543,13 +607,28 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     if command_help.show(parser,tokens):
         return 0
     for action in parser._actions:
-        if action.dest in {'reader_browser','probe_browser','check_session','verify','item','redownload'}:
-            action.help=argparse.SUPPRESS
+        if action.dest in {'reader_browser', 'probe_browser', 'check_session', 'audio_folder', 'clear_audio_folder', 'verify', 'item', 'redownload'}:
+            action.help = argparse.SUPPRESS
     args = parser.parse_intermixed_args(tokens)
     if (args.probe_browser or args.check_session) and args.link != ["doctor"]:
         parser.error("Live diagnostic checks require linkget doctor.")
     if args.reader_browser is not None and args.link != ["config"]:
         parser.error("--reader-browser is saved with linkget config only.")
+    if (args.audio_folder is not None or args.clear_audio_folder) and args.link != ["config"]:
+        parser.error("--audio-folder and --clear-audio-folder are saved with linkget config only.")
+    if args.audio_folder is not None and args.clear_audio_folder:
+        parser.error("Do not combine --audio-folder with --clear-audio-folder.")
+    if args.audio_format is not None:
+        args.audio = True
+    if args.audio:
+        if args.link == ["config"]:
+            parser.error("Use linkget config --audio-folder [PATH] to set the default audio folder.")
+        if args.photos:
+            parser.error("Audio files cannot be imported into Photos. Use --folder or linkget config --audio-folder.")
+        if args.date_now:
+            parser.error("--date-now applies to Photos imports only, not --audio.")
+        if args.live_photos:
+            parser.error("--live-photos cannot be combined with --audio.")
     if args.page_data:
         args.page_data = args.page_data.expanduser().resolve()
         if args.browser != "none" or len(args.link) not in {1, 2}:
@@ -576,12 +655,26 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                     parser.error("Select a task: linkget recover TASK.")
                 return recovery.listing(status)
             journal = jobs.select(identifiers[0] if identifiers else None)
+            if command == "recover" and any(token.split("=", 1)[0] == "--audio-format" for token in tokens):
+                raise ValueError("--audio-format cannot be used with recover; use linkget retry TASK --redownload --audio-format FORMAT.")
             restore_options(args, journal, tokens)
             if getattr(args, 'page_data', None) and len(journal.data['items']) != 1:
                 raise ValueError("--page-data cannot be used with a multi-post task.")
-            preflight.destination(args, find_tool)
+            all_audio_recovery = False
+            if command == "recover" and args.folder is None and not getattr(args, "_explicit_photos", False):
+                target_indices = ([args.item] if args.item is not None
+                                  else sorted(set(journal.incomplete() + (journal.needs_verification() if args.verify else []))))
+                valid_indices = [i for i in target_indices if 1 <= i <= len(journal.data["items"])]
+                if valid_indices and not args.verify:
+                    all_audio_recovery = all(
+                        (journal.data["items"][i - 1].get("ready") or {}).get("evidence", {}).get("audio_mode") is True
+                        for i in valid_indices
+                    )
+            if not all_audio_recovery:
+                preflight.destination(args, find_tool)
             if command == "recover":
-                return recovery.restore(journal, args, status, save_folder, import_photos)
+                return recovery.restore(journal, args, status, save_folder, import_photos,
+                                        audio_folder_resolver=resolve_audio_folder)
             args._journal = journal
             args._indices = journal.incomplete()
             links = [journal.data["items"][i - 1]["input"] for i in args._indices]
@@ -639,10 +732,12 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     args.link = " ".join(args.link)
     if args.link == "doctor":
         code = doctor(args)
-        if args.folder is not None or args.photos or args.live_photos:
-            if args.folder is True:
-                args.folder = Path.cwd()
+        if args.folder is not None or args.photos or args.live_photos or args.audio:
             try:
+                if args.audio:
+                    args.folder = resolve_audio_folder(args.folder)
+                elif args.folder is True:
+                    args.folder = Path.cwd()
                 preflight.destination(args, find_tool)
                 status("Destination", "Writable · " + str(args.folder or originals_directory()))
                 if args.photos:
@@ -652,10 +747,28 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 return 1
         return code
     if args.link == "sites":
-        for site, content in [("Instagram", "Photos, videos and reels"), ("X / Twitter", "Post photos and videos"), ("Bilibili", "BV/av videos and Opus media"), ("TikTok", "Post photos and videos; share links"), ("Douyin", "Post photos and videos; share links"), ("Kuaishou", "Post videos; image galleries not supported"), ("Xiaohongshu", "Note photos and videos; xhslink shares"), ("Weibo", "Post photos and videos; t.cn shares"), ("YouTube", "Videos and Shorts; youtu.be links"), ("Reddit", "Post photos and videos"), ("Lofter", "Post photos and videos (trial)"), ("Pixiv", "Artwork images (trial); Ugoira not supported"), ("Pinterest", "Pins and boards")]:
+        for site, content in [
+            ("Instagram", "Photos, videos and reels"),
+            ("X / Twitter", "Post photos and videos"),
+            ("Bilibili", "BV/av videos, Opus media and au audio"),
+            ("TikTok", "Post photos and videos; share links"),
+            ("Douyin", "Post photos and videos; share links"),
+            ("Kuaishou", "Post videos; image galleries not supported"),
+            ("Xiaohongshu", "Note photos and videos; xhslink shares"),
+            ("Weibo", "Post photos and videos; t.cn shares"),
+            ("YouTube", "Videos and Shorts; youtu.be links"),
+            ("YouTube Music", "Single music.youtube.com tracks (audio)"),
+            ("Bilibili Audio", "Single /audio/au... tracks (audio)"),
+            ("SoundCloud", "Single tracks and on.soundcloud.com shares (audio)"),
+            ("Bandcamp", "Single *.bandcamp.com/track/... tracks (audio)"),
+            ("Reddit", "Post photos and videos"),
+            ("Lofter", "Post photos and videos (trial)"),
+            ("Pixiv", "Artwork images (trial); Ugoira not supported"),
+            ("Pinterest", "Pins and boards"),
+        ]:
             status(site, content)
         status("Toutiao", "Article text / local video transcription via linkget read; configured page reader; Chrome and Neo supported")
-        print("\n  Use linkget read for video speech on these channels, or Toutiao article text.\n  Pixiv is image-only. Availability varies by URL; read --help shows transcription options.")
+        print("\n  Use --audio (or --audio-format mp3|m4a|flac|wav|opus) to save audio from video posts to a folder.\n  Use linkget read for video speech on these channels, or Toutiao article text.\n  Pixiv is image-only. Availability varies by URL; read --help shows transcription options.")
         return 0
     if args.profile and args.browser in {"auto", "none"}:
         parser.error("--profile requires an explicit --browser, such as chrome or firefox.")
@@ -664,7 +777,34 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             raise ValueError("The report already exists. Choose a new path to preserve the comparison reference.")
         if args.report and not args.report.expanduser().parent.is_dir():
             raise ValueError("The report's parent folder does not exist. Choose an existing folder.")
-        if args.photos:
+        args._explicit_folder = args.folder is not None
+        args._explicit_photos = bool(args.photos)
+        args._folder_from_default = False
+        if not is_batch and not args.audio and args.link:
+            audio_only_target = False
+            try:
+                urls = re.findall(r'https?://[^\s<>"，。]+', args.link.strip())
+                if len(urls) == 1:
+                    candidate = urls[0].rstrip(".,;!）)")
+                    target = canonical_post(candidate) or candidate
+                    if urlsplit(target).hostname in SOUNDCLOUD_SHORT_HOSTS:
+                        audio_only_target = True
+                    else:
+                        site, _, _ = route(target)
+                        audio_only_target = is_audio_only_site(site)
+            except ValueError:
+                pass
+            if audio_only_target:
+                if args.photos:
+                    raise ValueError("Audio files cannot be imported into Photos. Use --folder or linkget config --audio-folder.")
+                if args.date_now:
+                    raise ValueError("--date-now applies to Photos imports only, not audio downloads.")
+                if args.live_photos:
+                    raise ValueError("--live-photos cannot be used with audio downloads.")
+                args.audio = True
+        if args.audio:
+            args.folder = resolve_audio_folder(args.folder)
+        elif args.photos:
             args.folder = None
         elif args.folder is True:
             args.folder = Path.cwd()
@@ -672,8 +812,10 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             setting = configured_destination()
             if setting["mode"] == "cwd":
                 args.folder = Path.cwd()
+                args._folder_from_default = True
             elif setting["mode"] == "folder":
                 args.folder = Path(setting["path"])
+                args._folder_from_default = True
         if args.folder is not None and args.date_now:
             parser.error("--date-now applies to Photos imports. Use --photos --date-now to override a folder default.")
         preflight.destination(args, find_tool)
@@ -703,12 +845,17 @@ def restore_options(args, journal, tokens):
     saved = journal.data["options"]
     args._rendered_backend_override = any(token.split("=", 1)[0] == "--rendered-backend" for token in tokens)
     args._reader_browser_override = any(token.split("=", 1)[0] == "--browser" for token in tokens)
+    args._explicit_photos = any(token.split("=", 1)[0] == "--photos" for token in tokens)
+    args._explicit_folder = any(token.split("=", 1)[0] == "--folder" for token in tokens)
+    args._folder_from_default = False
     for name in jobs.OPTIONS:
         flags = {"--" + name.replace("_", "-")}
         if name == "folder":
             flags.add("--photos")
         if not any(token.split("=", 1)[0] in flags for token in tokens) and name in saved:
             setattr(args, name, saved[name])
+    if getattr(args, "audio_format", None) is not None:
+        args.audio = True
     if args._reader_browser_override and not args._rendered_backend_override:
         args.rendered_backend = None
     if args.photos:
@@ -717,6 +864,15 @@ def restore_options(args, journal, tokens):
         args.folder = Path.cwd()
     elif args.folder is not None:
         args.folder = Path(args.folder).expanduser().resolve()
+    if getattr(args, "audio", False):
+        if args.photos:
+            raise ValueError("Audio files cannot be imported into Photos. Use --folder.")
+        if args.date_now:
+            raise ValueError("--date-now applies to Photos imports only, not --audio.")
+        if args.live_photos:
+            raise ValueError("--live-photos cannot be combined with --audio.")
+        if args.folder is None:
+            args.folder = resolve_audio_folder()
     if args.folder is not None and args.date_now:
         raise ValueError("--date-now applies to Photos imports only.")
     if args.profile and args.browser in {"auto", "none"}:
@@ -764,7 +920,9 @@ def download(args, setup_results, records=None, media_consumer=None):
             if ready and not args.redownload:
                 # A failed save already has a checked complete set. Retry the save.
                 phase = "save"
-                result = recovery.restore(journal, args, status, save_folder, import_photos, claimed=True, indices=[index])
+                result = recovery.restore(journal, args, status, save_folder, import_photos,
+                                          claimed=True, indices=[index],
+                                          audio_folder_resolver=resolve_audio_folder)
                 evidence.update(ready.get("evidence", {}), status="completed" if result == 0 else "failed")
                 return result
         url = args.link or (input("  Paste a link (no quotes needed): ") if sys.stdin.isatty() else sys.stdin.read())
@@ -778,31 +936,56 @@ def download(args, setup_results, records=None, media_consumer=None):
             transfers.reset_progress()
         jobs.record(input=url, status="running", failure=None, ready=None, receipt=None, stage=None, stage_identity=None)
         started = time.monotonic()
-        with activity("Resolving") if any(host in url for host in ("v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/", "xhslink.com", "xhslink.cn", "t.cn/")) else nullcontext():
+        with activity("Resolving") if any(host in url for host in ("v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/", "xhslink.com", "xhslink.cn", "t.cn/", "on.soundcloud.com")) else nullcontext():
             url = normalize_link(url)
         site, engine, domain = route(url)
         evidence.update(reference=reference(url), site=site)
+        audio_mode = (media_consumer is None) and (getattr(args, "audio", False) or is_audio_only_site(site))
+        if audio_mode:
+            if getattr(args, "photos", False):
+                raise ValueError("Audio files cannot be imported into Photos. Use --folder or linkget config --audio-folder.")
+            if getattr(args, "live_photos", False):
+                raise ValueError("--live-photos cannot be used with audio downloads.")
+            if getattr(args, "date_now", False):
+                raise ValueError("--date-now applies to Photos imports only, not audio downloads.")
+            if engine == "pixiv":
+                raise ValueError("Pixiv artworks are images only and contain no audio.")
         page_data = getattr(args, 'page_data', None)
         if page_data and (engine != 'douyin' or args.browser != 'none'):
             raise ValueError("--page-data supports only Douyin with --browser none.")
         provided_item = load_douyin_page(page_data, url) if page_data else None
-        if not args.folder and sys.platform != "darwin":
+        if not audio_mode and not args.folder and sys.platform != "darwin":
             raise ValueError("Photos is available on macOS only. Use --folder to choose a destination.")
-        required = ([] if engine in {"douyin", "xiaohongshu", "kuaishou", "pixiv"} else [engine]) + (["ffmpeg", "ffprobe"] if engine == "yt-dlp" else [])
+        required = ([] if engine in {"douyin", "xiaohongshu", "kuaishou", "pixiv"} else [engine]) + (["ffmpeg", "ffprobe"] if (engine == "yt-dlp" or audio_mode) else [])
         if domain == "reddit.com" and engine == "gallery-dl":
             required.extend(["yt-dlp", "ffmpeg"])
         if domain == "youtube.com":
             required.append("deno")
-        cookie_spec = browser_spec(args, "gallery-dl", domain) if engine != "douyin" and args.browser not in {"auto", "none"} else None
+        supports_auth = domain in accounts.SITES.values()
+        cookie_spec = browser_spec(args, "gallery-dl", domain) if supports_auth and engine != "douyin" and args.browser not in {"auto", "none"} else None
         if cookie_spec and "gallery-dl" not in required:
             required.append("gallery-dl")
         tools = {name: find_tool(name) for name in required}
         missing = [name for name, path in tools.items() if not path]
         if missing:
             raise RuntimeError(installation_hint(missing))
-        folder = args.folder.expanduser().resolve() if args.folder else None
+        existing_dest = (journal.data["items"][index - 1].get("destination_folder")
+                         if current else None)
+        if audio_mode:
+            if getattr(args, "_explicit_folder", False) and args.folder is not None:
+                folder = args.folder.expanduser().resolve()
+            elif existing_dest:
+                folder = Path(existing_dest).expanduser().resolve()
+            elif not args.folder or getattr(args, "_folder_from_default", False):
+                folder = resolve_audio_folder(None)
+            else:
+                folder = args.folder.expanduser().resolve()
+            preflight.writable_directory(folder)
+        else:
+            folder = args.folder.expanduser().resolve() if args.folder else None
         if folder:
             folder.mkdir(parents=True, exist_ok=True)
+            jobs.record(destination_folder=str(folder))
         destination = str(folder) if folder else "Photos"
         status("Source", site)
         status("Destination", destination)
@@ -861,7 +1044,9 @@ def download(args, setup_results, records=None, media_consumer=None):
                     log.write(f"Source: {url}\n")
                     command = None
                     if engine not in {"douyin", "xiaohongshu", "kuaishou", "pixiv"}:
-                        command = command_for(args, url, engine, domain, media_dir, tools, cookie_path)
+                        command = (command_for(args, url, engine, domain, media_dir, tools, cookie_path, audio_only=True)
+                                   if audio_mode else
+                                   command_for(args, url, engine, domain, media_dir, tools, cookie_path))
                     if engine == "yt-dlp":
                         info_path = stage / "video-info.json"
                         if info_path.exists() and metadata_proof is not None:
@@ -875,7 +1060,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                         if reader and reader(json.loads(info_path.read_text()), url, site):
                             evidence.update(status='completed')
                             return 0
-                        quality = selected_quality(info_path)
+                        quality = selected_quality(info_path, audio_only=True) if audio_mode else selected_quality(info_path)
                         if quality:
                             status("Quality", quality)
                     with activity("Downloading", media_dir):
@@ -889,7 +1074,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                                     downloader = download_pixiv
                                 else:
                                     downloader = download_kuaishou
-                                if engine == "douyin" and (args.live_photos or not args.folder):
+                                if engine == "douyin" and not audio_mode and (args.live_photos or not args.folder):
                                     notes = downloader(url, media_dir, cookie_path,
                                                        browser_item=browser_item, require_motion=True)
                                 else:
@@ -925,7 +1110,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                         read_metadata.update(source_metadata(json.loads(sidecar.read_text())))
                 if engine == "gallery-dl":
                     # Weibo's clean-image comparison needs its source sidecars.
-                    if domain == "weibo.com":
+                    if domain == "weibo.com" and not audio_mode:
                         download_info = gallery_evidence(media_dir, domain, remove=False)
                         with activity("Checking sources"):
                             source_notes = prefer_clean_images(media_dir, find_tool("ffmpeg"))
@@ -935,7 +1120,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                         download_info = gallery_evidence(media_dir, domain, remove=False)
                 for note in source_notes:
                     status("Media", note)
-                accepted = MEDIA | ({'.m4a', '.mp3', '.aac', '.opus', '.ogg', '.wav', '.flac', '.webm'} if media_consumer else set())
+                accepted = MEDIA | (AUDIO if (media_consumer or audio_mode) else set())
                 files = sorted(path for path in media_dir.iterdir() if path.is_file() and path.suffix.lower() in accepted)
                 files = ownership.FileList(files, transfers.proofs_for(files))
                 unfinished = [path for path in media_dir.iterdir() if path.suffix.lower() not in accepted | {".json"}]
@@ -983,7 +1168,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                     continue
                 raise
             except LoginRequired as failure:
-                if args.browser == "none":
+                if args.browser == "none" or not supports_auth:
                     raise
                 if session_dir is None:
                     session_dir = tempfile.TemporaryDirectory(prefix="linkget-session-")
@@ -1010,13 +1195,49 @@ def download(args, setup_results, records=None, media_consumer=None):
                     cookie_path = candidate
                     continue
                 raise LoginRequired(reason) from None
-        batch_media(files, download_info.metadata)
+        transfers.verify(files)
+        panel_metadata = dict(download_info.metadata)
+        if audio_mode and media_consumer is None:
+            metadata_by_file = {}
+            for sidecar in media_dir.glob("*.json"):
+                try:
+                    parsed_sidecar = json.loads(sidecar.read_text())
+                except (ValueError, OSError):
+                    continue
+                if isinstance(parsed_sidecar, dict):
+                    metadata_by_file[sidecar.name[:-5]] = parsed_sidecar
+            default_metadata = json.loads(info_path.read_text()) if info_path is not None else download_info.metadata
+            if isinstance(default_metadata, dict):
+                panel_metadata = default_metadata
+            phase = 'postprocess'
+            with activity("Preparing audio"):
+                files, audio_notes = prepare_audio(
+                    files,
+                    download_info.live_pairs,
+                    metadata_by_file,
+                    default_metadata,
+                    url,
+                    site,
+                    stage / "audio",
+                    tools,
+                    target_format=getattr(args, "audio_format", None),
+                )
+            for note in audio_notes:
+                status("Audio", note)
+            had_fallback = any(v == "fallback" for v in download_info.variants.values())
+            download_info.live_pairs = []
+            download_info.expected_count = len(files)
+            download_info.variants = {path.name: "fallback" for path in files} if had_fallback else {}
+            phase = 'download'
+        batch_media(files, panel_metadata)
         with activity("Checking") if getattr(_batch, "state", None) else nullcontext():
             media_records = inspect_files(files, download_info.variants)
         transfers.verify(files)
         evidence.update(files=media_records, expected_count=download_info.expected_count,
                         missing_motion=download_info.missing_motion, live_pairs=download_info.live_pairs,
                         highest_quality="not_verified", watermark="not_verified")
+        if audio_mode:
+            evidence['audio_mode'] = True
         if 'motion_metadata_complete' in download_info.metadata:
             evidence['motion_metadata_complete'] = download_info.metadata['motion_metadata_complete']
         if any(record.get('probe_ok') is False for record in media_records):

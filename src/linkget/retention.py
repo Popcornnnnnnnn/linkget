@@ -48,6 +48,7 @@ def _protected(journal,index,root):
         destination=other.data.get('options',{}).get('folder')
         if destination:protected.append(Path(destination).resolve())
         for number,row in enumerate(other.data['items'],1):
+            if row.get('destination_folder'):protected.append(Path(row['destination_folder']).resolve())
             if other.identifier==journal.identifier and number==index:continue
             protected.extend(Path(path).resolve() for path in staging.paths(row))
     return any(root==path or root in path.parents or path in root.parents for path in protected)
@@ -98,7 +99,7 @@ def preview(journal,index,active=False):
             copies=row.get('destination_files')
             if not isinstance(copies,list) or not copies:
                 keep('No recorded saved-copy evidence; observation cannot establish a safe cleanup candidate.','unknown');continue
-            destination=journal.data.get('options',{}).get('folder')
+            destination=row.get('destination_folder') or journal.data.get('options',{}).get('folder')
             if not isinstance(destination,str) or not Path(destination).is_absolute():
                 keep('No scoped folder-copy evidence; Photos and unknown destinations remain protected.','unknown');continue
             copy_hashes=set()

@@ -342,6 +342,7 @@ def download(url, directory, cookie_path=None, *, browser_item=None, require_mot
                          "use --live-photos with a complete browser media set to preserve motion.")
         return DownloadResult(notes, len(media), variants, pairs,
                               metadata={'description': item.get('desc', ''),
+                                        'author': (item.get('author') or {}).get('nickname', '') if isinstance(item.get('author'), dict) else '',
                                         'motion_metadata_complete': motion_complete})
     except HTTPError as error:
         raise RuntimeError(f"Douyin request failed (HTTP {error.code}). Open the post in your browser and check access or verification, then retry.") from error

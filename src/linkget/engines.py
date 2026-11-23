@@ -6,10 +6,21 @@ from urllib.parse import urlsplit
 if __package__:
     from .runtime import run_process
     from .failures import classify
+    from .links import BANDCAMP_RESERVED_HOSTS, soundcloud_track_parts
 else:
     from runtime import run_process
     from failures import classify
-SITES = "Instagram, X/Twitter, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, Weibo, Reddit, Lofter, Pixiv and Pinterest posts; YouTube videos and Shorts"
+    from links import BANDCAMP_RESERVED_HOSTS, soundcloud_track_parts
+SITES = (
+    "Instagram, X/Twitter, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, Weibo, "
+    "Reddit, Lofter, Pixiv and Pinterest posts; YouTube videos and Shorts; "
+    "YouTube Music, Bilibili Audio, SoundCloud and Bandcamp tracks"
+)
+AUDIO_ONLY_SITES = {"YouTube Music", "Bilibili Audio", "SoundCloud", "Bandcamp"}
+
+
+def is_audio_only_site(site):
+    return site in AUDIO_ONLY_SITES
 
 
 class PreparedCommand(list):
@@ -57,7 +68,7 @@ def restricted_bilibili_quality(info, messages):
 
 
 
-def prepare_bilibili(command, info_path, log):
+def prepare_bilibili(command, info_path, log, audio_only=False):
     """Check quality before downloading; reuse the same metadata for the download."""
     probe = command[:-1] + ["--skip-download", "--dump-single-json", "--no-quiet", command[-1]]
     result = run_process(probe, capture_output=True, text=True, timeout=60)
@@ -75,7 +86,7 @@ def prepare_bilibili(command, info_path, log):
             raise ValueError()
     except (IndexError, ValueError):
         raise RuntimeError("Bilibili returned unreadable video information; nothing has been downloaded.") from None
-    audio_read = '-f' in command and command[command.index('-f') + 1] == 'ba/b'
+    audio_read = audio_only or ("-f" in command and command[command.index("-f") + 1].startswith("ba")) or "/audio/au" in command[-1]
     reason = None if audio_read else restricted_bilibili_quality(info, messages)
     if reason:
         raise LoginRequired(reason)
@@ -84,25 +95,41 @@ def prepare_bilibili(command, info_path, log):
 
 
 
-def selected_quality(info_path):
+def selected_quality(info_path, audio_only=False):
     info = json.loads(info_path.read_text())
     selected = info.get("requested_formats") or [info]
-    video = next((item for item in selected if item.get("vcodec") not in {None, "none"}), None)
-    if not video or not video.get("width") or not video.get("height"):
-        return None
-    codec = video["vcodec"].split(".")[0]
-    codec = {"avc1": "H.264", "hvc1": "HEVC", "hev1": "HEVC", "av01": "AV1"}.get(codec, codec)
-    text = f"{video['width']}×{video['height']} · {codec}"
-    if video.get("fps"):
-        text += f" · {video['fps']:g} fps"
-    return text
+    video = None if audio_only else next((item for item in selected if item.get("vcodec") not in {None, "none"}), None)
+    if video and video.get("width") and video.get("height"):
+        codec = video["vcodec"].split(".")[0]
+        codec = {"avc1": "H.264", "hvc1": "HEVC", "hev1": "HEVC", "av01": "AV1"}.get(codec, codec)
+        text = f"{video['width']}×{video['height']} · {codec}"
+        if video.get("fps"):
+            text += f" · {video['fps']:g} fps"
+        return text
+    if audio_only or not video:
+        audio = next((item for item in selected if item.get("acodec") not in {None, "none"}), None)
+        if not audio:
+            return None
+        acodec = str(audio["acodec"]).split(".")[0].lower()
+        acodec = {"mp4a": "AAC", "opus": "Opus", "mp3": "MP3", "flac": "FLAC", "vorbis": "Vorbis", "aac": "AAC"}.get(acodec, acodec.upper())
+        parts = [acodec]
+        bitrate = audio.get("abr") or audio.get("tbr")
+        if bitrate:
+            parts.append(f"{float(bitrate):.0f} kbps")
+        if audio.get("asr"):
+            parts.append(f"{float(audio['asr']) / 1000:g} kHz")
+        return " · ".join(parts)
+    return None
 
 
 
-def prepare_video(command, info_path, log, domain):
+def prepare_video(command, info_path, log, domain, audio_only=False):
     if domain == "bilibili.com":
-        return prepare_bilibili(command, info_path, log)
-    site = "YouTube" if domain == "youtube.com" else "Weibo" if domain == "weibo.com" else "Reddit" if domain == "reddit.com" else "Site"
+        return prepare_bilibili(command, info_path, log, audio_only=audio_only)
+    if domain == "youtube.com":
+        site = "YouTube Music" if urlsplit(command[-1]).hostname == "music.youtube.com" else "YouTube"
+    else:
+        site = {"weibo.com": "Weibo", "reddit.com": "Reddit", "soundcloud.com": "SoundCloud", "bandcamp.com": "Bandcamp"}.get(domain, "Site")
     probe = command[:-1] + ["--skip-download", "--dump-single-json", "--no-quiet", command[-1]]
     result = run_process(probe, capture_output=True, text=True, timeout=90)
     lines = result.stdout.rstrip().splitlines()
@@ -114,15 +141,15 @@ def prepare_video(command, info_path, log, domain):
             raise LoginRequired(f"{site} authentication response:\n" + messages)
         if domain == "youtube.com" and ("PO Token" in messages or "JavaScript" in messages or "challenge" in messages.lower()):
             raise RuntimeError("YouTube's verification could not be completed. Run brew upgrade yt-dlp deno, then retry.\n" + "\n".join(messages.splitlines()[-6:]))
-        raise RuntimeError(f"Could not read this {site} video.\n" + "\n".join(messages.splitlines()[-8:]))
+        raise RuntimeError(f"Could not read this {site} media.\n" + "\n".join(messages.splitlines()[-8:]))
     try:
         info = json.loads(lines[-1])
         if not isinstance(info, dict):
             raise ValueError()
     except (IndexError, ValueError):
-        raise RuntimeError(f"{site} returned unreadable video information; nothing has been downloaded.") from None
+        raise RuntimeError(f"{site} returned unreadable media information; nothing has been downloaded.") from None
     if info.get("_type") in {"playlist", "multi_video"} or "entries" in info:
-        raise ValueError(f"Use a single {site} video link, not a playlist or channel.")
+        raise ValueError(f"Use a single {site} link, not a playlist, album, or channel.")
     if info.get("is_live") or info.get("live_status") in {"is_live", "is_upcoming", "post_live"}:
         raise ValueError(f"Live or upcoming {site} streams are not supported. Try the processed replay after it ends.")
     proof = write_metadata(info_path, info)
@@ -142,6 +169,8 @@ def route(url):
     if host in {"bilibili.com", "www.bilibili.com"}:
         if re.fullmatch(r"/video/(?:BV[\w]+|av\d+)/?", path):
             return "Bilibili video", "yt-dlp", "bilibili.com"
+        if re.fullmatch(r"/audio/au\d+/?", path):
+            return "Bilibili Audio", "yt-dlp", "bilibili.com"
         if re.fullmatch(r"/opus/\d+/?", path):
             return "Bilibili post", "gallery-dl", "bilibili.com"
     if host == "t.bilibili.com" and re.fullmatch(r"/\d+/?", path):
@@ -158,6 +187,22 @@ def route(url):
         return "Weibo video", "yt-dlp", "weibo.com"
     if host == "www.youtube.com" and re.fullmatch(r"/watch", path) and re.fullmatch(r"v=[\w-]{11}", parsed.query):
         return "YouTube", "yt-dlp", "youtube.com"
+    if host == "music.youtube.com":
+        if re.fullmatch(r"/watch", path) and re.fullmatch(r"v=[\w-]{11}", parsed.query):
+            return "YouTube Music", "yt-dlp", "youtube.com"
+        if path.startswith(("/playlist", "/browse", "/channel")):
+            raise ValueError("Use a single YouTube Music track link, not a playlist, album, or channel.")
+    if host in {"soundcloud.com", "www.soundcloud.com", "m.soundcloud.com"}:
+        parts = [part for part in path.split("/") if part]
+        if len(parts) >= 2 and parts[1].lower() == "sets":
+            raise ValueError("Use a single SoundCloud track link, not a playlist or set.")
+        if soundcloud_track_parts(path):
+            return "SoundCloud", "yt-dlp", "soundcloud.com"
+    if host and host.endswith(".bandcamp.com") and host not in BANDCAMP_RESERVED_HOSTS:
+        if re.fullmatch(r"/track/[^/]+/?", path):
+            return "Bandcamp", "yt-dlp", "bandcamp.com"
+        if path.startswith("/album/"):
+            raise ValueError("Use a single Bandcamp track link, not an album.")
     if host in {"reddit.com", "www.reddit.com", "old.reddit.com"} and "/comments/" in path:
         return "Reddit", "gallery-dl", "reddit.com"
     if host == "redd.it":
@@ -189,7 +234,7 @@ def browser_spec(args, engine, domain):
 
 
 
-def command_for(args, url, engine, domain, media_dir, tools, cookie_path=None):
+def command_for(args, url, engine, domain, media_dir, tools, cookie_path=None, audio_only=False):
     if engine == "gallery-dl":
         command = [tools[engine], "--config-ignore", "--write-metadata", "--directory", str(media_dir)]
         if domain == "instagram.com":
@@ -224,6 +269,8 @@ def command_for(args, url, engine, domain, media_dir, tools, cookie_path=None):
                    "--ffmpeg-location", str(Path(tools["ffmpeg"]).parent)]
         if getattr(args, 'read_audio', False):
             command.extend(['-f', 'ba/b'])
+        elif audio_only:
+            command.extend(["-f", "ba[ext=m4a]/ba/b"])
         elif domain == "reddit.com":
             command.extend(["-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4"])
         else:

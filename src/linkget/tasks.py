@@ -74,6 +74,8 @@ def show_download(journal, *, preview=False):
         if not active and state == 'running':
             state = 'interrupted (recorded running; no active task lock)'
         print(f'  Item {index}: {state}')
+        if row.get('destination_folder') and row.get('destination_folder') != destination:
+            print('  Destination: ' + display(row['destination_folder']))
         failure = row.get('failure')
         if state.startswith(('failed', 'cancelled', 'interrupted')) and not isinstance(failure, dict):
             print('  Failure: No structured cause recorded; inspect the retained diagnostics.')

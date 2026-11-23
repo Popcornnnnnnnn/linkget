@@ -19,6 +19,34 @@ XHS_SHORT_HOSTS = {"xhslink.com", "www.xhslink.com", "xhslink.cn", "www.xhslink.
 XHS_HOSTS = {"xiaohongshu.com", "www.xiaohongshu.com"} | XHS_SHORT_HOSTS
 WEIBO_HOSTS = {"weibo.com", "www.weibo.com", "m.weibo.cn", "weibo.cn", "video.weibo.com", "t.cn"}
 BILIBILI_HOSTS = {"bilibili.com", "www.bilibili.com", "m.bilibili.com", "b23.tv"}
+SOUNDCLOUD_SHORT_HOSTS = {"on.soundcloud.com"}
+SOUNDCLOUD_HOSTS = {"soundcloud.com", "www.soundcloud.com", "m.soundcloud.com"} | SOUNDCLOUD_SHORT_HOSTS
+SOUNDCLOUD_RESERVED_USERS = {
+    "discover", "stream", "feed", "search", "stations", "likes", "reposts",
+    "following", "followers", "tracks", "albums", "popular-tracks", "playlists",
+    "charts", "you", "upload", "messages", "notifications", "settings", "people",
+    "signin", "signup", "pages", "terms-of-use", "pro", "go", "jobs", "imprint",
+    "mobile",
+}
+SOUNDCLOUD_RESERVED_TABS = {
+    "sets", "tracks", "albums", "reposts", "likes", "popular-tracks",
+    "following", "followers", "comments", "recommended", "spotlight",
+}
+SOUNDCLOUD_RESERVED_TOKENS = {"albums", "sets", "recommended", "comments", "reposts", "likes"}
+BANDCAMP_RESERVED_HOSTS = {"bandcamp.com", "www.bandcamp.com", "daily.bandcamp.com"}
+
+
+def soundcloud_track_parts(path):
+    parts = [part for part in path.split("/") if part]
+    if len(parts) not in {2, 3}:
+        return None
+    if parts[0].lower() in SOUNDCLOUD_RESERVED_USERS or parts[1].lower() in SOUNDCLOUD_RESERVED_TABS:
+        return None
+    if not re.fullmatch(r"[\w-]+", parts[0]) or not re.fullmatch(r"[\w-]+", parts[1]):
+        return None
+    if len(parts) == 3 and (parts[2].lower() in SOUNDCLOUD_RESERVED_TOKENS or not re.fullmatch(r"[\w-]+", parts[2])):
+        return None
+    return parts
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -99,6 +127,9 @@ def canonical_post(url):
         match = re.fullmatch(r"/video/(BV[A-Za-z0-9]+)/?", parsed.path)
         if match:
             return f"https://www.bilibili.com/video/{match[1]}" + ("?" + parsed.query if parsed.query else "")
+        match = re.fullmatch(r"/audio/(au\d+)/?", parsed.path)
+        if match:
+            return f"https://www.bilibili.com/audio/{match[1]}"
     elif parsed.hostname in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}:
         match = re.fullmatch(r"/(?:shorts/|live/|embed/)?([\w-]{11})/?", parsed.path)
         video_id = match[1] if match and (parsed.hostname == "youtu.be" or parsed.path.startswith(("/shorts/", "/live/", "/embed/"))) else None
@@ -108,6 +139,19 @@ def canonical_post(url):
                 video_id = ids[0]
         if video_id:
             return "https://www.youtube.com/watch?" + urlencode({"v": video_id})
+    elif parsed.hostname == "music.youtube.com":
+        if parsed.path == "/watch":
+            ids = parse_qs(parsed.query).get("v", [])
+            if len(ids) == 1 and re.fullmatch(r"[\w-]{11}", ids[0]):
+                return "https://music.youtube.com/watch?" + urlencode({"v": ids[0]})
+    elif parsed.hostname in {"soundcloud.com", "www.soundcloud.com", "m.soundcloud.com"}:
+        parts = soundcloud_track_parts(parsed.path)
+        if parts:
+            return "https://soundcloud.com/" + "/".join(parts)
+    elif parsed.hostname and parsed.hostname.endswith(".bandcamp.com") and parsed.hostname not in BANDCAMP_RESERVED_HOSTS:
+        match = re.fullmatch(r"/track/([^/]+)/?", parsed.path)
+        if match:
+            return f"https://{parsed.hostname}/track/{match[1]}"
     return None
 
 
@@ -120,7 +164,7 @@ def normalize_link(text):
     if canonical:
         return canonical
     parsed = urlsplit(url)
-    short = parsed.hostname in {"v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "t.cn", "b23.tv"} | XHS_SHORT_HOSTS or (
+    short = parsed.hostname in {"v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "t.cn", "b23.tv"} | XHS_SHORT_HOSTS | SOUNDCLOUD_SHORT_HOSTS or (
         parsed.hostname in {"www.tiktok.com", "tiktok.com"} and parsed.path.startswith("/t/"))
     if not short:
         return url
@@ -132,6 +176,8 @@ def normalize_link(text):
         allowed = WEIBO_HOSTS
     elif parsed.hostname == "b23.tv":
         allowed = BILIBILI_HOSTS
+    elif parsed.hostname in SOUNDCLOUD_SHORT_HOSTS:
+        allowed = SOUNDCLOUD_HOSTS
     else:
         allowed = TIKTOK_HOSTS
     state = getattr(_batch, "state", None)
