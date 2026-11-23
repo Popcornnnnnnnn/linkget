@@ -11,10 +11,10 @@ import unicodedata
 from urllib.parse import urlsplit
 if __package__:
     from .runtime import _batch, batch_lock, check_batch_cancelled
+    from .media import AUDIO, MEDIA, VIDEO
 else:
     from runtime import _batch, batch_lock, check_batch_cancelled
-VIDEO = {".mp4", ".mov", ".m4v"}
-MEDIA = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".avif", ".tif", ".tiff"} | VIDEO
+    from media import AUDIO, MEDIA, VIDEO
 
 def terminal_styles(stream):
     return stream.isatty() and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
@@ -63,7 +63,7 @@ def downloaded_bytes(directory):
     with os.scandir(directory) as entries:
         for entry in entries:
             name = entry.name.removesuffix(".part")
-            if ".temp." in name or Path(name).suffix.lower() not in MEDIA | {".m4a", ".aac", ".opus", ".webm"}:
+            if ".temp." in name or Path(name).suffix.lower() not in MEDIA | AUDIO:
                 continue
             try:
                 if entry.is_file():
@@ -78,8 +78,16 @@ def downloaded_bytes(directory):
 
 def saved_description(files):
     videos = sum(path.suffix.lower() in VIDEO for path in files)
-    photos = len(files) - videos
-    parts = [f"{count} {kind}{'s' if count != 1 else ''}" for count, kind in ((photos, "photo"), (videos, "video")) if count]
+    audios = sum(path.suffix.lower() in AUDIO for path in files)
+    photos = len(files) - videos - audios
+    parts = []
+    for count, singular, plural in (
+        (photos, "photo", "photos"),
+        (videos, "video", "videos"),
+        (audios, "audio file", "audio files"),
+    ):
+        if count:
+            parts.append(f"{count} {singular if count == 1 else plural}")
     return ", ".join(parts) + " saved"
 
 

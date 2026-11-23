@@ -303,7 +303,9 @@ def download(url, directory, cookie_path=None):
                             'acquired_at': acquired_at, 'expected_count': len(media),
                             'files': {outputs[index]: transfers[outputs[index]] for index in sorted(outputs)}}
         return DownloadResult(notes, len(media), variants, pairs, missing,
-                              {'title': note.get('title', ''), 'description': note.get('desc', '')}, source_transport)
+                              {'title': note.get('title', ''), 'description': note.get('desc', ''),
+                               'author': (note.get('user') or {}).get('nickname', '') if isinstance(note.get('user'), dict) else ''},
+                              source_transport)
     except HTTPError as error:
         error.close()
         raise RuntimeError(f"Xiaohongshu request failed (HTTP {error.code}). Open a fresh share link in your browser and check access or verification.") from error

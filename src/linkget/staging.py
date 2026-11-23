@@ -151,6 +151,8 @@ def cleanup(status, folder=None, *, photos_verified=False):
             if other.data.get("options", {}).get("folder"):
                 protected.append(Path(other.data["options"]["folder"]).resolve())
             for number, item in enumerate(other.data["items"], 1):
+                if item.get("destination_folder"):
+                    protected.append(Path(item["destination_folder"]).resolve())
                 if other.identifier == journal.identifier and number == index:
                     continue
                 protected.extend(Path(path).resolve() for path in paths(item))

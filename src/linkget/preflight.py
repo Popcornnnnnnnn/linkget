@@ -29,13 +29,19 @@ def writable_directory(path):
     return path
 
 
-def destination(args, find_tool):
+def destination(args, find_tool, *, require_audio_tools=True):
+    if getattr(args, "audio", False) and args.folder is None:
+        raise ValueError("Audio downloads require a folder. Use --folder [PATH] or set a default with linkget config --audio-folder PATH.")
     if args.folder is not None:
         writable_directory(args.folder)
     else:
         if sys.platform != "darwin":
             raise ValueError("Photos is available on macOS only. Use --folder to choose a destination.")
         writable_directory(originals_directory())
+    if require_audio_tools and getattr(args, "audio", False):
+        missing = [name for name in ("ffmpeg", "ffprobe") if not find_tool(name)]
+        if missing:
+            raise RuntimeError("Audio downloads need ffmpeg and ffprobe. Run brew install ffmpeg.")
     if args.live_photos:
         if sys.platform != "darwin":
             raise ValueError("Native Live Photo pairing requires macOS.")

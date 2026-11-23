@@ -2,13 +2,13 @@
 import argparse
 from copy import copy
 
-COMMON={'folder','photos','browser','profile','live_photos','date_now','report'}
+COMMON={'folder','photos','audio','audio_format','browser','profile','live_photos','date_now','report'}
 SPECS={
  'config':('View or save personal defaults. Omit options for a read-only query.',
-           {'folder','photos','reader_browser'},
-           'linkget config\nlinkget config --reader-browser neo\nlinkget config --folder ~/Downloads\nThese settings are permanent. One-time page override: linkget URL --rendered-backend chrome.\n--reader-browser is configuration only; omit config for one-time --folder/--photos.'),
+           {'folder','photos','audio_folder','clear_audio_folder','reader_browser'},
+           'linkget config\nlinkget config --reader-browser neo\nlinkget config --folder ~/Downloads\nlinkget config --audio-folder ~/Music\nThese settings are permanent. One-time page override: linkget URL --rendered-backend chrome.\n--reader-browser is configuration only; omit config for one-time --folder/--photos.'),
  'doctor':('Inspect local tools, page-controller selection and saved-session metadata. Default: no website or browser requests.',
-           {'folder','photos','live_photos','browser','rendered_backend','probe_browser','check_session'},
+           {'folder','photos','audio','audio_format','live_photos','browser','rendered_backend','probe_browser','check_session'},
            'linkget doctor\nlinkget doctor --probe-browser neo\nlinkget doctor --check-session bilibili\nConnection/control checks do not establish actual article or website availability.'),
  'retry':('Retry unfinished download items; preserve checked retained resources and frozen controller choices.',
           COMMON|{'jobs','redownload','rendered_backend','page_data'},
@@ -46,6 +46,8 @@ def show(parser,tokens):
             overrides={
                 'config':{'folder':'Save a fixed default folder; omit PATH for the current folder on each run.',
                           'photos':'Save Photos as the default destination.',
+                          'audio_folder':'Save a default folder for audio and music downloads; omit PATH for the current folder on each run.',
+                          'clear_audio_folder':'Clear the saved default audio folder.',
                           'reader_browser':'Save the personal page reader; auto follows the saved/system browser.'},
                 'doctor':{'folder':'Check destination writability; no media is saved.',
                           'photos':'Check Photos staging prerequisites; no import.',

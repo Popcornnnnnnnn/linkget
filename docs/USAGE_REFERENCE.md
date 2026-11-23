@@ -2,12 +2,16 @@
 
 Detailed command behavior, recovery rules, media heuristics, and historical notes moved out of `README.md`.
 
-## Destination & Date Options
+## Destination, Audio & Date Options
 
 - `--folder [PATH]` saves to `PATH` (or the current working directory if omitted).
 - `--photos` imports to macOS Photos; `--date-now` sets the date of new Photos items (use `--photos --date-now` when your saved default is a folder).
+- `--audio` extracts audio-only from any supported video link to a folder; `--audio-format {mp3,m4a,flac,wav,opus}` converts when needed (implies `--audio`).
+- Music-only links (`music.youtube.com/watch`, `bilibili.com/audio/au...`, SoundCloud single tracks, Bandcamp `/track/...`) automatically run in audio mode.
+- **Audio default folder precedence:** explicit `--folder` → `linkget config --audio-folder [PATH]` → saved global `--folder` default → error (audio cannot be imported into macOS Photos; use `linkget config --clear-audio-folder` to clear).
+- **Audio quality & metadata:** Prefers original `.m4a` (AAC) when offered or keeps the best original stream without re-encoding (`--audio-format` skips re-encoding when the source codec already matches; otherwise uses `ffmpeg`: MP3 320k, M4A 256k, Opus 160k, lossless FLAC/WAV). Filenames use `Artist - Title.ext` with non-overwriting hash deduplication and best-effort embedded tags & cover art (cover art omitted on `.opus`/`.wav`).
 - Existing files are never overwritten. Download options override `linkget config` for that run only.
-- Relative paths given to `linkget config --folder PATH` are resolved when saved; bare `linkget config --folder` follows your working directory on each run.
+- Relative paths given to `linkget config --folder PATH` or `--audio-folder PATH` are resolved when saved; bare `--folder` / `--audio-folder` follows your working directory on each run.
 
 ## Batch Execution & Panel
 

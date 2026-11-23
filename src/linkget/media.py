@@ -27,7 +27,7 @@ class DownloadResult:
 
 VIDEO = {".mp4", ".mov", ".m4v"}
 MEDIA = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".avif", ".tif", ".tiff"} | VIDEO
-AUDIO = {'.m4a', '.mp3', '.aac', '.opus', '.ogg', '.wav', '.flac', '.webm'}
+AUDIO = {'.m4a', '.mp3', '.aac', '.opus', '.ogg', '.wav', '.flac', '.webm', '.mka'}
 
 
 def reference(url):
@@ -46,7 +46,8 @@ def inspect_files(files, variants=None):
                   "kind": "audio" if path.suffix.lower() in AUDIO else "video" if path.suffix.lower() in {".mp4", ".mov", ".m4v"} else "image",
                   "source": (variants or {}).get(path.name, "engine_selected"),
                   "width": None, "height": None, "codec": None, "audio": None,
-                  "duration": None, "bit_rate": None, "frame_rate": None, "probe_ok": None}
+                  "duration": None, "bit_rate": None, "frame_rate": None,
+                  "sample_rate": None, "channels": None, "probe_ok": None}
         if tool:
             process = None
             try:
@@ -55,13 +56,28 @@ def inspect_files(files, variants=None):
                 output, _ = process.communicate(timeout=20)
                 data = json.loads(output) if process.returncode == 0 else {}
                 streams = data.get("streams", [])
-                video = next((s for s in streams if s.get("codec_type") == "video"), {})
-                record.update(width=video.get("width"), height=video.get("height"), codec=video.get("codec_name"),
-                              audio=any(s.get("codec_type") == "audio" for s in streams),
-                              duration=data.get("format", {}).get("duration"),
-                              bit_rate=data.get("format", {}).get("bit_rate"),
-                              frame_rate=video.get("avg_frame_rate"),
-                              probe_ok=process.returncode == 0 and (any(s.get('codec_type') == 'audio' for s in streams) if record['kind'] == 'audio' else bool(video.get("width") and video.get("height"))))
+                if record["kind"] == "audio":
+                    audio_stream = next((s for s in streams if s.get("codec_type") == "audio"), {})
+                    record.update(
+                        width=None,
+                        height=None,
+                        frame_rate=None,
+                        codec=audio_stream.get("codec_name"),
+                        audio=bool(audio_stream),
+                        sample_rate=audio_stream.get("sample_rate"),
+                        channels=audio_stream.get("channels"),
+                        duration=data.get("format", {}).get("duration") or audio_stream.get("duration"),
+                        bit_rate=audio_stream.get("bit_rate") or data.get("format", {}).get("bit_rate"),
+                        probe_ok=process.returncode == 0 and bool(audio_stream),
+                    )
+                else:
+                    video = next((s for s in streams if s.get("codec_type") == "video"), {})
+                    record.update(width=video.get("width"), height=video.get("height"), codec=video.get("codec_name"),
+                                  audio=any(s.get("codec_type") == "audio" for s in streams),
+                                  duration=data.get("format", {}).get("duration"),
+                                  bit_rate=data.get("format", {}).get("bit_rate"),
+                                  frame_rate=video.get("avg_frame_rate"),
+                                  probe_ok=process.returncode == 0 and bool(video.get("width") and video.get("height")))
             except (OSError, ValueError, subprocess.TimeoutExpired):
                 if process is not None and process.poll() is None:
                     process.kill()
@@ -74,6 +90,29 @@ def inspect_files(files, variants=None):
 def quality_summary(records):
     descriptions = []
     for record in records:
+        if record.get('kind') == 'audio':
+            parts = [record['codec']] if record.get('codec') else ["Audio"]
+            try:
+                if float(record.get('bit_rate')) > 0:
+                    parts.append(f"{float(record['bit_rate']) / 1000:.0f} kbps")
+            except (TypeError, ValueError):
+                pass
+            try:
+                if int(record.get('sample_rate')) > 0:
+                    parts.append(f"{int(record['sample_rate']) / 1000:g} kHz")
+            except (TypeError, ValueError):
+                pass
+            try:
+                duration_value = float(record.get('duration'))
+                if duration_value > 0:
+                    total_seconds = max(1, round(duration_value))
+                    hours, remainder = divmod(total_seconds, 3600)
+                    minutes, seconds = divmod(remainder, 60)
+                    parts.append(f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}")
+            except (TypeError, ValueError):
+                pass
+            descriptions.append(' · '.join(parts))
+            continue
         parts = [f"{record['width']}×{record['height']}" if record.get('width') and record.get('height') else "Dimensions unavailable"]
         if record.get('codec'):
             parts.append(record['codec'])
@@ -171,7 +210,9 @@ def compare_reports(first, second):
             continue
         lf, rf = left["files"], right["files"]
         same = sorted(r["sha256"] for r in lf) == sorted(r["sha256"] for r in rf)
-        rows.append({"result": "Identical media bytes" if same else "Different media; visual comparison needed",
+        all_audio = bool(lf or rf) and all(r.get("kind") == "audio" for r in lf + rf)
+        diff_message = "Different audio; listening comparison needed" if all_audio else "Different media; visual comparison needed"
+        rows.append({"result": "Identical media bytes" if same else diff_message,
                      "first": quality_summary(lf), "second": quality_summary(rf),
                      "first_count": len(lf), "second_count": len(rf),
                      "same_bytes": same})
