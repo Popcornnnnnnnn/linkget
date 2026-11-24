@@ -138,6 +138,48 @@ export function resolveInputTarget(raw?: string | null): string | null {
   return null;
 }
 
+export function isArticleInspectTarget(res?: InspectResponse | null): boolean {
+  if (!res || !res.ok) {
+    return false;
+  }
+  if (
+    res.engine === "article" ||
+    res.engine === "web_article" ||
+    res.engine === "x_article"
+  ) {
+    return true;
+  }
+  if (res.metadata?.is_article === true) {
+    return true;
+  }
+  if (
+    res.domain === "toutiao.com" &&
+    Boolean(res.canonical_url?.includes("/article/"))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function resolveReadOutputFolder(
+  parentFolder: string,
+  now: Date = new Date(),
+): string {
+  const parent = ensureFolderExists(parentFolder);
+  const stamp = now
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d+Z$/, "");
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    const suffix = Math.random().toString(36).slice(2, 8);
+    const candidate = path.join(parent, `linkget-read-${stamp}-${suffix}`);
+    if (!fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return path.join(parent, `linkget-read-${stamp}-${Date.now()}`);
+}
+
 export function resolveEffectiveArticleFolder(
   prefs: ExtensionPreferences,
   config?: ConfigResponse | null,
@@ -581,6 +623,13 @@ export async function runLinkgetText(
   const env = augmentedEnv(options.env ?? process.env);
 
   return new Promise((resolve, reject) => {
+    if (options.signal?.aborted) {
+      const abortErr = new Error("Aborted");
+      abortErr.name = "AbortError";
+      reject(abortErr);
+      return;
+    }
+
     const child = spawn(binary, args, {
       cwd,
       env,
@@ -589,24 +638,56 @@ export async function runLinkgetText(
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const timer =
-      timeoutMs > 0
-        ? setTimeout(() => {
-            if (!settled) {
-              settled = true;
-              try {
-                child.kill("SIGTERM");
-              } catch {
-                // ignore
-              }
-              reject(
-                new Error(
-                  `linkget timed out after ${Math.round(timeoutMs / 1000)}s`,
-                ),
-              );
-            }
-          }, timeoutMs)
-        : undefined;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const cleanup = () => {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (killTimer) clearTimeout(killTimer);
+      options.signal?.removeEventListener("abort", onAbort);
+    };
+
+    const terminateChild = () => {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        return;
+      }
+      killTimer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // already exited
+        }
+      }, 1500);
+    };
+
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      terminateChild();
+      const abortErr = new Error("Command aborted");
+      abortErr.name = "AbortError";
+      reject(abortErr);
+    };
+
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+
+    if (timeoutMs > 0) {
+      timeoutTimer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          terminateChild();
+          reject(
+            new Error(
+              `linkget timed out after ${Math.round(timeoutMs / 1000)}s`,
+            ),
+          );
+        }
+      }, timeoutMs);
+    }
 
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (c: string) => {
@@ -616,17 +697,25 @@ export async function runLinkgetText(
     child.stderr?.on("data", (c: string) => {
       stderr += c;
     });
-    child.on("error", (err) => {
+    child.on("error", (err: NodeJS.ErrnoException) => {
       if (!settled) {
         settled = true;
-        if (timer) clearTimeout(timer);
+        cleanup();
+        if (err.code === "ENOENT") {
+          reject(
+            new Error(
+              `linkget binary not found at "${binary}". Install via Homebrew (brew install Popcornnnnnnnn/tap/linkget) or set Linkget Binary Path in Extension Preferences.`,
+            ),
+          );
+          return;
+        }
         reject(err);
       }
     });
     child.on("close", (exitCode) => {
       if (!settled) {
         settled = true;
-        if (timer) clearTimeout(timer);
+        cleanup();
         resolve({ stdout, stderr, exitCode });
       }
     });

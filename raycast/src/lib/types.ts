@@ -74,11 +74,12 @@ export interface InspectResponse {
 }
 
 export interface SavedFileMeta {
-  path: string;
+  path?: string;
+  file?: string;
   bytes?: number;
   width?: number;
   height?: number;
-  duration?: number;
+  duration?: number | string | null;
 }
 
 export interface DownloadResponse {

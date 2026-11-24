@@ -31,9 +31,9 @@ export function detectArticleArchive(
   const htmlFile = savedFiles.find(
     (f) => path.basename(f).toLowerCase() === "article.html",
   );
-  const mdFile = savedFiles.find(
-    (f) => path.basename(f).toLowerCase() === "article.md",
-  );
+  const mdFile =
+    savedFiles.find((f) => path.basename(f).toLowerCase() === "article.md") ||
+    savedFiles.find((f) => path.basename(f).toLowerCase() === "content.md");
   const jsonFile = savedFiles.find(
     (f) => path.basename(f).toLowerCase() === "content.json",
   );
@@ -58,7 +58,12 @@ export function detectArticleArchive(
     }
     const candidateHtml = path.join(folderPath, "article.html");
     const candidateMd = path.join(folderPath, "article.md");
-    if (!isRegularFile(candidateHtml) && !isRegularFile(candidateMd)) {
+    const candidateContentMd = path.join(folderPath, "content.md");
+    if (
+      !isRegularFile(candidateHtml) &&
+      !isRegularFile(candidateMd) &&
+      !isRegularFile(candidateContentMd)
+    ) {
       return null;
     }
   }
@@ -76,7 +81,9 @@ export function detectArticleArchive(
     mdFile ||
     (isRegularFile(path.join(folderPath, "article.md"))
       ? path.join(folderPath, "article.md")
-      : null);
+      : isRegularFile(path.join(folderPath, "content.md"))
+        ? path.join(folderPath, "content.md")
+        : null);
   const resolvedJson =
     jsonFile ||
     (isRegularFile(path.join(folderPath, "content.json"))
@@ -389,15 +396,30 @@ export function rewriteArticleImageLinksForRaycast(
   markdown: string,
   folderPath: string,
 ): string {
+  let realRoot = folderPath;
+  try {
+    realRoot = fs.realpathSync(folderPath);
+  } catch {
+    // fallback to provided path
+  }
   return markdown.replace(
-    /!\[([^\]]*)\]\((assets\/[^)\s]+)\)/g,
+    /!\[((?:\\.|[^\]])*)\]\((assets\/[^)\s]+)\)/g,
     (_match, alt: string, relPath: string) => {
-      const abs = path.resolve(folderPath, relPath);
-      const relative = path.relative(folderPath, abs);
+      const abs = path.resolve(realRoot, relPath);
+      const relative = path.relative(realRoot, abs);
       if (relative.startsWith("..") || path.isAbsolute(relative)) {
         return `![${alt}](${relPath})`;
       }
-      return `![${alt}](${pathToFileURL(abs).href})`;
+      try {
+        const realAbs = fs.realpathSync(abs);
+        const realRel = path.relative(realRoot, realAbs);
+        if (realRel.startsWith("..") || path.isAbsolute(realRel)) {
+          return `![${alt}](${relPath})`;
+        }
+        return `![${alt}](${pathToFileURL(realAbs).href})`;
+      } catch {
+        return `![${alt}](${pathToFileURL(abs).href})`;
+      }
     },
   );
 }

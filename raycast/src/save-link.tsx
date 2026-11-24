@@ -20,11 +20,13 @@ import {
   ensureFolderExists,
   getConfig,
   inspectUrl,
+  isArticleInspectTarget,
   normalizeLinkgetError,
   resolveEffectiveArticleFolder,
   resolveEffectiveAudioFolder,
   resolveEffectiveMediaFallbackFolder,
   resolveInputTarget,
+  resolveReadOutputFolder,
   submitReadTask,
 } from "./lib/cli";
 import type {
@@ -79,7 +81,8 @@ function summarizeInspect(res: InspectResponse | null): string {
   const tags: string[] = [];
   if (res.site) tags.push(res.site);
   if (res.engine) tags.push(`engine: ${res.engine}`);
-  if (res.supports_article_download) tags.push("article archive");
+  if (isArticleInspectTarget(res)) tags.push("article archive");
+  else if (res.supports_article_download) tags.push("media or X article");
   else if (res.effective_audio_mode || res.audio_only) tags.push("audio");
   else if (res.kind === "local_file") tags.push("local file (read/OCR)");
   if (res.session_state && res.session_state !== "not_applicable") {
@@ -143,6 +146,8 @@ export default function SaveLinkCommand(
   const [isInspecting, setIsInspecting] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const activeRunAbortRef = useRef<AbortController | null>(null);
+  const inspectedTargetRef = useRef<string | null>(null);
+  const inspectReqIdRef = useRef<number>(0);
 
   useEffect(() => {
     if (props.launchContext?.url || prefs.autoDetectClipboard === false) {
@@ -173,10 +178,14 @@ export default function SaveLinkCommand(
   useEffect(() => {
     const target = resolveInputTarget(urlInput);
     if (!target) {
+      inspectReqIdRef.current += 1;
+      inspectedTargetRef.current = null;
       setInspectResult(null);
+      setIsInspecting(false);
       return;
     }
 
+    const reqId = ++inspectReqIdRef.current;
     const controller = new AbortController();
     const timer = setTimeout(() => {
       setIsInspecting(true);
@@ -191,15 +200,21 @@ export default function SaveLinkCommand(
         { binaryPath: prefs.linkgetPath, signal: controller.signal },
       )
         .then((res) => {
-          if (controller.signal.aborted) return;
+          if (controller.signal.aborted || reqId !== inspectReqIdRef.current) {
+            return;
+          }
+          inspectedTargetRef.current = target;
           setInspectResult(res);
           if (!modeManualRef.current && res.ok) {
             if (res.kind === "local_file") {
               setMode("read");
-            } else if (res.supports_article_download) {
+              setDestination((prev) => (prev === "photos" ? "default" : prev));
+            } else if (isArticleInspectTarget(res)) {
               setMode("article");
+              setDestination((prev) => (prev === "photos" ? "default" : prev));
             } else if (res.effective_audio_mode || res.audio_only) {
               setMode("audio");
+              setDestination((prev) => (prev === "photos" ? "default" : prev));
             }
           }
         })
@@ -207,7 +222,7 @@ export default function SaveLinkCommand(
           // ignore aborted or transient inspection failures during typing
         })
         .finally(() => {
-          if (!controller.signal.aborted) {
+          if (reqId === inspectReqIdRef.current) {
             setIsInspecting(false);
           }
         });
@@ -237,6 +252,9 @@ export default function SaveLinkCommand(
       return;
     }
     modeManualRef.current = false;
+    inspectedTargetRef.current = null;
+    setInspectResult(null);
+    setMode("auto");
     setUrlError(undefined);
     setUrlInput(activeUrl);
     await showToast({
@@ -255,6 +273,7 @@ export default function SaveLinkCommand(
       style: Toast.Style.Animated,
       title: "Probing Remote Metadata…",
     });
+    const reqId = ++inspectReqIdRef.current;
     setIsInspecting(true);
     try {
       const res = await inspectUrl(
@@ -267,11 +286,19 @@ export default function SaveLinkCommand(
         },
         { binaryPath: prefs.linkgetPath },
       );
-      setInspectResult(res);
+      if (reqId === inspectReqIdRef.current) {
+        inspectedTargetRef.current = target;
+        setInspectResult(res);
+      }
       if (res.ok) {
         if (!modeManualRef.current) {
-          if (res.supports_article_download) setMode("article");
-          else if (res.effective_audio_mode || res.audio_only) setMode("audio");
+          if (isArticleInspectTarget(res)) {
+            setMode("article");
+            setDestination((prev) => (prev === "photos" ? "default" : prev));
+          } else if (res.effective_audio_mode || res.audio_only) {
+            setMode("audio");
+            setDestination((prev) => (prev === "photos" ? "default" : prev));
+          }
         }
         toast.style = Toast.Style.Success;
         toast.title = res.metadata?.title || res.site || "Metadata Loaded";
@@ -286,7 +313,9 @@ export default function SaveLinkCommand(
       toast.title = "Probe Failed";
       toast.message = error instanceof Error ? error.message : String(error);
     } finally {
-      setIsInspecting(false);
+      if (reqId === inspectReqIdRef.current) {
+        setIsInspecting(false);
+      }
     }
   };
 
@@ -302,42 +331,20 @@ export default function SaveLinkCommand(
     const isLocalPath =
       !target.startsWith("http://") && !target.startsWith("https://");
     const effectiveMode: SaveMode = isLocalPath ? "read" : mode;
-
-    let chosenFolder: string | undefined;
-    if (destination === "folder") {
-      if (!folderPaths[0]) {
-        await showToast({
-          style: Toast.Style.Failure,
-          title: "Choose a Destination Folder",
-        });
-        return;
-      }
-      chosenFolder = ensureFolderExists(folderPaths[0]);
-    } else if (destination === "default") {
-      const config = await getConfig({ binaryPath: prefs.linkgetPath }).catch(
-        () => null,
-      );
-      if (
-        effectiveMode === "article" ||
-        (effectiveMode === "auto" && inspectResult?.supports_article_download)
-      ) {
-        chosenFolder = ensureFolderExists(
-          resolveEffectiveArticleFolder(prefs, config),
-        );
-      } else if (
+    const effectiveDest: DestinationChoice =
+      (effectiveMode === "article" ||
         effectiveMode === "audio" ||
-        (effectiveMode === "auto" &&
-          (inspectResult?.effective_audio_mode || inspectResult?.audio_only))
-      ) {
-        chosenFolder = ensureFolderExists(
-          resolveEffectiveAudioFolder(prefs, config),
-        );
-      } else {
-        const fallback = resolveEffectiveMediaFallbackFolder(prefs, config);
-        if (fallback) {
-          chosenFolder = ensureFolderExists(fallback);
-        }
-      }
+        effectiveMode === "read") &&
+      destination === "photos"
+        ? "default"
+        : destination;
+
+    if (effectiveDest === "folder" && !folderPaths[0]) {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "Choose a Destination Folder",
+      });
+      return;
     }
 
     activeRunAbortRef.current?.abort();
@@ -356,6 +363,58 @@ export default function SaveLinkCommand(
     });
 
     try {
+      let currentInspect =
+        inspectResult && inspectedTargetRef.current === target
+          ? inspectResult
+          : null;
+      if (
+        !currentInspect &&
+        effectiveMode === "auto" &&
+        effectiveDest === "default"
+      ) {
+        currentInspect = await inspectUrl(
+          target,
+          { noNetwork: true, browser },
+          { binaryPath: prefs.linkgetPath, signal: runController.signal },
+        ).catch(() => null);
+      }
+
+      let chosenFolder: string | undefined;
+      if (effectiveMode === "read") {
+        if (effectiveDest === "folder") {
+          chosenFolder = resolveReadOutputFolder(folderPaths[0]);
+        }
+      } else if (effectiveDest === "folder") {
+        chosenFolder = ensureFolderExists(folderPaths[0]);
+      } else if (effectiveDest === "default") {
+        const config = await getConfig({
+          binaryPath: prefs.linkgetPath,
+          signal: runController.signal,
+        }).catch(() => null);
+        if (
+          effectiveMode === "article" ||
+          (effectiveMode === "auto" && isArticleInspectTarget(currentInspect))
+        ) {
+          chosenFolder = ensureFolderExists(
+            resolveEffectiveArticleFolder(prefs, config),
+          );
+        } else if (
+          effectiveMode === "audio" ||
+          (effectiveMode === "auto" &&
+            (currentInspect?.effective_audio_mode ||
+              currentInspect?.audio_only))
+        ) {
+          chosenFolder = ensureFolderExists(
+            resolveEffectiveAudioFolder(prefs, config),
+          );
+        } else {
+          const fallback = resolveEffectiveMediaFallbackFolder(prefs, config);
+          if (fallback) {
+            chosenFolder = ensureFolderExists(fallback);
+          }
+        }
+      }
+
       if (effectiveMode === "read") {
         const readRes = await submitReadTask(
           target,
@@ -402,7 +461,7 @@ export default function SaveLinkCommand(
         target,
         {
           mode: effectiveMode,
-          destination,
+          destination: effectiveDest,
           folder: chosenFolder,
           noAssets: !downloadAssets,
           audioFormat,
@@ -455,7 +514,9 @@ export default function SaveLinkCommand(
         />,
       );
     } finally {
-      setIsSubmitting(false);
+      if (activeRunAbortRef.current === runController) {
+        setIsSubmitting(false);
+      }
     }
   };
 
@@ -500,6 +561,9 @@ export default function SaveLinkCommand(
         onChange={(value) => {
           setUrlError(undefined);
           modeManualRef.current = false;
+          inspectedTargetRef.current = null;
+          setInspectResult(null);
+          setMode("auto");
           setUrlInput(value);
         }}
       />
@@ -514,8 +578,17 @@ export default function SaveLinkCommand(
         title="Mode"
         value={mode}
         onChange={(next) => {
+          const nextMode = next as SaveMode;
           modeManualRef.current = true;
-          setMode(next as SaveMode);
+          setMode(nextMode);
+          if (
+            (nextMode === "article" ||
+              nextMode === "audio" ||
+              nextMode === "read") &&
+            destination === "photos"
+          ) {
+            setDestination("default");
+          }
         }}
       >
         {MODE_LABELS.map((item) => (

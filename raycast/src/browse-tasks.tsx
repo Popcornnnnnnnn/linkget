@@ -112,9 +112,14 @@ async function enrichTask(task: TaskEntry): Promise<EnrichedTask> {
   }
 
   const firstItem = task.items[0];
-  const savedFiles = firstItem?.saved_files || [];
+  const allSavedFiles = task.items.flatMap((row) => row.saved_files || []);
+  const savedFiles = allSavedFiles;
   const itemDest = firstItem?.destination || task.destination;
-  const isPhotos = itemDest === "Photos";
+  const isPhotos =
+    task.items.length > 0 &&
+    task.items.every(
+      (row) => (row.destination || task.destination) === "Photos",
+    );
 
   const archive = detectArticleArchive(savedFiles, isPhotos ? null : itemDest);
   const articleMeta = archive ? await readArticleLocalMeta(archive) : null;
@@ -215,15 +220,19 @@ function buildDetailMarkdown(entry: EnrichedTask): string {
 
   if (task.kind === "download") {
     const dl: DownloadTask = task;
-    const item = dl.items[0];
+    const failedItem = dl.items.find(
+      (row) => row.status !== "completed" && row.failure,
+    );
     const parts = [`## ${entry.displayTitle}`];
-    if (item?.failure) {
-      parts.push(`### Failure\n\n${item.failure.message || "Unknown error"}`);
-      if (item.failure.next_step) {
-        parts.push(`**Next Step:** ${item.failure.next_step}`);
+    if (failedItem?.failure) {
+      parts.push(
+        `### Failure${dl.items.length > 1 ? ` (Item ${failedItem.item})` : ""}\n\n${failedItem.failure.message || "Unknown error"}`,
+      );
+      if (failedItem.failure.next_step) {
+        parts.push(`**Next Step:** ${failedItem.failure.next_step}`);
       }
     }
-    const files = item?.saved_files || [];
+    const files = dl.items.flatMap((row) => row.saved_files || []);
     if (files.length > 0) {
       parts.push(
         `### Saved Files (${files.length})\n\n${files
@@ -232,9 +241,10 @@ function buildDetailMarkdown(entry: EnrichedTask): string {
           .join("\n")}`,
       );
     }
-    if (item?.retained_paths && item.retained_paths.length > 0) {
+    const retained = dl.items.flatMap((row) => row.retained_paths || []);
+    if (retained.length > 0) {
       parts.push(
-        `### Retained Staging Paths\n\n${item.retained_paths
+        `### Retained Staging Paths\n\n${retained
           .slice(0, 10)
           .map((p) => `- \`${p}\``)
           .join("\n")}`,

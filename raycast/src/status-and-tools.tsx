@@ -78,9 +78,16 @@ export default function StatusAndToolsCommand() {
         ),
       ]);
 
-      if (docRes.status === "fulfilled" && docRes.value.ok) {
-        setDoctor(docRes.value);
-      } else if (docRes.status === "rejected") {
+      if (docRes.status === "fulfilled") {
+        if (docRes.value.tools || docRes.value.version) {
+          setDoctor(docRes.value);
+        } else if (!docRes.value.ok) {
+          setLoadError(
+            normalizeLinkgetError(docRes.value.error, "Linkget Doctor Failed")
+              .message,
+          );
+        }
+      } else {
         setLoadError(
           docRes.reason instanceof Error
             ? docRes.reason.message
@@ -90,7 +97,10 @@ export default function StatusAndToolsCommand() {
       if (cfgRes.status === "fulfilled" && cfgRes.value.ok) {
         setConfig(cfgRes.value);
       }
-      if (cleanRes.status === "fulfilled" && cleanRes.value.ok) {
+      if (
+        cleanRes.status === "fulfilled" &&
+        typeof cleanRes.value.eligible_count === "number"
+      ) {
         setCleanPreview(cleanRes.value);
       }
     } finally {
@@ -275,9 +285,14 @@ export default function StatusAndToolsCommand() {
         `- **Cutoff:** older than \`${cleanPreview.older_than}\``,
         `- **Eligible to Remove:** ${cleanPreview.eligible_count} stage(s) (${formatBytes(cleanPreview.reclaimable_bytes)})`,
         `- **Protected & Kept:** ${cleanPreview.kept_count} stage(s)`,
+        cleanPreview.errors && cleanPreview.errors.length > 0
+          ? `- **Receipt Warnings:** ${cleanPreview.errors.length} receipt(s) could not be read and remain protected`
+          : "",
         "",
         "Only verified, completed, temporary `linkget-*` staging folders older than the cutoff are eligible. User downloads, saved articles, active tasks, and unverified Photos receipts are always preserved.",
-      ].join("\n")
+      ]
+        .filter(Boolean)
+        .join("\n")
     : "# Temporary Staging Cleanup\n\nLoading cleanup preview…";
 
   return (
@@ -322,10 +337,13 @@ export default function StatusAndToolsCommand() {
                   tag: {
                     value: doctor?.missing_tools?.length
                       ? `${doctor.missing_tools.length} missing`
-                      : "Healthy",
-                    color: doctor?.missing_tools?.length
-                      ? Color.Orange
-                      : Color.Green,
+                      : doctor?.ok
+                        ? "Healthy"
+                        : "Check Needed",
+                    color:
+                      doctor?.missing_tools?.length || !doctor?.ok
+                        ? Color.Orange
+                        : Color.Green,
                   },
                 },
               ]}
@@ -463,7 +481,22 @@ export default function StatusAndToolsCommand() {
           {sessions.length > 0 && (
             <List.Section title="Site Sessions">
               {sessions.map(([siteKey, session]) => {
-                const isSaved = session.state !== "missing";
+                const isSaved =
+                  session.state === "saved" ||
+                  session.state === "saved_unverified" ||
+                  session.state === "valid" ||
+                  session.state === "connected";
+                const statusLabel = isSaved
+                  ? "Saved"
+                  : session.state === "missing"
+                    ? "Public Only"
+                    : session.state.replace(/_/g, " ");
+                const statusColor = isSaved
+                  ? Color.Blue
+                  : session.state === "blocked" ||
+                      session.state === "disconnected"
+                    ? Color.Orange
+                    : Color.SecondaryText;
                 return (
                   <List.Item
                     key={siteKey}
@@ -476,8 +509,8 @@ export default function StatusAndToolsCommand() {
                     accessories={[
                       {
                         tag: {
-                          value: isSaved ? "Saved" : "Public Only",
-                          color: isSaved ? Color.Blue : Color.SecondaryText,
+                          value: statusLabel,
+                          color: statusColor,
                         },
                       },
                     ]}

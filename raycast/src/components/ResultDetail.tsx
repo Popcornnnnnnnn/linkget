@@ -108,8 +108,11 @@ export function ResultDetail(props: ResultDetailProps) {
         setKind("download");
         return;
       }
+      const firstFailed = res.items?.find(
+        (item) => item.status !== "completed" && item.error,
+      );
       const errInfo = normalizeLinkgetError(
-        res.error || firstItem?.error,
+        res.error || firstFailed?.error || firstItem?.error,
         "Retry Failed",
       );
       toast.style = Toast.Style.Failure;
@@ -351,10 +354,10 @@ export function ResultDetail(props: ResultDetailProps) {
 
   const fileRows =
     dl?.files && dl.files.length > 0
-      ? dl.files.map(
-          (f) =>
-            `- \`${path.basename(f.path)}\`${f.bytes ? ` (${formatBytes(f.bytes)})` : ""}`,
-        )
+      ? dl.files.map((f) => {
+          const name = f.path ? path.basename(f.path) : f.file || "file";
+          return `- \`${name}\`${f.bytes ? ` (${formatBytes(f.bytes)})` : ""}`;
+        })
       : savedFiles.map((f) => `- \`${path.basename(f)}\``);
 
   const summaryMd = [

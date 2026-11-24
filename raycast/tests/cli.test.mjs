@@ -20,6 +20,7 @@ import {
   buildReadArgs,
   buildTasksArgs,
   extractUrlInput,
+  isArticleInspectTarget,
   normalizeLinkgetError,
   parseLinkgetJson,
   resolveEffectiveArticleFolder,
@@ -27,6 +28,7 @@ import {
   resolveEffectiveMediaFallbackFolder,
   resolveInputTarget,
   resolveLinkgetBinary,
+  resolveReadOutputFolder,
   runLinkgetJson,
 } from "../src/lib/cli.ts";
 
@@ -332,6 +334,75 @@ test("article helpers read saved bundle metadata, markdown, and tolerate missing
     assert.equal(formatBytes(1536), "1.5 KB");
     assert.equal(formatDuration(125), "2:05");
     assert.match(formatTaskDate("20261124T105751-6f203dc53c50") || "", /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("isArticleInspectTarget distinguishes actual article targets from ordinary X media posts", () => {
+  assert.equal(
+    isArticleInspectTarget({
+      ok: true,
+      site: "X",
+      engine: "gallery-dl",
+      domain: "x.com",
+      supports_article_download: true,
+    }),
+    false,
+  );
+  assert.equal(
+    isArticleInspectTarget({
+      ok: true,
+      site: "X Article",
+      engine: "x_article",
+      domain: "x.com",
+      supports_article_download: true,
+    }),
+    true,
+  );
+  assert.equal(
+    isArticleInspectTarget({
+      ok: true,
+      site: "WeChat",
+      engine: "web_article",
+      supports_article_download: true,
+    }),
+    true,
+  );
+  assert.equal(
+    isArticleInspectTarget({
+      ok: true,
+      site: "Toutiao",
+      engine: "rendered_page",
+      domain: "toutiao.com",
+      canonical_url: "https://www.toutiao.com/article/123/",
+    }),
+    true,
+  );
+});
+
+test("resolveReadOutputFolder returns a non-existent leaf under an existing parent and supports content.md archives", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "linkget-raycast-read-"));
+  try {
+    const leaf = resolveReadOutputFolder(path.join(tmpDir, "notes"));
+    assert.equal(fs.existsSync(path.dirname(leaf)), true);
+    assert.equal(fs.existsSync(leaf), false);
+
+    const readArchiveDir = path.join(tmpDir, "read-article");
+    fs.mkdirSync(path.join(readArchiveDir, "assets"), { recursive: true });
+    fs.writeFileSync(path.join(readArchiveDir, "article.html"), "<html></html>");
+    fs.writeFileSync(path.join(readArchiveDir, "content.md"), "# Read Title\n");
+    fs.writeFileSync(path.join(readArchiveDir, "assets", "cover.jpg"), Buffer.from([1, 2, 3]));
+
+    const detected = detectArticleArchive([], readArchiveDir);
+    assert.ok(detected);
+    assert.equal(detected.mdPath, path.join(readArchiveDir, "content.md"));
+
+    const escaped = rewriteArticleImageLinksForRaycast(
+      "![alt \\[tag\\]](assets/cover.jpg)",
+      readArchiveDir,
+    );
+    assert.match(escaped, /file:\/\//);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
