@@ -30,6 +30,7 @@ import {
   resolveEffectiveArticleFolder,
   resolveInputTarget,
   resolveReadOutputFolder,
+  startBackgroundDownload,
   submitReadTask,
 } from "./lib/cli";
 import type {
@@ -140,6 +141,8 @@ export default function SaveLinkCommand(
   const [maxSize, setMaxSize] = useState<string>("");
   const [extractFrames, setExtractFrames] = useState<boolean>(false);
   const [frameOcr, setFrameOcr] = useState<boolean>(false);
+  const [livePhotos, setLivePhotos] = useState<boolean>(false);
+  const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
   const [browser, setBrowser] = useState<BrowserOption>(
     prefs.defaultBrowser || "auto",
   );
@@ -323,13 +326,31 @@ export default function SaveLinkCommand(
     }
   };
 
-  const handleSubmit = async () => {
+  type PreparedSave =
+    | {
+        kind: "read";
+        target: string;
+        chosenFolder?: string;
+      }
+    | {
+        kind: "download";
+        target: string;
+        effectiveMode: Exclude<SaveMode, "read">;
+        effectiveDest: DestinationChoice;
+        downloadDest: DestinationChoice;
+        chosenFolder?: string;
+        cachedConfig: ConfigResponse | null;
+      };
+
+  const prepareSaveTarget = async (
+    signal?: AbortSignal,
+  ): Promise<PreparedSave | null> => {
     const target = resolveInputTarget(urlInput);
     if (!target) {
       setUrlError(
         "Paste a valid post/article URL, share text, or local file path.",
       );
-      return;
+      return null;
     }
 
     const isLocalPath =
@@ -348,73 +369,188 @@ export default function SaveLinkCommand(
         style: Toast.Style.Failure,
         title: "Choose a Destination Folder",
       });
-      return;
+      return null;
     }
 
-    activeRunAbortRef.current?.abort();
+    let currentInspect =
+      inspectResult && inspectedTargetRef.current === target
+        ? inspectResult
+        : null;
+    if (
+      !currentInspect &&
+      effectiveMode === "auto" &&
+      effectiveDest === "default"
+    ) {
+      currentInspect = await inspectUrl(
+        target,
+        { noNetwork: true, browser },
+        { binaryPath: prefs.linkgetPath, signal },
+      ).catch(() => null);
+    }
+
+    let chosenFolder: string | undefined;
+    let downloadDest: DestinationChoice = effectiveDest;
+    let cachedConfig: ConfigResponse | null = null;
+
+    if (effectiveMode === "read") {
+      if (effectiveDest === "folder") {
+        chosenFolder = resolveReadOutputFolder(folderPaths[0]);
+      }
+      return { kind: "read", target, chosenFolder };
+    }
+
+    if (effectiveDest === "folder") {
+      chosenFolder = ensureFolderExists(folderPaths[0]);
+    } else if (effectiveDest === "default") {
+      cachedConfig = await getConfig({
+        binaryPath: prefs.linkgetPath,
+        signal,
+      }).catch(() => null);
+      const resolved = resolveDefaultDownloadTarget(
+        effectiveMode,
+        prefs,
+        cachedConfig,
+        currentInspect,
+      );
+      downloadDest = resolved.destination;
+      if (resolved.folder) {
+        chosenFolder = ensureFolderExists(resolved.folder);
+      }
+    }
+
+    return {
+      kind: "download",
+      target,
+      effectiveMode,
+      effectiveDest,
+      downloadDest,
+      chosenFolder,
+      cachedConfig,
+    };
+  };
+
+  const resetUrlForNextEntry = () => {
+    modeManualRef.current = false;
+    inspectedTargetRef.current = null;
+    setInspectResult(null);
+    setMode("auto");
+    setUrlError(undefined);
+    setUrlInput("");
+  };
+
+  const openStatusBoardCommand = () =>
+    void launchCommand({
+      name: "status-board",
+      type: LaunchType.UserInitiated,
+    });
+
+  const handleBackgroundSave = async () => {
+    if (isSubmitting) {
+      return;
+    }
+    const toast = await showToast({
+      style: Toast.Style.Animated,
+      title: "Starting Download in Background…",
+    });
+    setIsSubmitting(true);
+    try {
+      const prepared = await prepareSaveTarget();
+      if (!prepared) {
+        await toast.hide();
+        return;
+      }
+
+      if (prepared.kind === "read") {
+        const readRes = await submitReadTask(
+          prepared.target,
+          {
+            folder: prepared.chosenFolder,
+            frames: extractFrames,
+            frameOcr,
+            noAssets: !downloadAssets,
+            browser,
+          },
+          { binaryPath: prefs.linkgetPath },
+        );
+        if (!readRes.ok) {
+          const err = normalizeLinkgetError(
+            readRes.error,
+            "Read Submission Failed",
+          );
+          toast.style = Toast.Style.Failure;
+          toast.title = err.title;
+          toast.message = err.message;
+          return;
+        }
+        toast.style = Toast.Style.Success;
+        toast.title = "Read Task Queued in Background";
+        toast.message = readRes.task_id || "Check Status Board for progress";
+        toast.primaryAction = {
+          title: "Open Status Board",
+          onAction: openStatusBoardCommand,
+        };
+        resetUrlForNextEntry();
+        return;
+      }
+
+      await startBackgroundDownload(
+        prepared.target,
+        {
+          mode: prepared.effectiveMode,
+          destination: prepared.downloadDest,
+          folder: prepared.chosenFolder,
+          noAssets: !downloadAssets,
+          audioFormat,
+          clip: clipRange,
+          maxDuration,
+          maxSize,
+          livePhotos,
+          browser,
+        },
+        { binaryPath: prefs.linkgetPath },
+      );
+
+      toast.style = Toast.Style.Success;
+      toast.title = "Download Started in Background";
+      toast.message = "Track progress and outputs in Status Board";
+      toast.primaryAction = {
+        title: "Open Status Board",
+        onAction: openStatusBoardCommand,
+      };
+      resetUrlForNextEntry();
+    } catch (error) {
+      toast.style = Toast.Style.Failure;
+      toast.title = "Background Start Failed";
+      toast.message = error instanceof Error ? error.message : String(error);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSubmit = async () => {
     const runController = new AbortController();
+    activeRunAbortRef.current?.abort();
     activeRunAbortRef.current = runController;
 
     setIsSubmitting(true);
     const toast = await showToast({
       style: Toast.Style.Animated,
-      title:
-        effectiveMode === "read"
-          ? "Submitting Read Task…"
-          : effectiveMode === "article"
-            ? "Archiving Article Offline…"
-            : "Downloading via Linkget…",
+      title: "Preparing Linkget Task…",
     });
 
     try {
-      let currentInspect =
-        inspectResult && inspectedTargetRef.current === target
-          ? inspectResult
-          : null;
-      if (
-        !currentInspect &&
-        effectiveMode === "auto" &&
-        effectiveDest === "default"
-      ) {
-        currentInspect = await inspectUrl(
-          target,
-          { noNetwork: true, browser },
-          { binaryPath: prefs.linkgetPath, signal: runController.signal },
-        ).catch(() => null);
+      const prepared = await prepareSaveTarget(runController.signal);
+      if (!prepared) {
+        await toast.hide();
+        return;
       }
 
-      let chosenFolder: string | undefined;
-      let downloadDest: DestinationChoice = effectiveDest;
-      let cachedConfig: ConfigResponse | null = null;
-
-      if (effectiveMode === "read") {
-        if (effectiveDest === "folder") {
-          chosenFolder = resolveReadOutputFolder(folderPaths[0]);
-        }
-      } else if (effectiveDest === "folder") {
-        chosenFolder = ensureFolderExists(folderPaths[0]);
-      } else if (effectiveDest === "default") {
-        cachedConfig = await getConfig({
-          binaryPath: prefs.linkgetPath,
-          signal: runController.signal,
-        }).catch(() => null);
-        const resolved = resolveDefaultDownloadTarget(
-          effectiveMode,
-          prefs,
-          cachedConfig,
-          currentInspect,
-        );
-        downloadDest = resolved.destination;
-        if (resolved.folder) {
-          chosenFolder = ensureFolderExists(resolved.folder);
-        }
-      }
-
-      if (effectiveMode === "read") {
+      if (prepared.kind === "read") {
+        toast.title = "Submitting Read Task…";
         const readRes = await submitReadTask(
-          target,
+          prepared.target,
           {
-            folder: chosenFolder,
+            folder: prepared.chosenFolder,
             frames: extractFrames,
             frameOcr,
             noAssets: !downloadAssets,
@@ -452,41 +588,58 @@ export default function SaveLinkCommand(
         return;
       }
 
+      toast.title =
+        prepared.effectiveMode === "article"
+          ? "Archiving Article Offline…"
+          : "Downloading via Linkget…";
+      toast.message =
+        "Safe to close Raycast — download continues in background";
+
       let res = await downloadLink(
-        target,
+        prepared.target,
         {
-          mode: effectiveMode,
-          destination: downloadDest,
-          folder: chosenFolder,
+          mode: prepared.effectiveMode,
+          destination: prepared.downloadDest,
+          folder: prepared.chosenFolder,
           noAssets: !downloadAssets,
           audioFormat,
           clip: clipRange,
           maxDuration,
           maxSize,
+          livePhotos,
           browser,
         },
-        { binaryPath: prefs.linkgetPath, signal: runController.signal },
+        {
+          binaryPath: prefs.linkgetPath,
+          signal: runController.signal,
+          detachOnAbort: true,
+        },
       );
 
       if (
         !res.ok &&
-        effectiveMode === "auto" &&
-        effectiveDest === "default" &&
+        prepared.effectiveMode === "auto" &&
+        prepared.effectiveDest === "default" &&
         isArticleFolderRequiredError(res.error)
       ) {
         const fallbackArticleFolder = ensureFolderExists(
-          resolveEffectiveArticleFolder(prefs, cachedConfig),
+          resolveEffectiveArticleFolder(prefs, prepared.cachedConfig),
         );
         res = await downloadLink(
-          target,
+          prepared.target,
           {
             mode: "article",
             destination: "default",
             folder: fallbackArticleFolder,
             noAssets: !downloadAssets,
+            livePhotos: false,
             browser,
           },
-          { binaryPath: prefs.linkgetPath, signal: runController.signal },
+          {
+            binaryPath: prefs.linkgetPath,
+            signal: runController.signal,
+            detachOnAbort: true,
+          },
         );
       }
 
@@ -549,6 +702,12 @@ export default function SaveLinkCommand(
             onSubmit={() => void handleSubmit()}
           />
           <Action
+            title="Save in Background"
+            icon={Icon.Cloud}
+            shortcut={{ modifiers: ["cmd"], key: "b" }}
+            onAction={() => void handleBackgroundSave()}
+          />
+          <Action
             title="Use Frontmost Browser URL"
             icon={Icon.Globe}
             shortcut={{ modifiers: ["cmd", "shift"], key: "b" }}
@@ -564,12 +723,7 @@ export default function SaveLinkCommand(
             title="Open Status Board"
             icon={Icon.List}
             shortcut={Keyboard.Shortcut.Common.Duplicate}
-            onAction={() =>
-              void launchCommand({
-                name: "status-board",
-                type: LaunchType.UserInitiated,
-              })
-            }
+            onAction={openStatusBoardCommand}
           />
           <Action
             title="Open Extension Preferences"
@@ -656,7 +810,25 @@ export default function SaveLinkCommand(
         />
       )}
 
-      {(mode === "article" || mode === "auto" || mode === "read") && (
+      {(mode === "auto" || mode === "media") &&
+        destination !== "folder" &&
+        !isArticleInspectTarget(inspectResult) &&
+        !inspectResult?.effective_audio_mode &&
+        !inspectResult?.audio_only &&
+        (destination === "photos" || !prefs.defaultMediaFolder?.trim()) && (
+          <Form.Checkbox
+            id="livePhotos"
+            title="Live Photos"
+            label="Import paired Live Photos into Apple Photos"
+            value={livePhotos}
+            onChange={setLivePhotos}
+          />
+        )}
+
+      {(mode === "article" ||
+        mode === "read" ||
+        (mode === "auto" &&
+          (isArticleInspectTarget(inspectResult) || showAdvanced))) && (
         <Form.Checkbox
           id="downloadAssets"
           title="Article Assets"
@@ -708,45 +880,60 @@ export default function SaveLinkCommand(
         </>
       )}
 
-      {(mode === "auto" || mode === "media" || mode === "audio") && (
-        <>
-          <Form.Separator />
-          <Form.TextField
-            id="clip"
-            title="Clip Range"
-            placeholder="Optional, e.g. 0:30-2:00 or 10-45"
-            value={clipRange}
-            onChange={setClipRange}
-          />
-          <Form.TextField
-            id="maxDuration"
-            title="Max Duration"
-            placeholder="Optional cap, e.g. 10m or 90s"
-            value={maxDuration}
-            onChange={setMaxDuration}
-          />
-          <Form.TextField
-            id="maxSize"
-            title="Max Size"
-            placeholder="Optional cap, e.g. 200MB or 1.5GB"
-            value={maxSize}
-            onChange={setMaxSize}
-          />
-        </>
-      )}
-
       <Form.Separator />
 
-      <Form.Dropdown
-        id="browser"
-        title="Browser Session"
-        value={browser}
-        onChange={(next) => setBrowser(next as BrowserOption)}
-      >
-        {BROWSER_OPTIONS.map((b) => (
-          <Form.Dropdown.Item key={b.value} value={b.value} title={b.title} />
-        ))}
-      </Form.Dropdown>
+      <Form.Checkbox
+        id="showAdvanced"
+        title="Advanced"
+        label="Show clip range, limits, and browser session"
+        value={showAdvanced}
+        onChange={setShowAdvanced}
+      />
+
+      {showAdvanced && (
+        <>
+          {(mode === "auto" || mode === "media" || mode === "audio") && (
+            <>
+              <Form.TextField
+                id="clip"
+                title="Clip Range"
+                placeholder="Optional, e.g. 0:30-2:00 or 10-45"
+                value={clipRange}
+                onChange={setClipRange}
+              />
+              <Form.TextField
+                id="maxDuration"
+                title="Max Duration"
+                placeholder="Optional cap, e.g. 10m or 90s"
+                value={maxDuration}
+                onChange={setMaxDuration}
+              />
+              <Form.TextField
+                id="maxSize"
+                title="Max Size"
+                placeholder="Optional cap, e.g. 200MB or 1.5GB"
+                value={maxSize}
+                onChange={setMaxSize}
+              />
+            </>
+          )}
+
+          <Form.Dropdown
+            id="browser"
+            title="Browser Session"
+            value={browser}
+            onChange={(next) => setBrowser(next as BrowserOption)}
+          >
+            {BROWSER_OPTIONS.map((b) => (
+              <Form.Dropdown.Item
+                key={b.value}
+                value={b.value}
+                title={b.title}
+              />
+            ))}
+          </Form.Dropdown>
+        </>
+      )}
     </Form>
   );
 }

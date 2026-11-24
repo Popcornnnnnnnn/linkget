@@ -24,9 +24,18 @@ import { ArticleReaderDetail } from "./components/ArticleReaderDetail";
 import {
   detectArticleArchive,
   formatBytes,
+  formatCompactTaskDate,
   formatTaskDate,
   readArticleLocalMeta,
 } from "./lib/articles";
+import {
+  detectArticleFolderFromFiles,
+  formatMachineFilenameTitle,
+  inferTitleFromArchiveFolder,
+  type MediaSummary,
+  shortenHomePath,
+  summarizeMediaFiles,
+} from "./lib/task-format";
 import {
   cancelReadTask,
   checkUpgrade,
@@ -64,9 +73,13 @@ interface EnrichedTask {
   primaryPath: string | null;
   existsOnDisk: boolean;
   isPhotos: boolean;
+  platform?: string;
+  mediaSummary: MediaSummary | null;
+  retainedCount: number;
   displayTitle: string;
   displaySubtitle: string;
   formattedDate: string | null;
+  compactDate: string | null;
 }
 
 function pathExists(targetPath: string): boolean {
@@ -104,33 +117,45 @@ async function mapWithConcurrency<T, R>(
 
 async function enrichTask(task: TaskEntry): Promise<EnrichedTask> {
   const formattedDate = formatTaskDate(task.id);
+  const compactDate = formatCompactTaskDate(task.id);
 
   if (task.kind === "read") {
     const outFolder = task.outputs[0] || null;
     const archive = outFolder ? detectArticleArchive([], outFolder) : null;
     const articleMeta = archive ? await readArticleLocalMeta(archive) : null;
+    const detectedArticleFolder = detectArticleFolderFromFiles(
+      task.outputs,
+      outFolder,
+    );
     const existsOnDisk = Boolean(
       (articleMeta && articleMeta.exists) ||
       (outFolder && pathExists(outFolder)),
     );
     const displayTitle =
       articleMeta?.title ||
+      (detectedArticleFolder
+        ? inferTitleFromArchiveFolder(detectedArticleFolder)
+        : null) ||
       (outFolder ? path.basename(outFolder) : `Read (${task.task_kind})`);
     return {
       task,
-      isArticle: Boolean(archive),
+      isArticle: Boolean(archive || detectedArticleFolder),
       articleMeta,
       primaryPath: outFolder,
       existsOnDisk,
       isPhotos: false,
+      mediaSummary: null,
+      retainedCount: 0,
       displayTitle,
       displaySubtitle: formattedDate || task.phase || task.id,
       formattedDate,
+      compactDate,
     };
   }
 
   const firstItem = task.items[0];
   const savedFiles = task.items.flatMap((row) => row.saved_files || []);
+  const retainedPaths = task.items.flatMap((row) => row.retained_paths || []);
   const itemDest = firstItem?.destination || task.destination;
   const isPhotos =
     task.items.length > 0 &&
@@ -139,24 +164,39 @@ async function enrichTask(task: TaskEntry): Promise<EnrichedTask> {
     );
 
   const archive = detectArticleArchive(savedFiles, isPhotos ? null : itemDest);
+  const detectedArticleFolder = isPhotos
+    ? null
+    : archive?.folderPath || detectArticleFolderFromFiles(savedFiles, itemDest);
   const articleMeta = archive ? await readArticleLocalMeta(archive) : null;
+  const isArticle = Boolean(archive || detectedArticleFolder);
 
-  const existingSaved = savedFiles.find((f) => pathExists(f)) || null;
-  const primaryPath =
-    existingSaved || (isPhotos ? null : pathExists(itemDest) ? itemDest : null);
+  const existingSaved = isPhotos
+    ? null
+    : savedFiles.find((f) => pathExists(f)) || null;
+  const primaryPath = isPhotos
+    ? null
+    : existingSaved || (pathExists(itemDest) ? itemDest : null);
   const existsOnDisk = isPhotos
     ? task.status === "completed"
     : Boolean(articleMeta?.exists || primaryPath);
 
+  const mediaSummary = isPhotos
+    ? summarizeMediaFiles(savedFiles, task.audio)
+    : null;
+  let platform: string | undefined;
   let displayTitle = articleMeta?.title || "";
+
+  if (!displayTitle && detectedArticleFolder) {
+    displayTitle = inferTitleFromArchiveFolder(detectedArticleFolder) || "";
+  }
+  if (!displayTitle && isPhotos && mediaSummary) {
+    displayTitle = mediaSummary.label;
+  }
   if (!displayTitle) {
     if (savedFiles.length > 0) {
-      displayTitle = path.basename(savedFiles[0]);
-      if (savedFiles.length > 1) {
-        displayTitle += ` (+${savedFiles.length - 1})`;
-      }
-    } else if (isPhotos) {
-      displayTitle = task.audio ? "Audio to Photos" : "Apple Photos Import";
+      const formatted = formatMachineFilenameTitle(savedFiles, task.audio);
+      displayTitle = formatted.title;
+      platform = formatted.platform;
     } else {
       displayTitle = path.basename(itemDest) || task.id;
     }
@@ -165,18 +205,22 @@ async function enrichTask(task: TaskEntry): Promise<EnrichedTask> {
   const displaySubtitle =
     articleMeta?.author ||
     formattedDate ||
-    (isPhotos ? "Apple Photos" : task.destination);
+    (isPhotos ? "Apple Photos" : shortenHomePath(task.destination));
 
   return {
     task,
-    isArticle: Boolean(archive),
+    isArticle,
     articleMeta,
     primaryPath,
     existsOnDisk,
     isPhotos,
+    platform,
+    mediaSummary,
+    retainedCount: retainedPaths.length,
     displayTitle,
     displaySubtitle,
     formattedDate,
+    compactDate,
   };
 }
 
@@ -185,8 +229,15 @@ function statusVisual(entry: EnrichedTask): {
   color: Color;
   label: string;
 } {
-  const { task, isArticle, isPhotos } = entry;
+  const { task, isArticle, isPhotos, existsOnDisk } = entry;
   if (task.status === "completed") {
+    if (!existsOnDisk && !isPhotos) {
+      return {
+        icon: isArticle ? Icon.Book : Icon.Document,
+        color: Color.SecondaryText,
+        label: "Moved/Deleted",
+      };
+    }
     if (isArticle) {
       return { icon: Icon.Book, color: Color.Green, label: "Completed" };
     }
@@ -194,12 +245,12 @@ function statusVisual(entry: EnrichedTask): {
       return { icon: Icon.Music, color: Color.Purple, label: "Completed" };
     }
     if (isPhotos) {
-      return { icon: Icon.Image, color: Color.Green, label: "Completed" };
+      return { icon: Icon.Image, color: Color.Blue, label: "Completed" };
     }
     if (task.kind === "read") {
-      return { icon: Icon.Document, color: Color.Green, label: "Completed" };
+      return { icon: Icon.Document, color: Color.Yellow, label: "Completed" };
     }
-    return { icon: Icon.CheckCircle, color: Color.Green, label: "Completed" };
+    return { icon: Icon.Video, color: Color.Green, label: "Completed" };
   }
   if (task.status === "running" || task.status === "queued") {
     return { icon: Icon.Clock, color: Color.Blue, label: task.status };
@@ -224,7 +275,7 @@ function buildTaskDetailMarkdown(entry: EnrichedTask): string {
     if (articleMeta.coverPath) {
       parts.push(`![${safeAlt}](${pathToFileURL(articleMeta.coverPath).href})`);
     }
-    parts.push(`## ${title}`);
+    parts.push(`### ${title}`);
     if (articleMeta.excerpt) {
       parts.push(articleMeta.excerpt);
     } else {
@@ -240,49 +291,67 @@ function buildTaskDetailMarkdown(entry: EnrichedTask): string {
     const failedItem = dl.items.find(
       (row) => row.status !== "completed" && row.failure,
     );
-    const parts = [`## ${entry.displayTitle}`];
+    const parts = [`### ${entry.displayTitle}`];
     if (failedItem?.failure) {
       parts.push(
-        `### Failure${dl.items.length > 1 ? ` (Item ${failedItem.item})` : ""}\n\n${failedItem.failure.message || "Unknown error"}`,
+        `**Failure${dl.items.length > 1 ? ` (Item ${failedItem.item})` : ""}:** ${failedItem.failure.message || "Unknown error"}`,
       );
       if (failedItem.failure.next_step) {
         parts.push(`**Next Step:** ${failedItem.failure.next_step}`);
       }
     }
+
     const files = dl.items.flatMap((row) => row.saved_files || []);
-    if (files.length > 0) {
-      parts.push(
-        `### Saved Files (${files.length})\n\n${files
-          .slice(0, 20)
-          .map((f) => `- \`${path.basename(f)}\``)
-          .join("\n")}`,
-      );
+    if (entry.isPhotos) {
+      const summary = entry.mediaSummary;
+      const extText =
+        summary && summary.extensions.length > 0
+          ? ` (${summary.extensions.map((ext) => `\`${ext}\``).join(", ")})`
+          : "";
+      if (dl.status === "completed") {
+        parts.push(
+          summary &&
+            summary.photoCount + summary.videoCount + summary.audioCount > 0
+            ? `Imported **${summary.label.toLowerCase()}**${extText} into **Apple Photos**.`
+            : "Imported media into **Apple Photos**.",
+        );
+      }
+    } else if (files.length > 0) {
+      const visible = files.slice(0, 8).map((f) => `- \`${path.basename(f)}\``);
+      if (files.length > 8) {
+        visible.push(`- … and ${files.length - 8} more`);
+      }
+      parts.push(`**Saved Files (${files.length})**\n\n${visible.join("\n")}`);
     }
-    const retained = dl.items.flatMap((row) => row.retained_paths || []);
-    if (retained.length > 0) {
-      parts.push(
-        `### Retained Staging Paths\n\n${retained
-          .slice(0, 10)
-          .map((p) => `- \`${p}\``)
-          .join("\n")}`,
-      );
+
+    if (dl.status !== "completed") {
+      const retained = dl.items.flatMap((row) => row.retained_paths || []);
+      if (retained.length > 0) {
+        parts.push(
+          `**Retained Staging Paths**\n\n${retained
+            .slice(0, 5)
+            .map((p) => `- \`${p}\``)
+            .join("\n")}`,
+        );
+      }
     }
+
     if (!entry.existsOnDisk && !entry.isPhotos) {
       parts.push(
-        "> *Saved files are no longer present at their original folder on disk.*",
+        "> *Original archive or media folder is no longer on disk (moved or cleaned up).*",
       );
     }
     return parts.join("\n\n");
   }
 
   const rd: ReadTask = task;
-  const parts = [`## ${entry.displayTitle}`, `**Phase:** ${rd.phase}`];
+  const parts = [`### ${entry.displayTitle}`, `**Phase:** ${rd.phase}`];
   if (rd.failure) {
-    parts.push(`### Failure\n\n${rd.failure}`);
+    parts.push(`**Failure:** ${rd.failure}`);
   }
   if (rd.outputs.length > 0) {
     parts.push(
-      `### Outputs\n\n${rd.outputs.map((o) => `- \`${o}\``).join("\n")}`,
+      `**Outputs**\n\n${rd.outputs.map((o) => `- \`${shortenHomePath(o)}\``).join("\n")}`,
     );
   }
   return parts.join("\n\n");
@@ -338,11 +407,16 @@ function TaskDetailMetadata({ entry }: { entry: EnrichedTask }) {
         )}
         <List.Item.Detail.Metadata.Label
           title="Folder"
-          text={articleMeta.folderPath}
+          text={shortenHomePath(articleMeta.folderPath)}
         />
       </List.Item.Detail.Metadata>
     );
   }
+
+  const rawDest =
+    task.kind === "download"
+      ? task.items[0]?.destination || task.destination
+      : task.outputs[0] || "";
 
   return (
     <List.Item.Detail.Metadata>
@@ -351,13 +425,23 @@ function TaskDetailMetadata({ entry }: { entry: EnrichedTask }) {
           text={visual.label}
           color={visual.color}
         />
+        {entry.platform && (
+          <List.Item.Detail.Metadata.TagList.Item
+            text={entry.platform}
+            color={Color.Blue}
+          />
+        )}
         <List.Item.Detail.Metadata.TagList.Item
           text={
             task.kind === "read"
               ? `Read (${task.task_kind})`
-              : task.audio
-                ? "Audio"
-                : "Download"
+              : entry.isArticle
+                ? "Article"
+                : task.audio
+                  ? "Audio"
+                  : entry.isPhotos
+                    ? "Photos"
+                    : "Download"
           }
           color={Color.SecondaryText}
         />
@@ -376,8 +460,14 @@ function TaskDetailMetadata({ entry }: { entry: EnrichedTask }) {
           />
           <List.Item.Detail.Metadata.Label
             title="Destination"
-            text={task.items[0]?.destination || task.destination}
+            text={entry.isPhotos ? "Apple Photos" : shortenHomePath(rawDest)}
           />
+          {entry.retainedCount > 0 && task.status === "completed" && (
+            <List.Item.Detail.Metadata.Label
+              title="Staging"
+              text={`${entry.retainedCount} temp stage(s) (cleanable)`}
+            />
+          )}
         </>
       ) : (
         <List.Item.Detail.Metadata.Label title="Phase" text={task.phase} />
@@ -408,6 +498,7 @@ export default function StatusBoardCommand() {
   const { push } = useNavigation();
 
   const [filter, setFilter] = useState<BoardFilter>("all");
+  const [showDetail, setShowDetail] = useState<boolean>(true);
   const [entries, setEntries] = useState<EnrichedTask[]>([]);
   const [doctor, setDoctor] = useState<DoctorResponse | null>(null);
   const [config, setConfig] = useState<ConfigResponse | null>(null);
@@ -671,18 +762,20 @@ export default function StatusBoardCommand() {
         { apply: true },
         { binaryPath: prefs.linkgetPath },
       );
-      if (!res.ok && res.deleted_count === 0) {
+      const deletedCount = res.deleted_count ?? 0;
+      const freedBytes = res.freed_bytes ?? 0;
+      if (!res.ok && !(deletedCount > 0)) {
         const err = normalizeLinkgetError(res.error, "Clean Failed");
         toast.style = Toast.Style.Failure;
         toast.title = err.title;
         toast.message = err.message;
       } else {
         toast.style = Toast.Style.Success;
-        toast.title = `Removed ${res.deleted_count} Stage(s)`;
+        toast.title = `Removed ${deletedCount} Stage(s)`;
         toast.message =
           res.errors && res.errors.length > 0
-            ? `Freed ${formatBytes(res.freed_bytes)} (${res.errors.length} receipt warning(s))`
-            : `Freed ${formatBytes(res.freed_bytes)}`;
+            ? `Freed ${formatBytes(freedBytes)} (${res.errors.length} receipt warning(s))`
+            : `Freed ${formatBytes(freedBytes)}`;
       }
       await refresh();
     } catch (error) {
@@ -693,7 +786,7 @@ export default function StatusBoardCommand() {
   };
 
   const showTasks = filter !== "system";
-  const showSystem = filter === "all" || filter === "system";
+  const isFullSystemView = filter === "system";
 
   const filteredTasks = showTasks
     ? entries.filter((entry) => {
@@ -716,30 +809,78 @@ export default function StatusBoardCommand() {
   const effectiveArticleFolder = resolveEffectiveArticleFolder(prefs, config);
   const tools = doctor?.tools ? Object.entries(doctor.tools) : [];
   const sessions = doctor?.sessions ? Object.entries(doctor.sessions) : [];
+  const availableToolsCount = tools.filter(([, info]) => info.available).length;
+  const savedSessions = sessions
+    .filter(([, s]) =>
+      ["saved", "saved_unverified", "valid", "connected"].includes(s.state),
+    )
+    .map(([name]) => name);
+
+  const systemSummaryTag = (() => {
+    if (doctor?.missing_tools && doctor.missing_tools.length > 0) {
+      return {
+        value: `${doctor.missing_tools.length} Missing`,
+        color: Color.Orange,
+      };
+    }
+    if (cleanPreview && cleanPreview.eligible_count > 0) {
+      return {
+        value: `${cleanPreview.eligible_count} Cleanable`,
+        color: Color.Blue,
+      };
+    }
+    if (doctor?.ok) {
+      return { value: "Healthy", color: Color.Green };
+    }
+    return { value: "Check Needed", color: Color.Orange };
+  })();
 
   const installMarkdown = [
-    "# Linkget Installation",
+    "### Linkget Installation",
     "",
     `- **CLI Version:** ${doctor?.version || "Unknown"}`,
-    `- **Binary:** \`${binaryPath}\``,
+    `- **Binary:** \`${shortenHomePath(binaryPath)}\``,
     `- **Python:** ${doctor?.python || "Unknown"}`,
     upgradeInfo && upgradeInfo.ok !== false && !upgradeInfo.error
       ? `- **Latest Release:** ${upgradeInfo.latest} (${upgradeInfo.update_available ? "Update available" : "Up to date"})`
       : "",
     "",
-    "## Saved Defaults",
+    "#### Saved Defaults",
+    "",
+    `- **Media:** ${formatDestinationSetting(config?.destination, "Apple Photos")}`,
+    `- **Audio:** ${formatDestinationSetting(config?.audio_destination, "~/Downloads")}`,
+    `- **Articles:** ${shortenHomePath(formatDestinationSetting(config?.article_destination, effectiveArticleFolder))}`,
+    `- **Page Controller:** ${config?.page_controller?.browser || doctor?.page_controller?.browser || "auto"}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const systemSummaryMarkdown = [
+    `### Linkget ${doctor?.version ? `v${doctor.version}` : "Status"}`,
     "",
     `- **Media Default:** ${formatDestinationSetting(config?.destination, "Apple Photos")}`,
-    `- **Audio Default:** ${formatDestinationSetting(config?.audio_destination, "Not set (Raycast uses ~/Downloads)")}`,
-    `- **Article Default:** ${formatDestinationSetting(config?.article_destination, `Not set (Raycast uses ${effectiveArticleFolder})`)}`,
-    `- **Page Controller:** ${config?.page_controller?.browser || doctor?.page_controller?.browser || "auto"} (${config?.page_controller?.source || doctor?.page_controller?.source || "default"})`,
+    `- **Article Default:** \`${shortenHomePath(formatDestinationSetting(config?.article_destination, effectiveArticleFolder))}\``,
+    tools.length > 0
+      ? `- **Download Engines:** ${availableToolsCount}/${tools.length} ready${doctor?.missing_tools?.length ? ` (missing: ${doctor.missing_tools.join(", ")})` : ""}`
+      : "",
+    sessions.length > 0
+      ? `- **Saved Sessions:** ${savedSessions.length > 0 ? savedSessions.join(", ") : "None (public only)"}`
+      : "",
+    cleanPreview
+      ? `- **Temp Staging:** ${cleanPreview.eligible_count} cleanable (${formatBytes(cleanPreview.reclaimable_bytes)}) · ${cleanPreview.kept_count} kept`
+      : "",
+    upgradeInfo && upgradeInfo.ok !== false && !upgradeInfo.error
+      ? `- **Update Check:** ${upgradeInfo.latest} (${upgradeInfo.update_available ? "Update available" : "Up to date"})`
+      : "",
+    "",
+    "*Press **Enter** to inspect all engines, sessions, and staging details.*",
   ]
     .filter(Boolean)
     .join("\n");
 
   const cleanMarkdown = cleanPreview
     ? [
-        "# Temporary Staging Cleanup (`linkget clean`)",
+        "### Temporary Staging Cleanup (`linkget clean`)",
         "",
         `- **Cutoff:** older than \`${cleanPreview.older_than}\``,
         `- **Eligible to Remove:** ${cleanPreview.eligible_count} stage(s) (${formatBytes(cleanPreview.reclaimable_bytes)})`,
@@ -752,10 +893,16 @@ export default function StatusBoardCommand() {
       ]
         .filter(Boolean)
         .join("\n")
-    : "# Temporary Staging Cleanup\n\nLoading cleanup preview…";
+    : "### Temporary Staging Cleanup\n\nLoading cleanup preview…";
 
   const commonBoardActions = (
     <ActionPanel.Section title="Extension">
+      <Action
+        title={showDetail ? "Hide Detail Pane" : "Show Detail Pane"}
+        icon={Icon.Sidebar}
+        shortcut={{ modifiers: ["cmd", "shift"], key: "d" }}
+        onAction={() => setShowDetail((prev) => !prev)}
+      />
       <Action
         title="Refresh Status Board"
         icon={Icon.ArrowClockwise}
@@ -786,9 +933,9 @@ export default function StatusBoardCommand() {
   return (
     <List
       isLoading={isLoading}
-      isShowingDetail
+      isShowingDetail={showDetail}
       navigationTitle="Linkget — Status Board"
-      searchBarPlaceholder="Filter recent downloads, articles, engines, or sessions…"
+      searchBarPlaceholder="Filter downloads, articles, engines, or sessions…"
       searchBarAccessory={
         <List.Dropdown
           tooltip="Filter Status Board"
@@ -859,16 +1006,107 @@ export default function StatusBoardCommand() {
         />
       ) : (
         <>
+          {filter === "all" && (doctor || config || cleanPreview) && (
+            <List.Section title="System">
+              <List.Item
+                key="system-overview"
+                icon={{
+                  source: Icon.Terminal,
+                  tintColor: systemSummaryTag.color,
+                }}
+                title={
+                  doctor?.version
+                    ? `Linkget CLI v${doctor.version}`
+                    : "Linkget CLI & Defaults"
+                }
+                subtitle={
+                  showDetail
+                    ? undefined
+                    : `Photos · Articles: ${shortenHomePath(effectiveArticleFolder)}`
+                }
+                accessories={[{ tag: systemSummaryTag }]}
+                detail={
+                  <List.Item.Detail
+                    markdown={systemSummaryMarkdown}
+                    metadata={
+                      <List.Item.Detail.Metadata>
+                        <List.Item.Detail.Metadata.TagList title="Health">
+                          <List.Item.Detail.Metadata.TagList.Item
+                            text={systemSummaryTag.value}
+                            color={systemSummaryTag.color}
+                          />
+                        </List.Item.Detail.Metadata.TagList>
+                        <List.Item.Detail.Metadata.Label
+                          title="Media Default"
+                          text={formatDestinationSetting(
+                            config?.destination,
+                            "Apple Photos",
+                          )}
+                        />
+                        <List.Item.Detail.Metadata.Label
+                          title="Article Default"
+                          text={shortenHomePath(
+                            formatDestinationSetting(
+                              config?.article_destination,
+                              effectiveArticleFolder,
+                            ),
+                          )}
+                        />
+                        {tools.length > 0 && (
+                          <List.Item.Detail.Metadata.Label
+                            title="Engines"
+                            text={`${availableToolsCount}/${tools.length} ready`}
+                          />
+                        )}
+                        {cleanPreview && (
+                          <List.Item.Detail.Metadata.Label
+                            title="Staging"
+                            text={`${cleanPreview.eligible_count} cleanable (${formatBytes(cleanPreview.reclaimable_bytes)})`}
+                          />
+                        )}
+                      </List.Item.Detail.Metadata>
+                    }
+                  />
+                }
+                actions={
+                  <ActionPanel>
+                    <ActionPanel.Section title="System">
+                      <Action
+                        title="Open Full System & Sessions"
+                        icon={Icon.Terminal}
+                        onAction={() => setFilter("system")}
+                      />
+                      {cleanPreview && cleanPreview.eligible_count > 0 && (
+                        <Action
+                          title="Clean Eligible Temporary Stages"
+                          icon={Icon.Trash}
+                          style={Action.Style.Destructive}
+                          onAction={() => void handleRunCleanApply()}
+                        />
+                      )}
+                      <Action
+                        title="Check for Updates"
+                        icon={Icon.Download}
+                        onAction={() => void handleCheckUpgrade()}
+                      />
+                    </ActionPanel.Section>
+                    {commonBoardActions}
+                  </ActionPanel>
+                }
+              />
+            </List.Section>
+          )}
+
           {showTasks && tasksError && filteredTasks.length === 0 && (
             <List.Section title="Recent Downloads & Articles">
               <List.Item
                 key="tasks-load-error"
                 icon={{ source: Icon.ExclamationMark, tintColor: Color.Red }}
                 title="Unable to Load Recent Tasks"
-                subtitle={tasksError}
+                subtitle={showDetail ? undefined : tasksError}
                 detail={
                   <List.Item.Detail
-                    markdown={`# Unable to Load Recent Tasks\n\n${tasksError}`}
+                    markdown={`### Unable to Load Recent Tasks\n\n${tasksError}`}
                   />
                 }
                 actions={<ActionPanel>{commonBoardActions}</ActionPanel>}
@@ -897,42 +1135,33 @@ export default function StatusBoardCommand() {
                     : undefined);
 
                 const accessories: List.Item.Accessory[] = [];
-                if (entry.isArticle) {
-                  accessories.push({
-                    tag: {
-                      value: meta?.site || "Article",
-                      color: entry.existsOnDisk
-                        ? Color.Green
-                        : Color.SecondaryText,
-                    },
-                  });
-                } else if (entry.task.kind === "download" && entry.task.audio) {
-                  accessories.push({
-                    tag: {
-                      value: entry.task.audio_format
-                        ? entry.task.audio_format.toUpperCase()
-                        : "Audio",
-                      color: Color.Purple,
-                    },
-                  });
-                } else if (entry.isPhotos) {
-                  accessories.push({
-                    tag: { value: "Photos", color: Color.Blue },
-                  });
-                } else if (entry.task.kind === "read") {
-                  accessories.push({
-                    tag: { value: "Read", color: Color.Yellow },
-                  });
-                }
-
                 if (
-                  !entry.existsOnDisk &&
-                  !entry.isPhotos &&
-                  entry.task.status === "completed"
+                  entry.task.status === "running" ||
+                  entry.task.status === "queued"
                 ) {
                   accessories.push({
-                    text: "Moved/Deleted",
-                    tooltip: "Original folder is no longer present on disk",
+                    tag: {
+                      value:
+                        entry.task.status === "queued" ? "Queued" : "Running",
+                      color: Color.Blue,
+                    },
+                  });
+                } else if (entry.task.status !== "completed") {
+                  accessories.push({
+                    tag: {
+                      value: "Attention",
+                      color: Color.Orange,
+                    },
+                  });
+                } else if (!entry.existsOnDisk && !entry.isPhotos) {
+                  accessories.push({
+                    icon: Icon.Trash,
+                    text: entry.compactDate || "Removed",
+                    tooltip: "Original folder moved or deleted from disk",
+                  });
+                } else if (entry.compactDate) {
+                  accessories.push({
+                    text: entry.compactDate,
                   });
                 }
 
@@ -941,7 +1170,7 @@ export default function StatusBoardCommand() {
                     key={`${entry.task.kind}-${entry.task.id}`}
                     icon={{ source: visual.icon, tintColor: visual.color }}
                     title={entry.displayTitle}
-                    subtitle={entry.displaySubtitle}
+                    subtitle={showDetail ? undefined : entry.displaySubtitle}
                     accessories={accessories}
                     detail={
                       <List.Item.Detail
@@ -952,6 +1181,13 @@ export default function StatusBoardCommand() {
                     actions={
                       <ActionPanel>
                         <ActionPanel.Section title="Open">
+                          {entry.isPhotos && (
+                            <Action.Open
+                              title="Open Apple Photos"
+                              icon={Icon.Image}
+                              target="/System/Applications/Photos.app"
+                            />
+                          )}
                           {meta && meta.exists && meta.htmlPath && (
                             <Action.Open
                               title="Open HTML Article in Browser"
@@ -972,20 +1208,15 @@ export default function StatusBoardCommand() {
                               }
                             />
                           )}
-                          {!meta?.exists && entry.primaryPath && (
-                            <Action.Open
-                              title="Open Primary File"
-                              icon={Icon.Document}
-                              target={entry.primaryPath}
-                            />
-                          )}
-                          {entry.isPhotos && (
-                            <Action.Open
-                              title="Open Apple Photos"
-                              icon={Icon.Image}
-                              target="/System/Applications/Photos.app"
-                            />
-                          )}
+                          {!entry.isPhotos &&
+                            !meta?.exists &&
+                            entry.primaryPath && (
+                              <Action.Open
+                                title="Open Primary File"
+                                icon={Icon.Document}
+                                target={entry.primaryPath}
+                              />
+                            )}
                           {entry.existsOnDisk &&
                             destFolder &&
                             !entry.isPhotos && (
@@ -1050,7 +1281,7 @@ export default function StatusBoardCommand() {
             </List.Section>
           )}
 
-          {showSystem && (
+          {isFullSystemView && (
             <>
               <List.Section title="System & Maintenance">
                 <List.Item
@@ -1060,7 +1291,13 @@ export default function StatusBoardCommand() {
                     tintColor: doctor?.ok ? Color.Green : Color.Orange,
                   }}
                   title="Linkget CLI & Defaults"
-                  subtitle={doctor?.version ? `v${doctor.version}` : binaryPath}
+                  subtitle={
+                    showDetail
+                      ? undefined
+                      : doctor?.version
+                        ? `v${doctor.version}`
+                        : binaryPath
+                  }
                   accessories={[
                     {
                       tag: {
@@ -1128,9 +1365,11 @@ export default function StatusBoardCommand() {
                   }}
                   title="Temporary Stage Cleanup"
                   subtitle={
-                    cleanPreview
-                      ? `${cleanPreview.eligible_count} eligible · ${formatBytes(cleanPreview.reclaimable_bytes)}`
-                      : "Checking…"
+                    showDetail
+                      ? undefined
+                      : cleanPreview
+                        ? `${cleanPreview.eligible_count} eligible · ${formatBytes(cleanPreview.reclaimable_bytes)}`
+                        : "Checking…"
                   }
                   accessories={
                     cleanPreview
@@ -1166,7 +1405,9 @@ export default function StatusBoardCommand() {
                         tintColor: info.available ? Color.Green : Color.Red,
                       }}
                       title={name}
-                      subtitle={info.version || undefined}
+                      subtitle={
+                        showDetail ? undefined : info.version || undefined
+                      }
                       accessories={[
                         {
                           tag: {
@@ -1177,7 +1418,7 @@ export default function StatusBoardCommand() {
                       ]}
                       detail={
                         <List.Item.Detail
-                          markdown={`# ${name}\n\n- **Available:** ${info.available ? "Yes" : "No"}\n- **Path:** ${info.path ? `\`${info.path}\`` : "Not found"}\n- **Version:** ${info.version || "Unknown"}`}
+                          markdown={`### ${name}\n\n- **Available:** ${info.available ? "Yes" : "No"}\n- **Path:** ${info.path ? `\`${info.path}\`` : "Not found"}\n- **Version:** ${info.version || "Unknown"}`}
                         />
                       }
                       actions={
@@ -1225,7 +1466,7 @@ export default function StatusBoardCommand() {
                             : Color.SecondaryText,
                         }}
                         title={siteKey}
-                        subtitle={session.domain}
+                        subtitle={showDetail ? undefined : session.domain}
                         accessories={[
                           {
                             tag: {
@@ -1236,7 +1477,7 @@ export default function StatusBoardCommand() {
                         ]}
                         detail={
                           <List.Item.Detail
-                            markdown={`# ${siteKey} (${session.domain})\n\n- **State:** ${session.state}\n- **Detail:** ${session.detail || "None"}\n${session.modified ? `- **Modified:** ${session.modified}\n` : ""}\nRun \`linkget auth ${siteKey}\` in a terminal to connect or refresh login cookies.`}
+                            markdown={`### ${siteKey} (${session.domain})\n\n- **State:** ${session.state}\n- **Detail:** ${session.detail || "None"}\n${session.modified ? `- **Modified:** ${session.modified}\n` : ""}\nRun \`linkget auth ${siteKey}\` in a terminal to connect or refresh login cookies.`}
                           />
                         }
                         actions={

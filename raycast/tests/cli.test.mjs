@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   detectArticleArchive,
   formatBytes,
+  formatCompactTaskDate,
   formatDuration,
   formatTaskDate,
   readArticleLocalMeta,
@@ -31,7 +32,16 @@ import {
   resolveLinkgetBinary,
   resolveReadOutputFolder,
   runLinkgetJson,
+  runLinkgetJsonDetached,
 } from "../src/lib/cli.ts";
+import {
+  detectArticleFolderFromFiles,
+  formatMachineFilenameTitle,
+  inferTitleFromArchiveFolder,
+  isPhotosLibraryFile,
+  shortenHomePath,
+  summarizeMediaFiles,
+} from "../src/lib/task-format.ts";
 
 test("augmentedEnv prepends Homebrew paths cleanly and disables update checks", () => {
   const env = augmentedEnv({ PATH: "/usr/bin:/opt/homebrew/bin:/bin" });
@@ -479,6 +489,140 @@ test("resolveReadOutputFolder returns a non-existent leaf under an existing pare
     const tricky = `![${"\\a".repeat(200)}](https://example.com/a.png)`;
     assert.equal(rewriteArticleImageLinksForRaycast(tricky, readArchiveDir), tricky);
     assert.ok(Date.now() - start < 200);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("buildDownloadArgs forwards --live-photos for Photos and default destinations, never for article/audio/folder", () => {
+  assert.deepEqual(
+    buildDownloadArgs("https://xhslink.com/o/live", {
+      mode: "auto",
+      destination: "photos",
+      livePhotos: true,
+    }),
+    [
+      "https://xhslink.com/o/live",
+      "--photos",
+      "--live-photos",
+      "--non-interactive",
+      "--json",
+    ],
+  );
+  assert.deepEqual(
+    buildDownloadArgs("https://x.com/u/status/1", {
+      mode: "auto",
+      destination: "default",
+      livePhotos: true,
+    }),
+    [
+      "https://x.com/u/status/1",
+      "--live-photos",
+      "--non-interactive",
+      "--json",
+    ],
+  );
+  assert.deepEqual(
+    buildDownloadArgs("https://x.com/u/article/1", {
+      mode: "article",
+      destination: "default",
+      folder: "/tmp/Downloads",
+      livePhotos: true,
+    }),
+    [
+      "https://x.com/u/article/1",
+      "--article",
+      "--folder",
+      "/tmp/Downloads",
+      "--non-interactive",
+      "--json",
+    ],
+  );
+});
+
+test("task-format helpers produce human-readable titles, paths, and dates", () => {
+  assert.equal(
+    isPhotosLibraryFile("/Users/forge/Pictures/Photos Library.photoslibrary/originals/6/626B5B59-54AD-41A9-9922-F538BEBF6D3B.jpeg"),
+    true,
+  );
+  assert.equal(isPhotosLibraryFile("/Users/forge/Downloads/video.mp4"), false);
+
+  const summary = summarizeMediaFiles([
+    "/Users/forge/Pictures/Photos Library.photoslibrary/originals/6/626B5B59-54AD-41A9-9922-F538BEBF6D3B.jpeg",
+    "/Users/forge/Pictures/Photos Library.photoslibrary/originals/B/B0F09614-FB1F-4EE9-AB1D-890A41476AF1.jpeg",
+  ]);
+  assert.equal(summary.photoCount, 2);
+  assert.deepEqual(summary.extensions, [".jpeg"]);
+  assert.equal(summary.label, "2 Photos");
+
+  const folder = detectArticleFolderFromFiles(
+    ["/tmp/linkget-v032-smoke/2026-11-22-404jsh-一个月-0-美元-全球20-节点/source/x-article.json"],
+    "/tmp/linkget-v032-smoke",
+  );
+  assert.equal(folder, "/tmp/linkget-v032-smoke/2026-11-22-404jsh-一个月-0-美元-全球20-节点");
+  assert.equal(
+    inferTitleFromArchiveFolder(folder),
+    "一个月 0 美元 全球20 节点",
+  );
+
+  assert.deepEqual(
+    formatMachineFilenameTitle(["/tmp/douyin_7710575727527169280_001_clean.mp4"]),
+    { platform: "Douyin", title: "Douyin Video" },
+  );
+  assert.deepEqual(
+    formatMachineFilenameTitle(["/tmp/bilibili_BV1NSy8z4EZc.mp4"]),
+    { platform: "Bilibili", title: "Bilibili · BV1NSy8z4EZc" },
+  );
+
+  const now = new Date(2026, 10, 24, 21, 0, 0); // local 2026-11-24
+  assert.match(formatCompactTaskDate("20261124T123540-77a6892bf380", now) || "", /^\d{2}:\d{2}$/);
+  assert.equal(formatCompactTaskDate("20261121T040130-abcdef123456", now), "Nov 21");
+  assert.equal(formatCompactTaskDate("20251015T040130-abcdef123456", now), "2025-10-15");
+  assert.equal(shortenHomePath(path.join(os.homedir(), "Downloads", "a.mp4")), "~/Downloads/a.mp4");
+});
+
+test("runLinkgetJsonDetached detaches running child on abort without killing it", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "linkget-raycast-detach-"));
+  const markerPath = path.join(tmpDir, "finished.txt");
+  const scriptBin = path.join(tmpDir, "detached-stub");
+  fs.writeFileSync(
+    scriptBin,
+    `#!/bin/sh
+if [ "$1" = "fast" ]; then
+  printf '{"ok":true,"status":"completed"}\\n'
+  exit 0
+fi
+sleep 0.25
+printf 'done' > "${markerPath}"
+printf '{"ok":true,"status":"completed"}\\n'
+`,
+    { mode: 0o755 },
+  );
+
+  try {
+    const quick = await runLinkgetJsonDetached(["fast"], {
+      binaryPath: scriptBin,
+      detachOnAbort: true,
+    });
+    assert.equal(quick.ok, true);
+
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 50);
+    await assert.rejects(
+      () =>
+        runLinkgetJsonDetached(["slow"], {
+          binaryPath: scriptBin,
+          signal: ac.signal,
+          detachOnAbort: true,
+        }),
+      { name: "AbortError" },
+    );
+
+    const deadline = Date.now() + 2000;
+    while (!fs.existsSync(markerPath) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    assert.equal(fs.existsSync(markerPath), true);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
