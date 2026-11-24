@@ -90,6 +90,15 @@ PYTHONPATH=src python3 -m unittest discover -s tests -q
 uv build
 ```
 
+## Raycast Extension
+
+Use the bundled [Raycast Extension](raycast/README.md) (`raycast/`) for a rich macOS launcher UI over `linkget`:
+
+- **Save Link (`lg`)** — Auto-fills from clipboard or active browser tab, inspects site & metadata, and saves articles, media, audio, or background reads.
+- **Quick Save Article (`lga`)** — One-shot offline article archive from clipboard, active browser tab, or argument.
+- **Browse Downloads & Articles (`lgt`)** — Filter saved archives and tasks, preview covers & Markdown in Raycast, open `article.html`, or retry failures.
+- **Linkget Status & Maintenance (`lgs`)** — Inspect CLI defaults, download engines, site sessions, updates, and `linkget clean`.
+
 ## Documentation
 
 - [Detailed Usage & Reference](docs/USAGE_REFERENCE.md) — batch panel rules, recovery, `--report`, `--live-photos`, browser auth, and site heuristics
