@@ -3,14 +3,17 @@ import {
   ActionPanel,
   Clipboard,
   Form,
+  getPreferenceValues,
   Icon,
+  launchCommand,
   LaunchProps,
+  LaunchType,
   openExtensionPreferences,
   showToast,
   Toast,
   useNavigation,
+  Keyboard,
 } from "@raycast/api";
-import { getPreferenceValues } from "@raycast/api";
 import { useEffect, useRef, useState } from "react";
 import { ResultDetail } from "./components/ResultDetail";
 import { formatBytes, formatDuration } from "./lib/articles";
@@ -20,11 +23,11 @@ import {
   ensureFolderExists,
   getConfig,
   inspectUrl,
+  isArticleFolderRequiredError,
   isArticleInspectTarget,
   normalizeLinkgetError,
+  resolveDefaultDownloadTarget,
   resolveEffectiveArticleFolder,
-  resolveEffectiveAudioFolder,
-  resolveEffectiveMediaFallbackFolder,
   resolveInputTarget,
   resolveReadOutputFolder,
   submitReadTask,
@@ -32,6 +35,7 @@ import {
 import type {
   AudioFormat,
   BrowserOption,
+  ConfigResponse,
   DestinationChoice,
   ExtensionPreferences,
   InspectResponse,
@@ -380,6 +384,9 @@ export default function SaveLinkCommand(
       }
 
       let chosenFolder: string | undefined;
+      let downloadDest: DestinationChoice = effectiveDest;
+      let cachedConfig: ConfigResponse | null = null;
+
       if (effectiveMode === "read") {
         if (effectiveDest === "folder") {
           chosenFolder = resolveReadOutputFolder(folderPaths[0]);
@@ -387,31 +394,19 @@ export default function SaveLinkCommand(
       } else if (effectiveDest === "folder") {
         chosenFolder = ensureFolderExists(folderPaths[0]);
       } else if (effectiveDest === "default") {
-        const config = await getConfig({
+        cachedConfig = await getConfig({
           binaryPath: prefs.linkgetPath,
           signal: runController.signal,
         }).catch(() => null);
-        if (
-          effectiveMode === "article" ||
-          (effectiveMode === "auto" && isArticleInspectTarget(currentInspect))
-        ) {
-          chosenFolder = ensureFolderExists(
-            resolveEffectiveArticleFolder(prefs, config),
-          );
-        } else if (
-          effectiveMode === "audio" ||
-          (effectiveMode === "auto" &&
-            (currentInspect?.effective_audio_mode ||
-              currentInspect?.audio_only))
-        ) {
-          chosenFolder = ensureFolderExists(
-            resolveEffectiveAudioFolder(prefs, config),
-          );
-        } else {
-          const fallback = resolveEffectiveMediaFallbackFolder(prefs, config);
-          if (fallback) {
-            chosenFolder = ensureFolderExists(fallback);
-          }
+        const resolved = resolveDefaultDownloadTarget(
+          effectiveMode,
+          prefs,
+          cachedConfig,
+          currentInspect,
+        );
+        downloadDest = resolved.destination;
+        if (resolved.folder) {
+          chosenFolder = ensureFolderExists(resolved.folder);
         }
       }
 
@@ -457,11 +452,11 @@ export default function SaveLinkCommand(
         return;
       }
 
-      const res = await downloadLink(
+      let res = await downloadLink(
         target,
         {
           mode: effectiveMode,
-          destination: effectiveDest,
+          destination: downloadDest,
           folder: chosenFolder,
           noAssets: !downloadAssets,
           audioFormat,
@@ -472,6 +467,28 @@ export default function SaveLinkCommand(
         },
         { binaryPath: prefs.linkgetPath, signal: runController.signal },
       );
+
+      if (
+        !res.ok &&
+        effectiveMode === "auto" &&
+        effectiveDest === "default" &&
+        isArticleFolderRequiredError(res.error)
+      ) {
+        const fallbackArticleFolder = ensureFolderExists(
+          resolveEffectiveArticleFolder(prefs, cachedConfig),
+        );
+        res = await downloadLink(
+          target,
+          {
+            mode: "article",
+            destination: "default",
+            folder: fallbackArticleFolder,
+            noAssets: !downloadAssets,
+            browser,
+          },
+          { binaryPath: prefs.linkgetPath, signal: runController.signal },
+        );
+      }
 
       if (!res.ok) {
         const err = normalizeLinkgetError(res.error, "Download Failed");
@@ -544,6 +561,17 @@ export default function SaveLinkCommand(
             onAction={() => void handleProbeRemote()}
           />
           <Action
+            title="Open Status Board"
+            icon={Icon.List}
+            shortcut={Keyboard.Shortcut.Common.Duplicate}
+            onAction={() =>
+              void launchCommand({
+                name: "status-board",
+                type: LaunchType.UserInitiated,
+              })
+            }
+          />
+          <Action
             title="Open Extension Preferences"
             icon={Icon.Gear}
             shortcut={{ modifiers: ["cmd", "shift"], key: "," }}
@@ -608,7 +636,7 @@ export default function SaveLinkCommand(
       >
         <Form.Dropdown.Item
           value="default"
-          title="Smart Default (Config / Preference Folder)"
+          title="Default (Photos for Media · ~/Downloads for Articles)"
         />
         {(mode === "auto" || mode === "media") && (
           <Form.Dropdown.Item value="photos" title="Apple Photos" />

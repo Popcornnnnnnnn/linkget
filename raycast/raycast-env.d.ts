@@ -10,9 +10,9 @@
 type ExtensionPreferences = {
   /** Linkget Binary Path - Path to the installed linkget CLI binary (default: /opt/homebrew/bin/linkget). */
   "linkgetPath": string,
-  /** Default Article Archive Folder - Default folder for offline article archives when linkget config --article-folder is not set (falls back to ~/Downloads/Linkget Articles). */
+  /** Default Article Archive Folder - Default folder for offline article archives (defaults to ~/Downloads when unset). */
   "defaultArticleFolder"?: string,
-  /** Default Media & Audio Folder - Optional folder override for media and audio downloads (blank follows linkget config; audio falls back to ~/Downloads). */
+  /** Default Media & Audio Folder - Optional folder for photos and videos (leave blank to save pics and videos to Apple Photos; audio defaults to ~/Downloads). */
   "defaultMediaFolder"?: string,
   /** Default Browser Session - Browser session source passed to linkget. */
   "defaultBrowser": "auto" | "none" | "chrome" | "safari" | "firefox" | "edge" | "brave",
@@ -26,25 +26,14 @@ declare type Preferences = ExtensionPreferences
 declare namespace Preferences {
   /** Preferences accessible in the `save-link` command */
   export type SaveLink = ExtensionPreferences & {}
-  /** Preferences accessible in the `quick-save-article` command */
-  export type QuickSaveArticle = ExtensionPreferences & {}
-  /** Preferences accessible in the `browse-tasks` command */
-  export type BrowseTasks = ExtensionPreferences & {}
-  /** Preferences accessible in the `status-and-tools` command */
-  export type StatusAndTools = ExtensionPreferences & {}
+  /** Preferences accessible in the `status-board` command */
+  export type StatusBoard = ExtensionPreferences & {}
 }
 
 declare namespace Arguments {
   /** Arguments passed to the `save-link` command */
   export type SaveLink = {}
-  /** Arguments passed to the `quick-save-article` command */
-  export type QuickSaveArticle = {
-  /** Article URL (optional — uses clipboard or active browser tab) */
-  "url": string
-}
-  /** Arguments passed to the `browse-tasks` command */
-  export type BrowseTasks = {}
-  /** Arguments passed to the `status-and-tools` command */
-  export type StatusAndTools = {}
+  /** Arguments passed to the `status-board` command */
+  export type StatusBoard = {}
 }
 

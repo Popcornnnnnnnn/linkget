@@ -19,9 +19,10 @@
       "name": "save-link",
       "title": "Save Link",
       "subtitle": "Linkget",
-      "description": "Inspect and save photos, videos, audio, offline articles, or transcripts from any supported link",
+      "description": "Paste a link to save pics and videos to Photos, articles to Downloads, audio, or background reads",
       "keywords": [
         "lg",
+        "linkget",
         "download",
         "article",
         "video",
@@ -33,54 +34,21 @@
       "mode": "view"
     },
     {
-      "name": "quick-save-article",
-      "title": "Quick Save Article",
+      "name": "status-board",
+      "title": "Status Board",
       "subtitle": "Linkget",
-      "description": "One-shot offline archive of an article URL (argument, clipboard, or active browser tab)",
+      "description": "Browse recent downloads and saved articles, inspect CLI health, engines, sessions, and stage cleanup",
       "keywords": [
-        "lga",
-        "article",
-        "xarticle",
-        "archive",
-        "save article"
-      ],
-      "arguments": [
-        {
-          "name": "url",
-          "type": "text",
-          "placeholder": "Article URL (optional — uses clipboard or active browser tab)",
-          "required": false
-        }
-      ],
-      "mode": "no-view"
-    },
-    {
-      "name": "browse-tasks",
-      "title": "Browse Downloads & Articles",
-      "subtitle": "Linkget",
-      "description": "Browse saved articles, media downloads, and background read tasks",
-      "keywords": [
+        "lgs",
         "lgt",
+        "status",
+        "board",
         "tasks",
         "history",
         "articles",
         "downloads",
-        "recent"
-      ],
-      "mode": "view"
-    },
-    {
-      "name": "status-and-tools",
-      "title": "Linkget Status & Maintenance",
-      "subtitle": "Linkget",
-      "description": "Inspect linkget installation, engines, sessions, defaults, and temporary stage cleanup",
-      "keywords": [
-        "lgs",
         "doctor",
-        "config",
-        "clean",
-        "status",
-        "auth"
+        "clean"
       ],
       "mode": "view"
     }
@@ -98,14 +66,14 @@
     {
       "name": "defaultArticleFolder",
       "title": "Default Article Archive Folder",
-      "description": "Default folder for offline article archives when linkget config --article-folder is not set (falls back to ~/Downloads/Linkget Articles).",
+      "description": "Default folder for offline article archives (defaults to ~/Downloads when unset).",
       "type": "directory",
       "required": false
     },
     {
       "name": "defaultMediaFolder",
       "title": "Default Media & Audio Folder",
-      "description": "Optional folder override for media and audio downloads (blank follows linkget config; audio falls back to ~/Downloads).",
+      "description": "Optional folder for photos and videos (leave blank to save pics and videos to Apple Photos; audio defaults to ~/Downloads).",
       "type": "directory",
       "required": false
     },

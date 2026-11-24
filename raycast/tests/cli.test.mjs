@@ -20,12 +20,13 @@ import {
   buildReadArgs,
   buildTasksArgs,
   extractUrlInput,
+  isArticleFolderRequiredError,
   isArticleInspectTarget,
   normalizeLinkgetError,
   parseLinkgetJson,
+  resolveDefaultDownloadTarget,
   resolveEffectiveArticleFolder,
   resolveEffectiveAudioFolder,
-  resolveEffectiveMediaFallbackFolder,
   resolveInputTarget,
   resolveLinkgetBinary,
   resolveReadOutputFolder,
@@ -164,8 +165,22 @@ test("folder resolution respects CLI config -> Raycast pref -> Downloads fallbac
   );
   assert.equal(
     resolveEffectiveArticleFolder({ defaultBrowser: "auto" }, null),
-    path.join(os.homedir(), "Downloads", "Linkget Articles"),
+    path.join(os.homedir(), "Downloads"),
   );
+  assert.equal(isArticleFolderRequiredError("Article downloads require a folder."), true);
+  assert.equal(
+    isArticleFolderRequiredError({
+      message: "Article downloads require a folder. Use --folder [PATH].",
+    }),
+    true,
+  );
+  assert.equal(
+    isArticleFolderRequiredError({
+      message: "Articles cannot be imported into Photos. Use --folder [PATH] or omit --photos.",
+    }),
+    true,
+  );
+  assert.equal(isArticleFolderRequiredError("Network timeout"), false);
   assert.equal(
     resolveEffectiveAudioFolder(prefs, {
       ok: true,
@@ -174,12 +189,68 @@ test("folder resolution respects CLI config -> Raycast pref -> Downloads fallbac
     }),
     "/tmp/CustomMedia",
   );
-  assert.equal(
-    resolveEffectiveMediaFallbackFolder(
-      { defaultBrowser: "auto" },
-      { ok: true, destination: { mode: "cwd" } },
+
+  const defaultPrefs = { defaultBrowser: "auto" };
+  assert.deepEqual(
+    resolveDefaultDownloadTarget("media", defaultPrefs, {
+      ok: true,
+      destination: { mode: "cwd" },
+    }),
+    { destination: "photos" },
+  );
+  assert.deepEqual(
+    resolveDefaultDownloadTarget("article", defaultPrefs, {
+      ok: true,
+      destination: { mode: "photos" },
+      article_destination: null,
+    }),
+    { destination: "default", folder: path.join(os.homedir(), "Downloads") },
+  );
+  assert.deepEqual(
+    resolveDefaultDownloadTarget("audio", defaultPrefs, {
+      ok: true,
+      destination: { mode: "photos" },
+      audio_destination: null,
+    }),
+    { destination: "default", folder: path.join(os.homedir(), "Downloads") },
+  );
+  assert.deepEqual(
+    resolveDefaultDownloadTarget(
+      "auto",
+      defaultPrefs,
+      {
+        ok: true,
+        destination: { mode: "photos" },
+        article_destination: { mode: "folder", path: "~/Downloads" },
+      },
+      { ok: true, domain: "x.com", engine: "gallery-dl" },
     ),
-    path.join(os.homedir(), "Downloads"),
+    { destination: "default" },
+  );
+  assert.deepEqual(
+    resolveDefaultDownloadTarget(
+      "auto",
+      defaultPrefs,
+      {
+        ok: true,
+        destination: { mode: "cwd" },
+        article_destination: null,
+      },
+      { ok: true, domain: "x.com", engine: "gallery-dl" },
+    ),
+    { destination: "photos" },
+  );
+  assert.deepEqual(
+    resolveDefaultDownloadTarget(
+      "auto",
+      defaultPrefs,
+      {
+        ok: true,
+        destination: { mode: "cwd" },
+      },
+      null,
+    ),
+    { destination: "photos" },
   );
   assert.deepEqual(normalizeLinkgetError("Rate limited"), {
     title: "Command Failed",
