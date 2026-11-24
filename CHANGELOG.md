@@ -4,6 +4,11 @@
 
 - Nothing yet.
 
+## 0.3.2 (2026-11-24)
+
+- Add offline article archive downloads (`--article`, `--no-assets`, `--article-folder`) for X Articles (including automatic `/status/ID` article promotion, GraphQL Draft.js body rendering with embedded media, code, and quotes, and browser fallback), WeChat, Toutiao, Zhihu, and public web articles, saving `article.md`, standalone `article.html`, `content.json`, `content.txt`, `source/`, and local `assets/` with IP-pinned SSRF protection and gated Fake-IP proxy support (#28).
+- Add media time-range clipping (`--clip START-END`) and pre/post-download safety caps (`--max-duration`, `--max-size`), safe completed-stage cleanup (`linkget clean` with dry-run default), and a stdlib JSON-RPC 2.0 stdio MCP server (`linkget mcp`) (#27).
+
 ## 0.3.1 (2026-11-23)
 
 - Add a non-blocking daily update check against GitHub Releases (interactive terminal only; set `LINKGET_NO_UPDATE_CHECK=1` to disable).
