@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -481,6 +481,23 @@ export interface RunCommandOptions {
   env?: Record<string, string | undefined>;
 }
 
+function terminateChildWithFallback(child: ChildProcess): void {
+  try {
+    child.kill("SIGTERM");
+  } catch {
+    return;
+  }
+  const killTimer = setTimeout(() => {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // already exited
+    }
+  }, 1500);
+  killTimer.unref?.();
+  child.once("exit", () => clearTimeout(killTimer));
+}
+
 export async function runLinkgetJson<T>(
   args: string[],
   options: RunCommandOptions = {},
@@ -509,32 +526,13 @@ export async function runLinkgetJson<T>(
     let stdoutBytes = 0;
     let stderrBytes = 0;
     let settled = false;
-    let killTimer: ReturnType<typeof setTimeout> | undefined;
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
 
     const cleanup = () => {
       if (timeoutTimer) {
         clearTimeout(timeoutTimer);
       }
-      if (killTimer) {
-        clearTimeout(killTimer);
-      }
       options.signal?.removeEventListener("abort", onAbort);
-    };
-
-    const terminateChild = () => {
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        return;
-      }
-      killTimer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // already exited
-        }
-      }, 1500);
     };
 
     const onAbort = () => {
@@ -543,7 +541,7 @@ export async function runLinkgetJson<T>(
       }
       settled = true;
       cleanup();
-      terminateChild();
+      terminateChildWithFallback(child);
       const abortErr = new Error("Command aborted");
       abortErr.name = "AbortError";
       reject(abortErr);
@@ -558,7 +556,7 @@ export async function runLinkgetJson<T>(
         }
         settled = true;
         cleanup();
-        terminateChild();
+        terminateChildWithFallback(child);
         reject(
           new Error(`linkget timed out after ${Math.round(timeoutMs / 1000)}s`),
         );
@@ -638,35 +636,18 @@ export async function runLinkgetText(
     let stdout = "";
     let stderr = "";
     let settled = false;
-    let killTimer: ReturnType<typeof setTimeout> | undefined;
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
 
     const cleanup = () => {
       if (timeoutTimer) clearTimeout(timeoutTimer);
-      if (killTimer) clearTimeout(killTimer);
       options.signal?.removeEventListener("abort", onAbort);
-    };
-
-    const terminateChild = () => {
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        return;
-      }
-      killTimer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // already exited
-        }
-      }, 1500);
     };
 
     const onAbort = () => {
       if (settled) return;
       settled = true;
       cleanup();
-      terminateChild();
+      terminateChildWithFallback(child);
       const abortErr = new Error("Command aborted");
       abortErr.name = "AbortError";
       reject(abortErr);
@@ -679,7 +660,7 @@ export async function runLinkgetText(
         if (!settled) {
           settled = true;
           cleanup();
-          terminateChild();
+          terminateChildWithFallback(child);
           reject(
             new Error(
               `linkget timed out after ${Math.round(timeoutMs / 1000)}s`,

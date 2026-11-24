@@ -417,8 +417,11 @@ export default function BrowseTasksCommand() {
         toast.style = Toast.Style.Success;
         toast.title = "Retry Completed";
       } else {
+        const failedItem = res.items?.find(
+          (item) => item.status !== "completed" && item.error,
+        );
         const err = normalizeLinkgetError(
-          res.error || res.items?.[0]?.error,
+          res.error || failedItem?.error || res.items?.[0]?.error,
           "Retry Failed",
         );
         toast.style = Toast.Style.Failure;

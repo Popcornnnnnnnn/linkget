@@ -403,6 +403,11 @@ test("resolveReadOutputFolder returns a non-existent leaf under an existing pare
       readArchiveDir,
     );
     assert.match(escaped, /file:\/\//);
+
+    const start = Date.now();
+    const tricky = `![${"\\a".repeat(200)}](https://example.com/a.png)`;
+    assert.equal(rewriteArticleImageLinksForRaycast(tricky, readArchiveDir), tricky);
+    assert.ok(Date.now() - start < 200);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

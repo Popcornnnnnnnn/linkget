@@ -403,7 +403,7 @@ export function rewriteArticleImageLinksForRaycast(
     // fallback to provided path
   }
   return markdown.replace(
-    /!\[((?:\\.|[^\]])*)\]\((assets\/[^)\s]+)\)/g,
+    /!\[((?:\\.|[^\]\\])*)\]\((assets\/[^)\s]+)\)/g,
     (_match, alt: string, relPath: string) => {
       const abs = path.resolve(realRoot, relPath);
       const relative = path.relative(realRoot, abs);
