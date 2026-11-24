@@ -374,14 +374,63 @@ export function formatDuration(seconds: number): string {
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
-export function formatTaskDate(taskId: string): string | null {
+export function parseTaskDate(taskId: string): Date | null {
   const match = taskId.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})-/);
   if (!match) {
     return null;
   }
   const iso = `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}Z`;
   const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) {
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+const SHORT_MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+
+export function formatCompactTaskDate(
+  taskId: string,
+  now: Date = new Date(),
+): string | null {
+  const date = parseTaskDate(taskId);
+  if (!date) {
+    return null;
+  }
+  const sameYear = date.getFullYear() === now.getFullYear();
+  const sameDay =
+    sameYear &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+
+  if (sameDay) {
+    const hh = String(date.getHours()).padStart(2, "0");
+    const mm = String(date.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}`;
+  }
+  if (sameYear) {
+    const mon = SHORT_MONTHS[date.getMonth()] || String(date.getMonth() + 1);
+    return `${mon} ${date.getDate()}`;
+  }
+  const y = date.getFullYear();
+  const mon = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${mon}-${d}`;
+}
+
+export function formatTaskDate(taskId: string): string | null {
+  const date = parseTaskDate(taskId);
+  if (!date) {
     return null;
   }
   const y = date.getFullYear();

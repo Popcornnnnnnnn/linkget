@@ -21,6 +21,7 @@ import {
   readArticleLocalMeta,
 } from "../lib/articles";
 import { normalizeLinkgetError, retryTask } from "../lib/cli";
+import { shortenHomePath, summarizeMediaFiles } from "../lib/task-format";
 import type {
   ArticleLocalMeta,
   DownloadResponse,
@@ -242,9 +243,11 @@ export function ResultDetail(props: ResultDetailProps) {
 
   const dl = downloadRes;
   const savedFiles = dl?.saved_files || [];
-  const primaryFile = savedFiles.find((file) => isMediaOrFileExisting(file));
   const dest = dl?.article_folder || dl?.destination || "Photos";
   const isPhotos = dest === "Photos";
+  const primaryFile = isPhotos
+    ? undefined
+    : savedFiles.find((file) => isMediaOrFileExisting(file));
 
   if (articleMeta && articleMeta.exists) {
     const title = articleMeta.title || dl?.title || "Article Archived";
@@ -352,31 +355,47 @@ export function ResultDetail(props: ResultDetailProps) {
     );
   }
 
-  const fileRows =
-    dl?.files && dl.files.length > 0
+  const photosSummary = isPhotos
+    ? summarizeMediaFiles(savedFiles, Boolean(dl?.audio_mode))
+    : null;
+
+  const fileRows = isPhotos
+    ? []
+    : dl?.files && dl.files.length > 0
       ? dl.files.map((f) => {
           const name = f.path ? path.basename(f.path) : f.file || "file";
           return `- \`${name}\`${f.bytes ? ` (${formatBytes(f.bytes)})` : ""}`;
         })
       : savedFiles.map((f) => `- \`${path.basename(f)}\``);
 
-  const summaryMd = [
-    `# ${dl?.audio_mode ? "Audio Saved" : "Download Completed"}`,
-    "",
-    dl?.site ? `**Site:** ${dl.site}` : "",
-    `**Destination:** ${dest}`,
-    fileRows.length > 0
-      ? `\n## Saved Files (${fileRows.length})\n\n${fileRows.join("\n")}`
-      : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const summaryMd = isPhotos
+    ? [
+        `# ${photosSummary?.label || "Saved to Apple Photos"}`,
+        "",
+        dl?.site ? `**Source:** ${dl.site}` : "",
+        photosSummary && photosSummary.extensions.length > 0
+          ? `Imported **${photosSummary.label.toLowerCase()}** (${photosSummary.extensions.map((ext) => `\`${ext}\``).join(", ")}) into **Apple Photos**.`
+          : "Imported into **Apple Photos**.",
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : [
+        `# ${dl?.audio_mode ? "Audio Saved" : "Download Completed"}`,
+        "",
+        dl?.site ? `**Site:** ${dl.site}` : "",
+        `**Destination:** \`${shortenHomePath(dest)}\``,
+        fileRows.length > 0
+          ? `\n## Saved Files (${fileRows.length})\n\n${fileRows.join("\n")}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
 
   const folderExists = !isPhotos && fs.existsSync(dest);
 
   return (
     <Detail
-      navigationTitle="Saved"
+      navigationTitle={isPhotos ? "Saved to Photos" : "Saved"}
       markdown={summaryMd}
       metadata={
         <Detail.Metadata>
@@ -394,9 +413,16 @@ export function ResultDetail(props: ResultDetailProps) {
           </Detail.Metadata.TagList>
           <Detail.Metadata.Label
             title="Saved"
-            text={`${dl?.saved_count ?? savedFiles.length} item(s)`}
+            text={
+              isPhotos
+                ? photosSummary?.label || `${dl?.saved_count ?? 1} item(s)`
+                : `${dl?.saved_count ?? savedFiles.length} item(s)`
+            }
           />
-          <Detail.Metadata.Label title="Destination" text={dest} />
+          <Detail.Metadata.Label
+            title="Destination"
+            text={isPhotos ? "Apple Photos" : shortenHomePath(dest)}
+          />
           {dl?.task_id && (
             <Detail.Metadata.Label title="Task ID" text={dl.task_id} />
           )}
@@ -405,18 +431,18 @@ export function ResultDetail(props: ResultDetailProps) {
       actions={
         <ActionPanel>
           <ActionPanel.Section title="Open">
-            {primaryFile && (
-              <Action.Open
-                title="Open Primary File"
-                icon={Icon.Document}
-                target={primaryFile}
-              />
-            )}
             {isPhotos && (
               <Action.Open
                 title="Open Apple Photos"
                 icon={Icon.Image}
                 target="/System/Applications/Photos.app"
+              />
+            )}
+            {!isPhotos && primaryFile && (
+              <Action.Open
+                title="Open Primary File"
+                icon={Icon.Document}
+                target={primaryFile}
               />
             )}
             {folderExists && (

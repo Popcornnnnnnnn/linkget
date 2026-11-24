@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -328,16 +329,25 @@ export function buildDownloadArgs(
   } else if (opts.folder && opts.folder.trim()) {
     args.push("--folder", expandHome(opts.folder));
   }
-  if (opts.clip && opts.clip.trim()) {
-    args.push("--clip", opts.clip.trim());
+  if (opts.mode !== "article") {
+    if (opts.clip && opts.clip.trim()) {
+      args.push("--clip", opts.clip.trim());
+    }
+    if (opts.maxDuration && opts.maxDuration.trim()) {
+      args.push("--max-duration", opts.maxDuration.trim());
+    }
+    if (opts.maxSize && opts.maxSize.trim()) {
+      args.push("--max-size", opts.maxSize.trim());
+    }
   }
-  if (opts.maxDuration && opts.maxDuration.trim()) {
-    args.push("--max-duration", opts.maxDuration.trim());
-  }
-  if (opts.maxSize && opts.maxSize.trim()) {
-    args.push("--max-size", opts.maxSize.trim());
-  }
-  if (opts.livePhotos && opts.destination === "photos") {
+  if (
+    opts.livePhotos &&
+    opts.mode !== "article" &&
+    opts.mode !== "audio" &&
+    !opts.clip?.trim() &&
+    (opts.destination === "photos" ||
+      (opts.destination === "default" && !opts.folder?.trim()))
+  ) {
     args.push("--live-photos");
   }
   if (opts.browser) {
@@ -468,10 +478,12 @@ export function parseLinkgetJson<T>(
   ) {
     return fromStderr as T;
   }
-  const snippet =
+  const rawSnippet =
     stderr.trim().split(/\r?\n/).filter(Boolean).pop() ||
     stdout.trim().split(/\r?\n/).filter(Boolean).pop() ||
     `linkget exited with code ${exitCode ?? "unknown"} without JSON output`;
+  const snippet =
+    rawSnippet.length > 400 ? `…${rawSnippet.slice(-400)}` : rawSnippet;
   throw new Error(snippet);
 }
 
@@ -511,7 +523,8 @@ export function isArticleFolderRequiredError(
   ).toLowerCase();
   return (
     message.includes("article downloads require a folder") ||
-    message.includes("articles cannot be imported into photos")
+    message.includes("articles cannot be imported into photos") ||
+    message.includes("cannot be used with article downloads")
   );
 }
 
@@ -523,15 +536,34 @@ export interface RunCommandOptions {
   env?: Record<string, string | undefined>;
 }
 
-function terminateChildWithFallback(child: ChildProcess): void {
+function sendSignalToChild(
+  child: ChildProcess,
+  signal: NodeJS.Signals,
+  processGroup: boolean,
+): void {
+  if (processGroup && process.platform !== "win32" && child.pid) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // process group may not exist yet or already exited; fall back to child.kill
+    }
+  }
+  child.kill(signal);
+}
+
+function terminateChildWithFallback(
+  child: ChildProcess,
+  processGroup = false,
+): void {
   try {
-    child.kill("SIGTERM");
+    sendSignalToChild(child, "SIGTERM", processGroup);
   } catch {
     return;
   }
   const killTimer = setTimeout(() => {
     try {
-      child.kill("SIGKILL");
+      sendSignalToChild(child, "SIGKILL", processGroup);
     } catch {
       // already exited
     }
@@ -762,15 +794,283 @@ export function inspectUrl(
   });
 }
 
-export function downloadLink(
+const MAX_DETACHED_FILES_SCAN = 200;
+
+export function cleanupStaleDetachedOutputFiles(
+  maxAgeMs = 60 * 60 * 1000,
+): void {
+  try {
+    const tmpDir = os.tmpdir();
+    const now = Date.now();
+    let checked = 0;
+    for (const name of fs.readdirSync(tmpDir)) {
+      if (!/^linkget-raycast-[a-z0-9-]+\.(out|err)$/i.test(name)) {
+        continue;
+      }
+      checked += 1;
+      if (checked > MAX_DETACHED_FILES_SCAN) {
+        break;
+      }
+      const fullPath = path.join(tmpDir, name);
+      try {
+        const stat = fs.lstatSync(fullPath);
+        if (stat.isFile() && now - stat.mtimeMs >= maxAgeMs) {
+          fs.unlinkSync(fullPath);
+        }
+      } catch {
+        // ignore individual temp file errors
+      }
+    }
+  } catch {
+    // ignore tmpdir scan errors
+  }
+}
+
+function readBoundedFileUtf8(filePath: string, maxBytes: number): string {
+  try {
+    const stat = fs.lstatSync(filePath);
+    if (!stat.isFile() || stat.size === 0) {
+      return "";
+    }
+    const fd = fs.openSync(filePath, "r");
+    try {
+      const length = Math.min(stat.size, maxBytes);
+      const offset = Math.max(0, stat.size - length);
+      const buffer = Buffer.alloc(length);
+      let totalRead = 0;
+      while (totalRead < length) {
+        const bytesRead = fs.readSync(
+          fd,
+          buffer,
+          totalRead,
+          length - totalRead,
+          offset + totalRead,
+        );
+        if (bytesRead <= 0) {
+          break;
+        }
+        totalRead += bytesRead;
+      }
+      return buffer.toString("utf8", 0, totalRead);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return "";
+  }
+}
+
+function tryUnlink(filePath: string): void {
+  try {
+    fs.unlinkSync(filePath);
+  } catch {
+    // ignore cleanup failures
+  }
+}
+
+export async function runLinkgetJsonDetached<T>(
+  args: string[],
+  options: RunCommandOptions & { detachOnAbort?: boolean } = {},
+): Promise<T> {
+  const binary = resolveLinkgetBinary(options.binaryPath);
+  const timeoutMs = options.timeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
+  const cwd = options.cwd || os.homedir();
+  const env = augmentedEnv(options.env ?? process.env);
+  const detachOnAbort = options.detachOnAbort !== false;
+
+  if (options.signal?.aborted) {
+    const abortErr = new Error("Aborted");
+    abortErr.name = "AbortError";
+    throw abortErr;
+  }
+
+  cleanupStaleDetachedOutputFiles();
+
+  const runId = crypto.randomUUID();
+  const tmpDir = os.tmpdir();
+  const outPath = path.join(tmpDir, `linkget-raycast-${runId}.out`);
+  const errPath = path.join(tmpDir, `linkget-raycast-${runId}.err`);
+
+  let outFd: number | undefined;
+  let errFd: number | undefined;
+  let child: ChildProcess;
+  try {
+    outFd = fs.openSync(outPath, "w", 0o600);
+    errFd = fs.openSync(errPath, "w", 0o600);
+    child = spawn(binary, args, {
+      cwd,
+      env,
+      detached: true,
+      stdio: ["ignore", outFd, errFd],
+    });
+  } catch (error) {
+    tryUnlink(outPath);
+    tryUnlink(errPath);
+    throw error;
+  } finally {
+    if (outFd !== undefined) {
+      fs.closeSync(outFd);
+    }
+    if (errFd !== undefined) {
+      fs.closeSync(errFd);
+    }
+  }
+  child.unref();
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let detachedToBackground = false;
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const cleanup = () => {
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+      }
+      options.signal?.removeEventListener("abort", onAbort);
+    };
+
+    const onAbort = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      if (detachOnAbort) {
+        detachedToBackground = true;
+      } else {
+        terminateChildWithFallback(child, true);
+        tryUnlink(outPath);
+        tryUnlink(errPath);
+      }
+      const abortErr = new Error(
+        detachOnAbort ? "Detached to background" : "Command aborted",
+      );
+      abortErr.name = "AbortError";
+      reject(abortErr);
+    };
+
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+
+    if (timeoutMs > 0) {
+      timeoutTimer = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        terminateChildWithFallback(child, true);
+        tryUnlink(outPath);
+        tryUnlink(errPath);
+        reject(
+          new Error(`linkget timed out after ${Math.round(timeoutMs / 1000)}s`),
+        );
+      }, timeoutMs);
+    }
+
+    child.on("error", (error: NodeJS.ErrnoException) => {
+      if (settled) {
+        tryUnlink(outPath);
+        tryUnlink(errPath);
+        return;
+      }
+      settled = true;
+      cleanup();
+      tryUnlink(outPath);
+      tryUnlink(errPath);
+      if (error.code === "ENOENT") {
+        reject(
+          new Error(
+            `linkget binary not found at "${binary}". Install via Homebrew (brew install Popcornnnnnnnn/tap/linkget) or set Linkget Binary Path in Extension Preferences.`,
+          ),
+        );
+        return;
+      }
+      reject(error);
+    });
+
+    child.on("close", (code) => {
+      if (detachedToBackground) {
+        tryUnlink(outPath);
+        tryUnlink(errPath);
+        return;
+      }
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      const stdout = readBoundedFileUtf8(outPath, MAX_OUTPUT_BYTES);
+      const stderr = readBoundedFileUtf8(errPath, MAX_OUTPUT_BYTES);
+      tryUnlink(outPath);
+      tryUnlink(errPath);
+      try {
+        resolve(parseLinkgetJson<T>(stdout, stderr, code));
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
+}
+
+export function startBackgroundDownload(
   url: string,
   opts: DownloadOptions,
   runOpts: RunCommandOptions = {},
-): Promise<DownloadResponse> {
-  return runLinkgetJson<DownloadResponse>(buildDownloadArgs(url, opts), {
-    ...runOpts,
-    timeoutMs: runOpts.timeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS,
+): Promise<{ pid?: number }> {
+  const binary = resolveLinkgetBinary(runOpts.binaryPath);
+  const cwd = runOpts.cwd || os.homedir();
+  const env = augmentedEnv(runOpts.env ?? process.env);
+  const args = buildDownloadArgs(url, opts);
+
+  return new Promise<{ pid?: number }>((resolve, reject) => {
+    let settled = false;
+    const child = spawn(binary, args, {
+      cwd,
+      env,
+      detached: true,
+      stdio: "ignore",
+    });
+
+    child.once("error", (error: NodeJS.ErrnoException) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (error.code === "ENOENT") {
+        reject(
+          new Error(
+            `linkget binary not found at "${binary}". Install via Homebrew (brew install Popcornnnnnnnn/tap/linkget) or set Linkget Binary Path in Extension Preferences.`,
+          ),
+        );
+        return;
+      }
+      reject(error);
+    });
+
+    child.once("spawn", () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      child.unref();
+      resolve({ pid: child.pid });
+    });
   });
+}
+
+export function downloadLink(
+  url: string,
+  opts: DownloadOptions,
+  runOpts: RunCommandOptions & { detachOnAbort?: boolean } = {},
+): Promise<DownloadResponse> {
+  return runLinkgetJsonDetached<DownloadResponse>(
+    buildDownloadArgs(url, opts),
+    {
+      detachOnAbort: true,
+      ...runOpts,
+      timeoutMs: runOpts.timeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS,
+    },
+  );
 }
 
 export function submitReadTask(

@@ -18,8 +18,8 @@ Control your local [`linkget`](https://github.com/Popcornnnnnnnn/linkget) CLI di
 
 | Command | Mode | Description |
 | --- | --- | --- |
-| **Save Link** (`lg`) | Form | Paste a URL or share text (or auto-fill from clipboard / active browser tab via `⌘⇧B`), review live `linkget inspect` detection, choose parameters below (Mode, Destination, Assets, Audio Format, Clip Range, Max Duration/Size, Keyframes/OCR, Browser Session), and open results immediately. |
-| **Status Board** (`lgs`) | List + Detail | Unified board showing recent downloads & saved articles (cover & Markdown preview, in-Raycast reader, open `article.html`, reveal in Finder, retry/cancel tasks) alongside CLI defaults, download engines (`gallery-dl`, `yt-dlp`, `ffmpeg`, `ffprobe`, `deno`), site sessions, update checks, and confirmed `linkget clean`. |
+| **Save Link** (`lg`) | Form | Paste a URL or share text (or auto-fill from clipboard / active browser tab via `⌘⇧B`), review live `linkget inspect` detection, choose parameters below (Mode, Destination, Live Photos, Article Assets, Audio Format, Keyframes/OCR, or toggle **Advanced** for Clip Range, Max Duration/Size, and Browser Session), and either wait for the result (still continues in background if Raycast closes) or launch immediately in background (`⌘B`). |
+| **Status Board** (`lgs`) | List + Detail | Unified board showing recent downloads & saved articles (readable titles, clean dates, Apple Photos & article previews, toggle detail pane `⌘⇧D`, in-Raycast reader, open `article.html`, reveal in Finder, retry/cancel tasks) alongside a pinned CLI health & staging overview and expandable download engines, site sessions, update checks, and confirmed `linkget clean`. |
 
 ## Preferences
 
