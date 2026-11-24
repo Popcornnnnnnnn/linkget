@@ -417,10 +417,12 @@ export default function StatusBoardCommand() {
   );
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [tasksError, setTasksError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setIsLoading(true);
     setLoadError(null);
+    setTasksError(null);
     try {
       const [tasksRes, docRes, cfgRes, cleanRes] = await Promise.allSettled([
         listTasks({ limit: 50 }, { binaryPath: prefs.linkgetPath }),
@@ -437,12 +439,12 @@ export default function StatusBoardCommand() {
         );
         setEntries(enriched);
       } else if (tasksRes.status === "fulfilled" && !tasksRes.value.ok) {
-        setLoadError(
+        setTasksError(
           normalizeLinkgetError(tasksRes.value.error, "Unable to Load Tasks")
             .message,
         );
       } else if (tasksRes.status === "rejected") {
-        setLoadError(
+        setTasksError(
           tasksRes.reason instanceof Error
             ? tasksRes.reason.message
             : String(tasksRes.reason),
@@ -669,9 +671,19 @@ export default function StatusBoardCommand() {
         { apply: true },
         { binaryPath: prefs.linkgetPath },
       );
-      toast.style = Toast.Style.Success;
-      toast.title = `Removed ${res.deleted_count} Stage(s)`;
-      toast.message = `Freed ${formatBytes(res.freed_bytes)}`;
+      if (!res.ok && res.deleted_count === 0) {
+        const err = normalizeLinkgetError(res.error, "Clean Failed");
+        toast.style = Toast.Style.Failure;
+        toast.title = err.title;
+        toast.message = err.message;
+      } else {
+        toast.style = Toast.Style.Success;
+        toast.title = `Removed ${res.deleted_count} Stage(s)`;
+        toast.message =
+          res.errors && res.errors.length > 0
+            ? `Freed ${formatBytes(res.freed_bytes)} (${res.errors.length} receipt warning(s))`
+            : `Freed ${formatBytes(res.freed_bytes)}`;
+      }
       await refresh();
     } catch (error) {
       toast.style = Toast.Style.Failure;
@@ -792,11 +804,11 @@ export default function StatusBoardCommand() {
         </List.Dropdown>
       }
     >
-      {loadError && !doctor && entries.length === 0 ? (
+      {(loadError || tasksError) && !doctor && entries.length === 0 ? (
         <List.EmptyView
           icon={Icon.ExclamationMark}
           title="Linkget CLI Not Reachable"
-          description={loadError}
+          description={loadError || tasksError || undefined}
           actions={
             <ActionPanel>
               <Action
@@ -814,9 +826,16 @@ export default function StatusBoardCommand() {
         />
       ) : filter !== "all" && filter !== "system" && isEmptyAll ? (
         <List.EmptyView
-          icon={Icon.Tray}
-          title="No Matching Linkget Items"
-          description="Use Save Link to archive an article or download media."
+          icon={tasksError ? Icon.ExclamationMark : Icon.Tray}
+          title={
+            tasksError
+              ? "Unable to Load Linkget Tasks"
+              : "No Matching Linkget Items"
+          }
+          description={
+            tasksError ||
+            "Use Save Link to archive an article or download media."
+          }
           actions={
             <ActionPanel>
               <Action
@@ -840,6 +859,22 @@ export default function StatusBoardCommand() {
         />
       ) : (
         <>
+          {showTasks && tasksError && filteredTasks.length === 0 && (
+            <List.Section title="Recent Downloads & Articles">
+              <List.Item
+                key="tasks-load-error"
+                icon={{ source: Icon.ExclamationMark, tintColor: Color.Red }}
+                title="Unable to Load Recent Tasks"
+                subtitle={tasksError}
+                detail={
+                  <List.Item.Detail
+                    markdown={`# Unable to Load Recent Tasks\n\n${tasksError}`}
+                  />
+                }
+                actions={<ActionPanel>{commonBoardActions}</ActionPanel>}
+              />
+            </List.Section>
+          )}
           {showTasks && filteredTasks.length > 0 && (
             <List.Section
               title={`Recent Downloads & Articles (${filteredTasks.length})`}
@@ -1051,7 +1086,11 @@ export default function StatusBoardCommand() {
                           onAction={() => void handleCheckUpgrade()}
                         />
                         <Action
-                          title="Set Article Default to Downloads"
+                          title={
+                            prefs.defaultArticleFolder?.trim()
+                              ? "Save Configured Article Folder Default"
+                              : "Set Article Default to Downloads"
+                          }
                           icon={Icon.Folder}
                           onAction={() => void handleSetArticleFolder()}
                         />

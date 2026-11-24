@@ -26,8 +26,8 @@ import {
   isArticleFolderRequiredError,
   isArticleInspectTarget,
   normalizeLinkgetError,
+  resolveDefaultDownloadTarget,
   resolveEffectiveArticleFolder,
-  resolveEffectiveAudioFolder,
   resolveInputTarget,
   resolveReadOutputFolder,
   submitReadTask,
@@ -398,36 +398,15 @@ export default function SaveLinkCommand(
           binaryPath: prefs.linkgetPath,
           signal: runController.signal,
         }).catch(() => null);
-        if (
-          effectiveMode === "article" ||
-          (effectiveMode === "auto" && isArticleInspectTarget(currentInspect))
-        ) {
-          chosenFolder = ensureFolderExists(
-            resolveEffectiveArticleFolder(prefs, cachedConfig),
-          );
-        } else if (
-          effectiveMode === "audio" ||
-          (effectiveMode === "auto" &&
-            (currentInspect?.effective_audio_mode ||
-              currentInspect?.audio_only))
-        ) {
-          chosenFolder = ensureFolderExists(
-            resolveEffectiveAudioFolder(prefs, cachedConfig),
-          );
-        } else if (effectiveMode === "media") {
-          if (prefs.defaultMediaFolder?.trim()) {
-            chosenFolder = ensureFolderExists(prefs.defaultMediaFolder);
-            downloadDest = "folder";
-          } else {
-            downloadDest = "photos";
-          }
-        } else if (prefs.defaultMediaFolder?.trim()) {
-          chosenFolder = ensureFolderExists(prefs.defaultMediaFolder);
-          downloadDest = "folder";
-        } else if (cachedConfig?.destination?.mode === "photos") {
-          downloadDest = "default";
-        } else if (currentInspect?.domain !== "x.com") {
-          downloadDest = "photos";
+        const resolved = resolveDefaultDownloadTarget(
+          effectiveMode,
+          prefs,
+          cachedConfig,
+          currentInspect,
+        );
+        downloadDest = resolved.destination;
+        if (resolved.folder) {
+          chosenFolder = ensureFolderExists(resolved.folder);
         }
       }
 

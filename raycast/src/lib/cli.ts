@@ -218,20 +218,47 @@ export function resolveEffectiveAudioFolder(
   return path.join(os.homedir(), "Downloads");
 }
 
-export function resolveEffectiveMediaFallbackFolder(
+export function resolveDefaultDownloadTarget(
+  effectiveMode: Exclude<SaveMode, "read">,
   prefs: ExtensionPreferences,
   config?: ConfigResponse | null,
-): string | null {
-  if (config?.destination?.mode === "folder" && config.destination.path) {
-    return expandHome(config.destination.path);
+  inspect?: InspectResponse | null,
+): { destination: DestinationChoice; folder?: string } {
+  if (
+    effectiveMode === "article" ||
+    (effectiveMode === "auto" && isArticleInspectTarget(inspect))
+  ) {
+    return {
+      destination: "default",
+      folder: resolveEffectiveArticleFolder(prefs, config),
+    };
+  }
+  if (
+    effectiveMode === "audio" ||
+    (effectiveMode === "auto" &&
+      Boolean(inspect?.effective_audio_mode || inspect?.audio_only))
+  ) {
+    return {
+      destination: "default",
+      folder: resolveEffectiveAudioFolder(prefs, config),
+    };
   }
   if (prefs.defaultMediaFolder && prefs.defaultMediaFolder.trim()) {
-    return expandHome(prefs.defaultMediaFolder);
+    return {
+      destination: "folder",
+      folder: expandHome(prefs.defaultMediaFolder),
+    };
   }
-  if (config?.destination?.mode === "cwd") {
-    return path.join(os.homedir(), "Downloads");
+  if (
+    effectiveMode === "auto" &&
+    inspect?.domain === "x.com" &&
+    config?.destination?.mode === "photos" &&
+    config?.article_destination?.mode === "folder" &&
+    Boolean(config.article_destination.path)
+  ) {
+    return { destination: "default" };
   }
-  return null;
+  return { destination: "photos" };
 }
 
 export interface InspectOptions {
@@ -479,8 +506,13 @@ export function isArticleFolderRequiredError(
   if (!err) {
     return false;
   }
-  const message = typeof err === "string" ? err : err.message || "";
-  return message.toLowerCase().includes("article downloads require a folder");
+  const message = (
+    typeof err === "string" ? err : err.message || ""
+  ).toLowerCase();
+  return (
+    message.includes("article downloads require a folder") ||
+    message.includes("articles cannot be imported into photos")
+  );
 }
 
 export interface RunCommandOptions {
