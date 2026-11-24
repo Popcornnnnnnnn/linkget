@@ -92,12 +92,10 @@ uv build
 
 ## Raycast Extension
 
-Use the bundled [Raycast Extension](raycast/README.md) (`raycast/`) for a rich macOS launcher UI over `linkget`:
+Use the bundled [Raycast Extension](raycast/README.md) (`raycast/`) for a focused two-command macOS launcher UI over `linkget` (**Apple Photos** by default for pics/videos, **`~/Downloads`** for articles):
 
-- **Save Link (`lg`)** — Auto-fills from clipboard or active browser tab, inspects site & metadata, and saves articles, media, audio, or background reads.
-- **Quick Save Article (`lga`)** — One-shot offline article archive from clipboard, active browser tab, or argument.
-- **Browse Downloads & Articles (`lgt`)** — Filter saved archives and tasks, preview covers & Markdown in Raycast, open `article.html`, or retry failures.
-- **Linkget Status & Maintenance (`lgs`)** — Inspect CLI defaults, download engines, site sessions, updates, and `linkget clean`.
+- **Save Link (`lg`)** — Paste a link (or grab clipboard / active browser tab), inspect capabilities, pick mode, destination, clip/caps, audio format, or browser session, and view saved files.
+- **Status Board (`lgs`)** — Unified board for recent downloads & saved articles (cover & Markdown preview, inline reader, open `article.html`, retry failures) plus CLI defaults, engines, site sessions, and `linkget clean`.
 
 ## Documentation
 

@@ -196,7 +196,7 @@ export function resolveEffectiveArticleFolder(
   if (prefs.defaultArticleFolder && prefs.defaultArticleFolder.trim()) {
     return expandHome(prefs.defaultArticleFolder);
   }
-  return path.join(os.homedir(), "Downloads", "Linkget Articles");
+  return path.join(os.homedir(), "Downloads");
 }
 
 export function resolveEffectiveAudioFolder(
@@ -471,6 +471,16 @@ export function normalizeLinkgetError(
     category: err.category || undefined,
     retryable: Boolean(err.retryable),
   };
+}
+
+export function isArticleFolderRequiredError(
+  err: LinkgetErrorInfo | string | null | undefined,
+): boolean {
+  if (!err) {
+    return false;
+  }
+  const message = typeof err === "string" ? err : err.message || "";
+  return message.toLowerCase().includes("article downloads require a folder");
 }
 
 export interface RunCommandOptions {

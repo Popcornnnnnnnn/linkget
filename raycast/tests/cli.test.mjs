@@ -20,6 +20,7 @@ import {
   buildReadArgs,
   buildTasksArgs,
   extractUrlInput,
+  isArticleFolderRequiredError,
   isArticleInspectTarget,
   normalizeLinkgetError,
   parseLinkgetJson,
@@ -164,8 +165,16 @@ test("folder resolution respects CLI config -> Raycast pref -> Downloads fallbac
   );
   assert.equal(
     resolveEffectiveArticleFolder({ defaultBrowser: "auto" }, null),
-    path.join(os.homedir(), "Downloads", "Linkget Articles"),
+    path.join(os.homedir(), "Downloads"),
   );
+  assert.equal(isArticleFolderRequiredError("Article downloads require a folder."), true);
+  assert.equal(
+    isArticleFolderRequiredError({
+      message: "Article downloads require a folder. Use --folder [PATH].",
+    }),
+    true,
+  );
+  assert.equal(isArticleFolderRequiredError("Network timeout"), false);
   assert.equal(
     resolveEffectiveAudioFolder(prefs, {
       ok: true,

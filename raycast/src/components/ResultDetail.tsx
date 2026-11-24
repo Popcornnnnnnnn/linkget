@@ -167,11 +167,11 @@ export function ResultDetail(props: ResultDetailProps) {
               />
             )}
             <Action
-              title="Open Browse Downloads & Articles"
+              title="Open Status Board"
               icon={Icon.List}
               onAction={() =>
                 void launchCommand({
-                  name: "browse-tasks",
+                  name: "status-board",
                   type: LaunchType.UserInitiated,
                 })
               }
@@ -195,7 +195,7 @@ export function ResultDetail(props: ResultDetailProps) {
       "",
       `Task \`${read.task_id || "unknown"}\` is now **${read.status || "queued"}**.`,
       "",
-      "Check **Browse Downloads & Articles** to inspect progress, open outputs, or cancel the job.",
+      "Check **Status Board** to inspect progress, open outputs, or cancel the job.",
     ].join("\n");
     return (
       <Detail
@@ -219,11 +219,11 @@ export function ResultDetail(props: ResultDetailProps) {
         actions={
           <ActionPanel>
             <Action
-              title="Browse Downloads & Articles"
+              title="Open Status Board"
               icon={Icon.List}
               onAction={() =>
                 void launchCommand({
-                  name: "browse-tasks",
+                  name: "status-board",
                   type: LaunchType.UserInitiated,
                 })
               }
@@ -336,11 +336,11 @@ export function ResultDetail(props: ResultDetailProps) {
                 shortcut={Keyboard.Shortcut.Common.CopyPath}
               />
               <Action
-                title="Browse All Tasks"
+                title="Open Status Board"
                 icon={Icon.List}
                 onAction={() =>
                   void launchCommand({
-                    name: "browse-tasks",
+                    name: "status-board",
                     type: LaunchType.UserInitiated,
                   })
                 }
@@ -436,11 +436,11 @@ export function ResultDetail(props: ResultDetailProps) {
               />
             )}
             <Action
-              title="Browse Downloads & Articles"
+              title="Open Status Board"
               icon={Icon.List}
               onAction={() =>
                 void launchCommand({
-                  name: "browse-tasks",
+                  name: "status-board",
                   type: LaunchType.UserInitiated,
                 })
               }
