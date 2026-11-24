@@ -32,6 +32,7 @@ import {
   detectArticleFolderFromFiles,
   formatMachineFilenameTitle,
   inferTitleFromArchiveFolder,
+  isPhotosLibraryFile,
   type MediaSummary,
   shortenHomePath,
   summarizeMediaFiles,
@@ -123,10 +124,7 @@ async function enrichTask(task: TaskEntry): Promise<EnrichedTask> {
     const outFolder = task.outputs[0] || null;
     const archive = outFolder ? detectArticleArchive([], outFolder) : null;
     const articleMeta = archive ? await readArticleLocalMeta(archive) : null;
-    const detectedArticleFolder = detectArticleFolderFromFiles(
-      task.outputs,
-      outFolder,
-    );
+    const detectedArticleFolder = detectArticleFolderFromFiles(task.outputs);
     const existsOnDisk = Boolean(
       (articleMeta && articleMeta.exists) ||
       (outFolder && pathExists(outFolder)),
@@ -155,6 +153,8 @@ async function enrichTask(task: TaskEntry): Promise<EnrichedTask> {
 
   const firstItem = task.items[0];
   const savedFiles = task.items.flatMap((row) => row.saved_files || []);
+  const folderFiles = savedFiles.filter((f) => !isPhotosLibraryFile(f));
+  const photosFiles = savedFiles.filter((f) => isPhotosLibraryFile(f));
   const retainedPaths = task.items.flatMap((row) => row.retained_paths || []);
   const itemDest = firstItem?.destination || task.destination;
   const isPhotos =
@@ -163,22 +163,22 @@ async function enrichTask(task: TaskEntry): Promise<EnrichedTask> {
       (row) => (row.destination || task.destination) === "Photos",
     );
 
-  const archive = detectArticleArchive(savedFiles, isPhotos ? null : itemDest);
+  const archive = detectArticleArchive(folderFiles, isPhotos ? null : itemDest);
   const detectedArticleFolder = isPhotos
     ? null
-    : archive?.folderPath || detectArticleFolderFromFiles(savedFiles, itemDest);
+    : archive?.folderPath || detectArticleFolderFromFiles(folderFiles);
   const articleMeta = archive ? await readArticleLocalMeta(archive) : null;
   const isArticle = Boolean(archive || detectedArticleFolder);
 
   const existingSaved = isPhotos
     ? null
-    : savedFiles.find((f) => pathExists(f)) || null;
+    : folderFiles.find((f) => pathExists(f)) || null;
   const primaryPath = isPhotos
     ? null
     : existingSaved || (pathExists(itemDest) ? itemDest : null);
   const existsOnDisk = isPhotos
     ? task.status === "completed"
-    : Boolean(articleMeta?.exists || primaryPath);
+    : Boolean(articleMeta?.exists || primaryPath || photosFiles.length > 0);
 
   const mediaSummary = isPhotos
     ? summarizeMediaFiles(savedFiles, task.audio)
@@ -190,13 +190,22 @@ async function enrichTask(task: TaskEntry): Promise<EnrichedTask> {
     displayTitle = inferTitleFromArchiveFolder(detectedArticleFolder) || "";
   }
   if (!displayTitle && isPhotos && mediaSummary) {
-    displayTitle = mediaSummary.label;
+    if (savedFiles.length === 0 && task.status !== "completed") {
+      displayTitle =
+        task.status === "running" || task.status === "queued"
+          ? "Saving to Apple Photos…"
+          : "Apple Photos Download";
+    } else {
+      displayTitle = mediaSummary.label;
+    }
   }
   if (!displayTitle) {
-    if (savedFiles.length > 0) {
-      const formatted = formatMachineFilenameTitle(savedFiles, task.audio);
+    if (folderFiles.length > 0) {
+      const formatted = formatMachineFilenameTitle(folderFiles, task.audio);
       displayTitle = formatted.title;
       platform = formatted.platform;
+    } else if (photosFiles.length > 0) {
+      displayTitle = summarizeMediaFiles(photosFiles, task.audio).label;
     } else {
       displayTitle = path.basename(itemDest) || task.id;
     }
@@ -302,6 +311,8 @@ function buildTaskDetailMarkdown(entry: EnrichedTask): string {
     }
 
     const files = dl.items.flatMap((row) => row.saved_files || []);
+    const folderFiles = files.filter((f) => !isPhotosLibraryFile(f));
+    const photosFiles = files.filter((f) => isPhotosLibraryFile(f));
     if (entry.isPhotos) {
       const summary = entry.mediaSummary;
       const extText =
@@ -316,12 +327,24 @@ function buildTaskDetailMarkdown(entry: EnrichedTask): string {
             : "Imported media into **Apple Photos**.",
         );
       }
-    } else if (files.length > 0) {
-      const visible = files.slice(0, 8).map((f) => `- \`${path.basename(f)}\``);
-      if (files.length > 8) {
-        visible.push(`- … and ${files.length - 8} more`);
+    } else {
+      if (folderFiles.length > 0) {
+        const visible = folderFiles
+          .slice(0, 8)
+          .map((f) => `- \`${path.basename(f)}\``);
+        if (folderFiles.length > 8) {
+          visible.push(`- … and ${folderFiles.length - 8} more`);
+        }
+        parts.push(
+          `**Saved Files (${folderFiles.length})**\n\n${visible.join("\n")}`,
+        );
       }
-      parts.push(`**Saved Files (${files.length})**\n\n${visible.join("\n")}`);
+      if (photosFiles.length > 0) {
+        const photosSummary = summarizeMediaFiles(photosFiles, dl.audio);
+        parts.push(
+          `Also imported **${photosSummary.label.toLowerCase()}** into **Apple Photos**.`,
+        );
+      }
     }
 
     if (dl.status !== "completed") {
@@ -503,6 +526,7 @@ export default function StatusBoardCommand() {
   const [doctor, setDoctor] = useState<DoctorResponse | null>(null);
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [cleanPreview, setCleanPreview] = useState<CleanResponse | null>(null);
+  const [cleanError, setCleanError] = useState<string | null>(null);
   const [upgradeInfo, setUpgradeInfo] = useState<UpgradeCheckResponse | null>(
     null,
   );
@@ -514,6 +538,7 @@ export default function StatusBoardCommand() {
     setIsLoading(true);
     setLoadError(null);
     setTasksError(null);
+    setCleanError(null);
     try {
       const [tasksRes, docRes, cfgRes, cleanRes] = await Promise.allSettled([
         listTasks({ limit: 50 }, { binaryPath: prefs.linkgetPath }),
@@ -567,6 +592,17 @@ export default function StatusBoardCommand() {
         typeof cleanRes.value.eligible_count === "number"
       ) {
         setCleanPreview(cleanRes.value);
+      } else if (cleanRes.status === "fulfilled" && !cleanRes.value.ok) {
+        setCleanError(
+          normalizeLinkgetError(cleanRes.value.error, "Clean Preview Failed")
+            .message,
+        );
+      } else if (cleanRes.status === "rejected") {
+        setCleanError(
+          cleanRes.reason instanceof Error
+            ? cleanRes.reason.message
+            : String(cleanRes.reason),
+        );
       }
     } finally {
       setIsLoading(false);
@@ -765,7 +801,17 @@ export default function StatusBoardCommand() {
       const deletedCount = res.deleted_count ?? 0;
       const freedBytes = res.freed_bytes ?? 0;
       if (!res.ok && !(deletedCount > 0)) {
-        const err = normalizeLinkgetError(res.error, "Clean Failed");
+        const firstCleanErr =
+          Array.isArray(res.errors) && res.errors.length > 0
+            ? typeof res.errors[0] === "string"
+              ? res.errors[0]
+              : ((res.errors[0] as { message?: string } | null)?.message ??
+                undefined)
+            : undefined;
+        const err = normalizeLinkgetError(
+          res.error || firstCleanErr,
+          "Clean Failed",
+        );
         toast.style = Toast.Style.Failure;
         toast.title = err.title;
         toast.message = err.message;
@@ -893,7 +939,9 @@ export default function StatusBoardCommand() {
       ]
         .filter(Boolean)
         .join("\n")
-    : "### Temporary Staging Cleanup\n\nLoading cleanup preview…";
+    : cleanError
+      ? `### Temporary Staging Cleanup\n\nPreview unavailable: ${cleanError}`
+      : "### Temporary Staging Cleanup\n\nLoading cleanup preview…";
 
   const commonBoardActions = (
     <ActionPanel.Section title="Extension">
@@ -1022,7 +1070,7 @@ export default function StatusBoardCommand() {
                 subtitle={
                   showDetail
                     ? undefined
-                    : `Photos · Articles: ${shortenHomePath(effectiveArticleFolder)}`
+                    : `${formatDestinationSetting(config?.destination, "Apple Photos")} · Articles: ${shortenHomePath(effectiveArticleFolder)}`
                 }
                 accessories={[{ tag: systemSummaryTag }]}
                 detail={
@@ -1181,13 +1229,18 @@ export default function StatusBoardCommand() {
                     actions={
                       <ActionPanel>
                         <ActionPanel.Section title="Open">
-                          {entry.isPhotos && (
-                            <Action.Open
-                              title="Open Apple Photos"
-                              icon={Icon.Image}
-                              target="/System/Applications/Photos.app"
-                            />
-                          )}
+                          {entry.isPhotos &&
+                            (entry.task.status === "completed" ||
+                              (entry.task.kind === "download" &&
+                                entry.task.items.some(
+                                  (r) => (r.saved_files?.length ?? 0) > 0,
+                                ))) && (
+                              <Action.Open
+                                title="Open Apple Photos"
+                                icon={Icon.Image}
+                                target="/System/Applications/Photos.app"
+                              />
+                            )}
                           {meta && meta.exists && meta.htmlPath && (
                             <Action.Open
                               title="Open HTML Article in Browser"
@@ -1369,7 +1422,9 @@ export default function StatusBoardCommand() {
                       ? undefined
                       : cleanPreview
                         ? `${cleanPreview.eligible_count} eligible · ${formatBytes(cleanPreview.reclaimable_bytes)}`
-                        : "Checking…"
+                        : cleanError
+                          ? "Preview unavailable"
+                          : "Checking…"
                   }
                   accessories={
                     cleanPreview

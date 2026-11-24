@@ -329,19 +329,22 @@ export function buildDownloadArgs(
   } else if (opts.folder && opts.folder.trim()) {
     args.push("--folder", expandHome(opts.folder));
   }
-  if (opts.clip && opts.clip.trim()) {
-    args.push("--clip", opts.clip.trim());
-  }
-  if (opts.maxDuration && opts.maxDuration.trim()) {
-    args.push("--max-duration", opts.maxDuration.trim());
-  }
-  if (opts.maxSize && opts.maxSize.trim()) {
-    args.push("--max-size", opts.maxSize.trim());
+  if (opts.mode !== "article") {
+    if (opts.clip && opts.clip.trim()) {
+      args.push("--clip", opts.clip.trim());
+    }
+    if (opts.maxDuration && opts.maxDuration.trim()) {
+      args.push("--max-duration", opts.maxDuration.trim());
+    }
+    if (opts.maxSize && opts.maxSize.trim()) {
+      args.push("--max-size", opts.maxSize.trim());
+    }
   }
   if (
     opts.livePhotos &&
     opts.mode !== "article" &&
     opts.mode !== "audio" &&
+    !opts.clip?.trim() &&
     (opts.destination === "photos" ||
       (opts.destination === "default" && !opts.folder?.trim()))
   ) {
@@ -475,10 +478,12 @@ export function parseLinkgetJson<T>(
   ) {
     return fromStderr as T;
   }
-  const snippet =
+  const rawSnippet =
     stderr.trim().split(/\r?\n/).filter(Boolean).pop() ||
     stdout.trim().split(/\r?\n/).filter(Boolean).pop() ||
     `linkget exited with code ${exitCode ?? "unknown"} without JSON output`;
+  const snippet =
+    rawSnippet.length > 400 ? `…${rawSnippet.slice(-400)}` : rawSnippet;
   throw new Error(snippet);
 }
 
@@ -518,7 +523,8 @@ export function isArticleFolderRequiredError(
   ).toLowerCase();
   return (
     message.includes("article downloads require a folder") ||
-    message.includes("articles cannot be imported into photos")
+    message.includes("articles cannot be imported into photos") ||
+    message.includes("cannot be used with article downloads")
   );
 }
 
@@ -530,15 +536,34 @@ export interface RunCommandOptions {
   env?: Record<string, string | undefined>;
 }
 
-function terminateChildWithFallback(child: ChildProcess): void {
+function sendSignalToChild(
+  child: ChildProcess,
+  signal: NodeJS.Signals,
+  processGroup: boolean,
+): void {
+  if (processGroup && process.platform !== "win32" && child.pid) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // process group may not exist yet or already exited; fall back to child.kill
+    }
+  }
+  child.kill(signal);
+}
+
+function terminateChildWithFallback(
+  child: ChildProcess,
+  processGroup = false,
+): void {
   try {
-    child.kill("SIGTERM");
+    sendSignalToChild(child, "SIGTERM", processGroup);
   } catch {
     return;
   }
   const killTimer = setTimeout(() => {
     try {
-      child.kill("SIGKILL");
+      sendSignalToChild(child, "SIGKILL", processGroup);
     } catch {
       // already exited
     }
@@ -913,7 +938,7 @@ export async function runLinkgetJsonDetached<T>(
       if (detachOnAbort) {
         detachedToBackground = true;
       } else {
-        terminateChildWithFallback(child);
+        terminateChildWithFallback(child, true);
         tryUnlink(outPath);
         tryUnlink(errPath);
       }
@@ -933,7 +958,7 @@ export async function runLinkgetJsonDetached<T>(
         }
         settled = true;
         cleanup();
-        terminateChildWithFallback(child);
+        terminateChildWithFallback(child, true);
         tryUnlink(outPath);
         tryUnlink(errPath);
         reject(

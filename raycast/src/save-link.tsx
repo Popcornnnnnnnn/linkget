@@ -134,6 +134,7 @@ export default function SaveLinkCommand(
 
   const [destination, setDestination] = useState<DestinationChoice>("default");
   const [folderPaths, setFolderPaths] = useState<string[]>([]);
+  const [folderError, setFolderError] = useState<string | undefined>();
   const [downloadAssets, setDownloadAssets] = useState<boolean>(true);
   const [audioFormat, setAudioFormat] = useState<AudioFormat>("original");
   const [clipRange, setClipRange] = useState<string>("");
@@ -343,14 +344,22 @@ export default function SaveLinkCommand(
       };
 
   const prepareSaveTarget = async (
+    toast: Toast,
     signal?: AbortSignal,
   ): Promise<PreparedSave | null> => {
+    const failValidation = (message: string, title = "Check Inputs"): null => {
+      toast.style = Toast.Style.Failure;
+      toast.title = title;
+      toast.message = message;
+      return null;
+    };
+
     const target = resolveInputTarget(urlInput);
     if (!target) {
-      setUrlError(
-        "Paste a valid post/article URL, share text, or local file path.",
-      );
-      return null;
+      const msg =
+        "Paste a valid post/article URL, share text, or local file path.";
+      setUrlError(msg);
+      return failValidation(msg, "Invalid Link or Path");
     }
 
     const isLocalPath =
@@ -365,11 +374,21 @@ export default function SaveLinkCommand(
         : destination;
 
     if (effectiveDest === "folder" && !folderPaths[0]) {
-      await showToast({
-        style: Toast.Style.Failure,
-        title: "Choose a Destination Folder",
-      });
-      return null;
+      const msg = "Choose a destination folder.";
+      setFolderError(msg);
+      return failValidation(msg, "Choose a Destination Folder");
+    }
+
+    if (
+      effectiveMode !== "article" &&
+      effectiveMode !== "read" &&
+      livePhotos &&
+      clipRange.trim()
+    ) {
+      return failValidation(
+        "Clip Range cannot be combined with Live Photos.",
+        "Incompatible Options",
+      );
     }
 
     let currentInspect =
@@ -385,7 +404,18 @@ export default function SaveLinkCommand(
         target,
         { noNetwork: true, browser },
         { binaryPath: prefs.linkgetPath, signal },
-      ).catch(() => null);
+      ).catch((err) => {
+        if (err instanceof Error && err.name === "AbortError") {
+          throw err;
+        }
+        return null;
+      });
+    }
+
+    if (signal?.aborted) {
+      const abortErr = new Error("Aborted");
+      abortErr.name = "AbortError";
+      throw abortErr;
     }
 
     let chosenFolder: string | undefined;
@@ -405,7 +435,17 @@ export default function SaveLinkCommand(
       cachedConfig = await getConfig({
         binaryPath: prefs.linkgetPath,
         signal,
-      }).catch(() => null);
+      }).catch((err) => {
+        if (err instanceof Error && err.name === "AbortError") {
+          throw err;
+        }
+        return null;
+      });
+      if (signal?.aborted) {
+        const abortErr = new Error("Aborted");
+        abortErr.name = "AbortError";
+        throw abortErr;
+      }
       const resolved = resolveDefaultDownloadTarget(
         effectiveMode,
         prefs,
@@ -435,6 +475,7 @@ export default function SaveLinkCommand(
     setInspectResult(null);
     setMode("auto");
     setUrlError(undefined);
+    setFolderError(undefined);
     setUrlInput("");
   };
 
@@ -448,15 +489,14 @@ export default function SaveLinkCommand(
     if (isSubmitting) {
       return;
     }
+    setIsSubmitting(true);
     const toast = await showToast({
       style: Toast.Style.Animated,
       title: "Starting Download in Background…",
     });
-    setIsSubmitting(true);
     try {
-      const prepared = await prepareSaveTarget();
+      const prepared = await prepareSaveTarget(toast);
       if (!prepared) {
-        await toast.hide();
         return;
       }
 
@@ -528,6 +568,9 @@ export default function SaveLinkCommand(
   };
 
   const handleSubmit = async () => {
+    if (isSubmitting) {
+      return;
+    }
     const runController = new AbortController();
     activeRunAbortRef.current?.abort();
     activeRunAbortRef.current = runController;
@@ -539,9 +582,8 @@ export default function SaveLinkCommand(
     });
 
     try {
-      const prepared = await prepareSaveTarget(runController.signal);
+      const prepared = await prepareSaveTarget(toast, runController.signal);
       if (!prepared) {
-        await toast.hide();
         return;
       }
 
@@ -786,7 +828,10 @@ export default function SaveLinkCommand(
         id="destination"
         title="Destination"
         value={destination}
-        onChange={(next) => setDestination(next as DestinationChoice)}
+        onChange={(next) => {
+          setFolderError(undefined);
+          setDestination(next as DestinationChoice);
+        }}
       >
         <Form.Dropdown.Item
           value="default"
@@ -806,7 +851,11 @@ export default function SaveLinkCommand(
           canChooseDirectories
           canChooseFiles={false}
           value={folderPaths}
-          onChange={setFolderPaths}
+          error={folderError}
+          onChange={(paths) => {
+            setFolderError(undefined);
+            setFolderPaths(paths);
+          }}
         />
       )}
 

@@ -190,6 +190,12 @@ test("folder resolution respects CLI config -> Raycast pref -> Downloads fallbac
     }),
     true,
   );
+  assert.equal(
+    isArticleFolderRequiredError({
+      message: "--live-photos cannot be used with article downloads.",
+    }),
+    true,
+  );
   assert.equal(isArticleFolderRequiredError("Network timeout"), false);
   assert.equal(
     resolveEffectiveAudioFolder(prefs, {
@@ -538,6 +544,40 @@ test("buildDownloadArgs forwards --live-photos for Photos and default destinatio
       "--json",
     ],
   );
+  assert.deepEqual(
+    buildDownloadArgs("https://x.com/u/article/1", {
+      mode: "article",
+      folder: "/tmp/Downloads",
+      clip: "0:10-0:30",
+      maxDuration: "5m",
+      maxSize: "100MB",
+      livePhotos: true,
+    }),
+    [
+      "https://x.com/u/article/1",
+      "--article",
+      "--folder",
+      "/tmp/Downloads",
+      "--non-interactive",
+      "--json",
+    ],
+  );
+  assert.deepEqual(
+    buildDownloadArgs("https://xhslink.com/o/live", {
+      mode: "media",
+      destination: "photos",
+      clip: "0:05-0:15",
+      livePhotos: true,
+    }),
+    [
+      "https://xhslink.com/o/live",
+      "--photos",
+      "--clip",
+      "0:05-0:15",
+      "--non-interactive",
+      "--json",
+    ],
+  );
 });
 
 test("task-format helpers produce human-readable titles, paths, and dates", () => {
@@ -555,14 +595,25 @@ test("task-format helpers produce human-readable titles, paths, and dates", () =
   assert.deepEqual(summary.extensions, [".jpeg"]);
   assert.equal(summary.label, "2 Photos");
 
-  const folder = detectArticleFolderFromFiles(
-    ["/tmp/linkget-v032-smoke/2026-11-22-404jsh-一个月-0-美元-全球20-节点/source/x-article.json"],
-    "/tmp/linkget-v032-smoke",
-  );
+  const folder = detectArticleFolderFromFiles([
+    "/tmp/linkget-v032-smoke/2026-11-22-404jsh-一个月-0-美元-全球20-节点/source/x-article.json",
+  ]);
   assert.equal(folder, "/tmp/linkget-v032-smoke/2026-11-22-404jsh-一个月-0-美元-全球20-节点");
   assert.equal(
     inferTitleFromArchiveFolder(folder),
     "一个月 0 美元 全球20 节点",
+  );
+  assert.equal(
+    inferTitleFromArchiveFolder("/tmp/2026-11-24-404jsh-how-to-build-a-raycast-extension"),
+    "how to build a raycast extension",
+  );
+  assert.equal(
+    inferTitleFromArchiveFolder("/tmp/2026-11-24-alice-my-2026-年终总结"),
+    "my 2026 年终总结",
+  );
+  assert.equal(
+    detectArticleFolderFromFiles(["/tmp/2026-11-24-clips/douyin_123.mp4"]),
+    null,
   );
 
   assert.deepEqual(

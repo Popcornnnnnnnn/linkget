@@ -124,8 +124,8 @@ export function inferTitleFromArchiveFolder(folderPath: string): string | null {
     return null;
   }
   let stripped = base.replace(/^\d{4}-\d{2}-\d{2}-/, "");
-  // Strip optional leading ASCII handle slug when followed by non-empty title segment
-  const handleMatch = stripped.match(/^([a-z0-9_.-]+)-(.+)$/i);
+  // Strip single leading tag/handle token (up to first hyphen) when followed by title text
+  const handleMatch = stripped.match(/^([a-z0-9_.]+)-(.+)$/i);
   if (handleMatch && handleMatch[2].trim()) {
     stripped = handleMatch[2];
   }
@@ -135,7 +135,6 @@ export function inferTitleFromArchiveFolder(folderPath: string): string | null {
 
 export function detectArticleFolderFromFiles(
   savedFiles: string[] = [],
-  fallbackFolder?: string | null,
 ): string | null {
   for (const f of savedFiles) {
     const base = path.basename(f).toLowerCase();
@@ -152,12 +151,6 @@ export function detectArticleFolderFromFiles(
       path.basename(path.dirname(f)).toLowerCase() === "source"
     ) {
       return path.dirname(path.dirname(f));
-    }
-  }
-  if (fallbackFolder && fallbackFolder !== "Photos") {
-    const base = path.basename(fallbackFolder);
-    if (/^\d{4}-\d{2}-\d{2}-.+/.test(base)) {
-      return fallbackFolder;
     }
   }
   return null;
