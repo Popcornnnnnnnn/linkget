@@ -10,3 +10,5 @@ docs/validation.md
 *.log
 
 .local/media-validation/
+raycast/node_modules/
+raycast/dist/

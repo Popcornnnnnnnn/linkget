@@ -1,0 +1,179 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "linkget",
+  "title": "Linkget",
+  "description": "Save post photos, videos, audio, and offline articles via Linkget.",
+  "icon": "command-icon.png",
+  "author": "popcornnnnnnnn",
+  "categories": [
+    "Media",
+    "Productivity",
+    "Web"
+  ],
+  "license": "MIT",
+  "platforms": [
+    "macOS"
+  ],
+  "commands": [
+    {
+      "name": "save-link",
+      "title": "Save Link",
+      "subtitle": "Linkget",
+      "description": "Inspect and save photos, videos, audio, offline articles, or transcripts from any supported link",
+      "keywords": [
+        "lg",
+        "download",
+        "article",
+        "video",
+        "photo",
+        "audio",
+        "x",
+        "save"
+      ],
+      "mode": "view"
+    },
+    {
+      "name": "quick-save-article",
+      "title": "Quick Save Article",
+      "subtitle": "Linkget",
+      "description": "One-shot offline archive of an article URL (argument, clipboard, or active browser tab)",
+      "keywords": [
+        "lga",
+        "article",
+        "xarticle",
+        "archive",
+        "save article"
+      ],
+      "arguments": [
+        {
+          "name": "url",
+          "type": "text",
+          "placeholder": "Article URL (optional — uses clipboard or active browser tab)",
+          "required": false
+        }
+      ],
+      "mode": "no-view"
+    },
+    {
+      "name": "browse-tasks",
+      "title": "Browse Downloads & Articles",
+      "subtitle": "Linkget",
+      "description": "Browse saved articles, media downloads, and background read tasks",
+      "keywords": [
+        "lgt",
+        "tasks",
+        "history",
+        "articles",
+        "downloads",
+        "recent"
+      ],
+      "mode": "view"
+    },
+    {
+      "name": "status-and-tools",
+      "title": "Linkget Status & Maintenance",
+      "subtitle": "Linkget",
+      "description": "Inspect linkget installation, engines, sessions, defaults, and temporary stage cleanup",
+      "keywords": [
+        "lgs",
+        "doctor",
+        "config",
+        "clean",
+        "status",
+        "auth"
+      ],
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "linkgetPath",
+      "title": "Linkget Binary Path",
+      "description": "Path to the installed linkget CLI binary (default: /opt/homebrew/bin/linkget).",
+      "type": "textfield",
+      "required": false,
+      "default": "/opt/homebrew/bin/linkget",
+      "placeholder": "/opt/homebrew/bin/linkget"
+    },
+    {
+      "name": "defaultArticleFolder",
+      "title": "Default Article Archive Folder",
+      "description": "Default folder for offline article archives when linkget config --article-folder is not set (falls back to ~/Downloads/Linkget Articles).",
+      "type": "directory",
+      "required": false
+    },
+    {
+      "name": "defaultMediaFolder",
+      "title": "Default Media & Audio Folder",
+      "description": "Optional folder override for media and audio downloads (blank follows linkget config; audio falls back to ~/Downloads).",
+      "type": "directory",
+      "required": false
+    },
+    {
+      "name": "defaultBrowser",
+      "title": "Default Browser Session",
+      "description": "Browser session source passed to linkget.",
+      "type": "dropdown",
+      "required": true,
+      "default": "auto",
+      "data": [
+        {
+          "title": "Auto (Public First, Then Saved)",
+          "value": "auto"
+        },
+        {
+          "title": "Public Only (No Browser)",
+          "value": "none"
+        },
+        {
+          "title": "Google Chrome",
+          "value": "chrome"
+        },
+        {
+          "title": "Safari",
+          "value": "safari"
+        },
+        {
+          "title": "Firefox",
+          "value": "firefox"
+        },
+        {
+          "title": "Microsoft Edge",
+          "value": "edge"
+        },
+        {
+          "title": "Brave",
+          "value": "brave"
+        }
+      ]
+    },
+    {
+      "name": "autoDetectClipboard",
+      "title": "Auto-Detect Clipboard URL",
+      "description": "Automatically pre-fill the URL field from the clipboard when opening Save Link.",
+      "type": "checkbox",
+      "label": "Pre-fill URL from clipboard when opening Save Link",
+      "required": false,
+      "default": true
+    }
+  ],
+  "scripts": {
+    "build": "ray build -e dist",
+    "dev": "ray develop",
+    "fix-lint": "ray lint --fix",
+    "lint": "ray lint",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@raycast/api": "^2.13.1",
+    "@raycast/utils": "^2.3.3"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^2.2.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "eslint": "^9.20.0",
+    "prettier": "^3.5.0",
+    "typescript": "^5.8.0"
+  }
+}
