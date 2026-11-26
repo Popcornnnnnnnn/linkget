@@ -6,12 +6,14 @@ from urllib.parse import urlsplit
 if __package__:
     from .runtime import run_process
     from .failures import classify
-    from .links import BANDCAMP_RESERVED_HOSTS, single_video_target, soundcloud_track_parts
+    from .links import BANDCAMP_RESERVED_HOSTS, canonical_post, single_video_target, soundcloud_track_parts
+    from .web_article import validate_public_web_url
     from . import media_limits
 else:
     from runtime import run_process
     from failures import classify
-    from links import BANDCAMP_RESERVED_HOSTS, single_video_target, soundcloud_track_parts
+    from links import BANDCAMP_RESERVED_HOSTS, canonical_post, single_video_target, soundcloud_track_parts
+    from web_article import validate_public_web_url
     import media_limits
 SITES = (
     "Instagram, X/Twitter, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, Weibo, "
@@ -20,6 +22,9 @@ SITES = (
     "YouTube Music, Bilibili Audio, SoundCloud and Bandcamp tracks"
 )
 AUDIO_ONLY_SITES = {"YouTube Music", "Bilibili Audio", "SoundCloud", "Bandcamp"}
+MP4_FORMAT = "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]"
+GENERIC_VIDEO_OPTIONS = ("--no-plugin-dirs", "--flat-playlist", "--playlist-items", "1",
+                         "-f", MP4_FORMAT + "/bv[ext=mp4]")
 
 
 def is_audio_only_site(site):
@@ -136,7 +141,7 @@ def prepare_video(command, info_path, log, domain, audio_only=False):
             "weibo.com": "Weibo", "reddit.com": "Reddit", "soundcloud.com": "SoundCloud",
             "bandcamp.com": "Bandcamp", "vimeo.com": "Vimeo", "dailymotion.com": "Dailymotion",
             "pornhub.com": "Pornhub",
-        }.get(domain, "Site")
+        }.get(domain, urlsplit(command[-1]).hostname if domain is None else "Site")
     probe = command[:-1] + ["--skip-download", "--dump-single-json", "--no-quiet", command[-1]]
     result = run_process(probe, capture_output=True, text=True, timeout=90)
     lines = result.stdout.rstrip().splitlines()
@@ -232,6 +237,24 @@ def route(url):
     raise ValueError("Unsupported URL. Supported: " + SITES)
 
 
+def route_video(url, *, no_network=False):
+    """Keep dedicated yt-dlp routes and let yt-dlp select the extractor for other links."""
+    # Check the entry URL. yt-dlp handles redirects and subsequent requests.
+    url = canonical_post(url) or url
+    url = validate_public_web_url(url, resolve_dns=not no_network)
+    try:
+        site, engine, domain = route(url)
+    except ValueError:
+        pass
+    else:
+        if is_audio_only_site(site):
+            raise ValueError("Use --audio for this music link. --video requires a single video.")
+        if engine == "yt-dlp":
+            return url, site, domain
+    # No dedicated domain key means no site-specific options or saved credentials.
+    return url, urlsplit(url).hostname, None
+
+
 
 def browser_spec(args, engine, domain):
     browser = args.browser
@@ -287,9 +310,12 @@ def command_for(args, url, engine, domain, media_dir, tools, cookie_path=None, a
             command.extend(["-f", "ba[ext=m4a]/ba/b"])
         elif domain == "reddit.com":
             command.extend(["-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4"])
+        elif domain is None:
+            command.extend([*GENERIC_VIDEO_OPTIONS, "-S", "res,fps,hdr,vbr", "--merge-output-format", "mp4"])
         else:
-            command.extend(["-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]", "-S", "res,fps,hdr,vbr", "--merge-output-format", "mp4"])
-        command.extend(["-o", str(media_dir / (domain.split(".")[0] + "_%(id)s.%(ext)s"))])
+            command.extend(["-f", MP4_FORMAT, "-S", "res,fps,hdr,vbr", "--merge-output-format", "mp4"])
+        prefix = domain.split(".")[0] if domain else "%(extractor_key)s"
+        command.extend(["-o", str(media_dir / (prefix + "_%(id)s.%(ext)s"))])
         if domain == "youtube.com":
             command.extend(["--js-runtimes", "deno:" + tools["deno"]])
         clip_raw = getattr(args, "clip", None)

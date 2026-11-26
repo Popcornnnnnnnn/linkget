@@ -194,11 +194,15 @@ def canonical_post(url):
     return video[2] if video else None
 
 
-def normalize_link(text):
+def single_url(text):
     urls = re.findall(r'https?://[^\s<>"，。]+', text.strip())
     if len(urls) != 1:
         raise ValueError("Paste one post link (sharing text around it is OK).")
-    url = urls[0].rstrip(".,;!）)")
+    return urls[0].rstrip(".,;!）)")
+
+
+def normalize_link(text):
+    url = single_url(text)
     canonical = canonical_post(url)
     if canonical:
         return canonical
