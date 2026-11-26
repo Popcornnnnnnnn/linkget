@@ -16,12 +16,14 @@ if __package__:
     from .engines import route
     from .links import normalize_link
     from .media import reference, AUDIO, DownloadResult
+    from .output import cell_width, pad_cell
     from .preflight import writable_directory
 else:
     import agent_output, article_archive, toutiao, rendered_page, read_store, read_formats, read_asr, read_frames, read_ocr, read_tasks, runtime, web_article, x_article
     from engines import route
     from links import normalize_link
     from media import reference, AUDIO, DownloadResult
+    from output import cell_width, pad_cell
     from preflight import writable_directory
 
 
@@ -779,8 +781,9 @@ def main(argv):
             if r_args.json:
                 agent_output.emit({'schema_version': agent_output.SCHEMA_VERSION, 'ok': True, 'command': 'read recover', 'unfinished': unfinished})
             else:
+                status_width = max((cell_width(job['status']) for job in unfinished), default=0)
                 for job in unfinished:
-                    print(job['status'] + '  ' + job['folder'])
+                    print(pad_cell(job['status'], status_width) + '  ' + job['folder'])
             return 0
         if argv and argv[0] in {'summarize', 'translate'}:
             if __package__:

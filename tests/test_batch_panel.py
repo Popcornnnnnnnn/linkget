@@ -38,6 +38,27 @@ class PanelTests(unittest.TestCase):
             self.assertNotIn("private", "\n".join(panel.lines(80, 24)))
         self.assertEqual(output.cell_width(output.fit_cell("e\u0301中文", 4)), 4)
 
+    def test_mixed_width_titles_align_with_a_combining_enclosure(self):
+        panel = self.panel()
+        with patch.dict(os.environ, {"NO_COLOR": "1"}):
+            panel.media(1, [], {"title": "VJ 青\u20dd海"})
+            panel.media(2, [], {"title": "English"})
+            first, second = panel.lines(100, 24)[1:]
+        # Both titles occupy seven cells, including the zero-width enclosure.
+        self.assertEqual(first, second.replace("2  English", "1  VJ 青\u20dd海"))
+        self.assertEqual(output.fit_cell("青\u20dd海", 3), "青\u20dd…")
+
+    def test_status_indents_continuations_to_the_value_column(self):
+        stream = io.StringIO()
+        output.status("中文", "first\nsecond", stream=stream, label_width=5)
+        output.status("English", "third\nfourth", stream=stream, label_width=5)
+        self.assertEqual(stream.getvalue().splitlines(), [
+            "  中文  first",
+            "        second",
+            "  English third",
+            "          fourth",
+        ])
+
     def test_malformed_url_does_not_abort_batch_panel_initialization(self):
         panel = output.BatchPanel([(3, "https://[broken"), (7, "no URL")], "Photos", Terminal())
         self.assertEqual(list(panel.rows), [3, 7])

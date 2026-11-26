@@ -14,9 +14,11 @@ import uuid
 
 if __package__:
     from .failures import redact
+    from .output import pad_cell, print_field
     from . import agent_output, read_formats, read_store, runtime
 else:
     from failures import redact
+    from output import pad_cell, print_field
     import agent_output, read_formats, read_store, runtime
 
 TERMINAL = {'completed', 'failed', 'cancelled', 'interrupted'}
@@ -99,13 +101,13 @@ def refresh(identifier):
 
 
 def show(value):
-    print(value['id'] + '  ' + value['status'] + '  ' + value.get('phase', value['kind']))
+    print(value['id'] + '  ' + pad_cell(value['status'], 11) + '  ' + value.get('phase', value['kind']))
     if value.get('model'):
-        print('Model: ' + value['model'])
+        print_field('Model:', value['model'], label_width=7)
     for output in value.get('outputs', []):
-        print('Result: ' + output)
+        print_field('Result:', output, label_width=7)
     if value['status'] in {'failed', 'interrupted', 'cancelled'}:
-        print('Log: ' + str(paths(value['id'])[3]))
+        print_field('Log:', paths(value['id'])[3], label_width=7)
 
 
 def _task_payload(value):
