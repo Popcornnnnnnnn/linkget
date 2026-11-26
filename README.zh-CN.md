@@ -30,6 +30,7 @@ linkget
 ```sh
 linkget                                              # 交互式输入（默认保存至照片）
 linkget 'https://www.bilibili.com/video/BV1bK411W797/' --folder ~/Downloads
+linkget 'VIDEO_URL' --video --folder ~/Downloads      # 由 yt-dlp 处理单个视频链接
 linkget 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' --audio --folder ~/Music
 linkget 'https://soundcloud.com/artist/track'        # 音乐链接会自动下载音频
 linkget 'https://x.com/USER/status/ID' --folder ~/Articles   # 自动离线归档 X Articles
@@ -41,6 +42,8 @@ linkget read 'URL' --folder ./notes                  # 在后台提取字幕、�
 ```
 
 > 请始终使用直立 ASCII 引号（`'...'` 或 `"..."`）包裹 URL，避免 Shell 解析 `&` 或 `?`。
+
+开发版的 `--video` 可尝试下载下方列表以外的公开视频。可用性取决于已安装的 yt-dlp 版本，以及网站提供的 MP4 格式。
 
 ## 操作演示
 

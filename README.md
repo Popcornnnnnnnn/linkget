@@ -30,6 +30,7 @@ See [docs/INSTALL.md](docs/INSTALL.md) for wheel installation, upgrades, and uni
 ```sh
 linkget                                              # interactive prompt (defaults to Photos)
 linkget 'https://www.bilibili.com/video/BV1bK411W797/' --folder ~/Downloads
+linkget 'VIDEO_URL' --video --folder ~/Downloads      # let yt-dlp handle a single video link
 linkget 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' --audio --folder ~/Music
 linkget 'https://soundcloud.com/artist/track'        # music links download audio automatically
 linkget 'https://x.com/USER/status/ID' --folder ~/Articles   # auto-archives X Articles offline
@@ -41,6 +42,8 @@ linkget read 'URL' --folder ./notes                  # extract subtitles, speech
 ```
 
 > Always wrap URLs in straight ASCII quotes (`'...'` or `"..."`) so the shell does not split `&` or `?`.
+
+Use `--video` on the development build to try public video links beyond the sites listed below. Availability depends on your installed yt-dlp and the MP4 formats the site offers.
 
 ## Demos
 

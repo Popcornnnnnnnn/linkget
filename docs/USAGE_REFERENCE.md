@@ -6,6 +6,7 @@ Detailed command behavior, recovery rules, media heuristics, and historical note
 
 - `--folder [PATH]` saves to `PATH` (or the current working directory if omitted).
 - `--photos` imports to macOS Photos; `--date-now` sets the date of new Photos items (use `--photos --date-now` when your saved default is a folder).
+- `--video` sends a single public video URL to yt-dlp and uses the usual Photos or folder destination. It works with `batch`, `inspect`, and download limits. Retry keeps the original mode. Videos need a usable MP4 format. Playlists and live streams remain out of scope. URLs outside LinkGet's dedicated video routes use yt-dlp without saved LinkGet sessions.
 - `--audio` extracts audio-only from any supported video link to a folder; `--audio-format {mp3,m4a,flac,wav,opus}` converts when needed (implies `--audio`).
 - Music-only links (`music.youtube.com/watch`, `bilibili.com/audio/au...`, SoundCloud single tracks, Bandcamp `/track/...`) automatically run in audio mode.
 - **Audio default folder precedence:** explicit `--folder` → `linkget config --audio-folder [PATH]` → saved global `--folder` default → error (audio cannot be imported into macOS Photos; use `linkget config --clear-audio-folder` to clear).

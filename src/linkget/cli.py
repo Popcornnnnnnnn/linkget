@@ -19,12 +19,12 @@ if __package__:
     from .runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from .output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity, cell_width, print_field, wrap_cells
     from .batch import run_batch
-    from .engines import SITES, route, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login, is_audio_only_site
+    from .engines import SITES, route, route_video, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login, is_audio_only_site
     from .photos import originals_directory, retain_originals, verify_library_copies
     from .failures import classify, redact
     from .version import VERSION
     from .session import LOGIN_URLS, prepare_session
-    from .links import SOUNDCLOUD_SHORT_HOSTS, canonical_post, normalize_link
+    from .links import SOUNDCLOUD_SHORT_HOSTS, canonical_post, normalize_link, single_url
     from .douyin import download as download_douyin, MediaUnavailable as DouyinMediaUnavailable
     from .douyin_browser import read_item as read_douyin_browser, load_item as load_douyin_page
     from .douyin import DownloadInterrupted as DouyinDownloadInterrupted
@@ -40,12 +40,12 @@ else:  # Homebrew launches this file directly.
     from runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity, cell_width, print_field, wrap_cells
     from batch import run_batch
-    from engines import SITES, route, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login, is_audio_only_site
+    from engines import SITES, route, route_video, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login, is_audio_only_site
     from photos import originals_directory, retain_originals, verify_library_copies
     from failures import classify, redact
     from version import VERSION
     from session import LOGIN_URLS, prepare_session
-    from links import SOUNDCLOUD_SHORT_HOSTS, canonical_post, normalize_link
+    from links import SOUNDCLOUD_SHORT_HOSTS, canonical_post, normalize_link, single_url
     from douyin import download as download_douyin, MediaUnavailable as DouyinMediaUnavailable
     from douyin_browser import read_item as read_douyin_browser, load_item as load_douyin_page
     from douyin import DownloadInterrupted as DouyinDownloadInterrupted
@@ -222,7 +222,7 @@ def browser_access_help(browser):
 
 
 def first_run(args):
-    if args.browser == "none" or not runtime.is_interactive() or accounts.preferences().get("setup"):
+    if getattr(args, "video", False) or args.browser == "none" or not runtime.is_interactive() or accounts.preferences().get("setup"):
         return
     print("\n  Welcome to linkget\n\n  Connect a browser to use your existing website logins.\n  Only supported websites are saved locally. You can skip this.\n")
     browser = args.browser if args.browser != "auto" else choose_browser()
@@ -940,6 +940,13 @@ def _is_audio_only_link_text(text):
         return False
 
 
+def validate_video_options(args):
+    if getattr(args, "video", False) and (
+        args.audio or args.article or args.no_assets or args.live_photos or args.page_data
+    ):
+        raise ValueError("--video cannot be combined with --audio, --article, --no-assets, --live-photos, or --page-data.")
+
+
 def main(argv=None):
     saved_modes = runtime.snapshot_modes()
     tokens = list(sys.argv[1:] if argv is None else argv)
@@ -1043,6 +1050,7 @@ Examples:
   linkget URL --photos                 Save to Photos this time
   linkget URL --folder                 Save to the current folder
   linkget URL --folder ~/Downloads     Save to a folder
+  linkget URL --video --folder         Save one video; let yt-dlp select the extractor
   linkget URL --audio --folder ~/Music Save original audio stream with tags & cover
   linkget URL --audio-format mp3       Convert extracted audio to MP3
   linkget URL --non-interactive --json Machine-readable download without prompts
@@ -1077,6 +1085,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                                      help="save to FOLDER, or the current folder if omitted; overrides the default")
     destination_options.add_argument("--photos", action="store_true", help="save to Photos; overrides the default")
     parser.add_argument("--audio", action="store_true", help="save audio only to a folder (music links enable this automatically)")
+    parser.add_argument("--video", action="store_true", help="save a single video with yt-dlp, including from sites outside linkget sites")
     parser.add_argument("--audio-format", choices=list(AUDIO_FORMATS), metavar="FORMAT",
                         help="convert audio to FORMAT (" + ", ".join(AUDIO_FORMATS) + "); implies --audio")
     parser.add_argument("--audio-folder", nargs="?", const=True, type=Path,
@@ -1181,6 +1190,12 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         parser.error("Do not combine --article-folder with --clear-article-folder.")
     if args.audio_format is not None:
         args.audio = True
+    if args.video and args.link and args.link[0] in (command_help.SPECS.keys() - {"batch", "inspect"}) | {"login"}:
+        parser.error("--video applies to downloads, batch, and inspect. Retry uses the original task mode.")
+    try:
+        validate_video_options(args)
+    except ValueError as error:
+        parser.error(str(error))
     if args.audio:
         if args.link == ["config"]:
             parser.error("Use linkget config --audio-folder [PATH] to set the default audio folder.")
@@ -1229,11 +1244,12 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 or args.jobs is not None or args.verify or args.item is not None
                 or args.redownload or args.folder is not None or args.page_data is not None
                 or args.no_assets):
-            parser.error("Use --audio, --article, --browser, --no-network, --json, or --non-interactive with linkget inspect.")
+            parser.error("Use --video, --audio, --article, --browser, --no-network, --json, or --non-interactive with linkget inspect.")
         payload = inspect_url.inspect_target(
             target,
             audio=args.audio,
             article=args.article,
+            video=args.video,
             browser=args.browser,
             no_network=args.no_network,
             find_tool=find_tool,
@@ -1543,6 +1559,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 print("    " + wrap_cells(content, columns - 4).replace("\n", "\n    "))
         print()
         for note in (
+            "Use --video for any single public video link yt-dlp can download as MP4.",
             "Use --audio (or --audio-format mp3|m4a|flac|wav|opus) to save audio from video posts to a folder.",
             "Use linkget URL [--article] --folder DIR to archive offline articles (Markdown, HTML, JSON, local images/videos).",
             "Use linkget read for video speech/keyframes, Toutiao, WeChat Official Accounts, or web articles.",
@@ -1561,7 +1578,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         args._explicit_photos = bool(args.photos)
         args.folder_from_default = False
         is_article_run = bool(getattr(args, "article", False)) or (
-            not args.audio and (
+            not (args.audio or args.video) and (
                 (not is_batch and args.link and _is_article_link_text(args.link))
                 or (is_batch and batch_links and all(_is_article_link_text(link) for link in batch_links))
             )
@@ -1575,7 +1592,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 raise ValueError("--live-photos cannot be used with article downloads.")
             if args.audio:
                 raise ValueError("Article pages do not contain downloadable audio.")
-        if not is_article_run and not args.audio and (
+        if not (is_article_run or args.audio or args.video) and (
             (not is_batch and args.link and _is_audio_only_link_text(args.link))
             or (is_batch and batch_links and all(_is_audio_only_link_text(link) for link in batch_links))
         ):
@@ -1689,6 +1706,7 @@ def restore_options(args, journal, tokens):
         args.folder_from_default = False
     if getattr(args, "audio_format", None) is not None:
         args.audio = True
+    validate_video_options(args)
     if args._reader_browser_override and not args._rendered_backend_override:
         args.rendered_backend = None
     if args.photos:
@@ -1851,17 +1869,22 @@ def download(args, setup_results, records=None, media_consumer=None):
             transfers.reset_progress()
         jobs.record(input=url, status="running", failure=None, ready=None, receipt=None, stage=None, stage_identity=None)
         started = time.monotonic()
-        with activity("Resolving") if any(host in url for host in ("v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/", "xhslink.com", "xhslink.cn", "t.cn/", "on.soundcloud.com")) else nullcontext():
-            url = normalize_link(url)
-        if media_consumer is None:
-            article_target = article_archive.classify_article_target(url, force_article=bool(getattr(args, "article", False)))
-            if article_target is not None:
-                domain = article_target.get("domain")
-                url = article_target["url"]
-                return download_article_target(args, article_target, setup_results, evidence, started)
-            if getattr(args, "article", False):
-                raise ValueError("--article supports X posts/articles, WeChat, Toutiao articles, Zhihu articles, or public web article URLs.")
-        site, engine, domain = route(url)
+        video_mode = getattr(args, "video", False)
+        if video_mode:
+            url, site, domain = route_video(single_url(url))
+            engine = "yt-dlp"
+        else:
+            with activity("Resolving") if any(host in url for host in ("v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/", "xhslink.com", "xhslink.cn", "t.cn/", "on.soundcloud.com")) else nullcontext():
+                url = normalize_link(url)
+            if media_consumer is None:
+                article_target = article_archive.classify_article_target(url, force_article=bool(getattr(args, "article", False)))
+                if article_target is not None:
+                    domain = article_target.get("domain")
+                    url = article_target["url"]
+                    return download_article_target(args, article_target, setup_results, evidence, started)
+                if getattr(args, "article", False):
+                    raise ValueError("--article supports X posts/articles, WeChat, Toutiao articles, Zhihu articles, or public web article URLs.")
+            site, engine, domain = route(url)
         evidence.update(reference=reference(url), site=site)
         audio_mode = (media_consumer is None) and (getattr(args, "audio", False) or is_audio_only_site(site))
         clip_range = media_limits.parse_clip(args.clip) if (media_consumer is None and getattr(args, "clip", None)) else None
@@ -2138,6 +2161,8 @@ def download(args, setup_results, records=None, media_consumer=None):
                     if domain == "tiktok.com":
                         raise RuntimeError("TikTok returned no downloadable media. Open the post in your browser and check its availability or website verification, then retry.")
                     raise RuntimeError("No audio was downloaded from this post." if audio_mode else "No photos or videos were downloaded from this post.")
+                if video_mode and (len(files) != 1 or files[0].suffix.lower() not in VIDEO):
+                    raise RuntimeError("--video requires a single video file. The downloaded files have been kept for review.")
                 if download_info.expected_count is not None and len(files) != download_info.expected_count:
                     raise RuntimeError(f"Incomplete media set: {len(files)} / {download_info.expected_count} files. Files have been kept.")
                 break

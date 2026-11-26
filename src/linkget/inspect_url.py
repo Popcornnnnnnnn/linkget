@@ -174,6 +174,7 @@ def inspect_target(
     *,
     audio=False,
     article=False,
+    video=False,
     browser="auto",
     no_network=False,
     find_tool=None,
@@ -189,6 +190,9 @@ def inspect_target(
         return {"ok": False, "supported": False, "error": classify_error(err)}
 
     if not re.search(r"https?://", text):
+        if video:
+            err = ValueError("--video requires one public HTTP or HTTPS URL.")
+            return {"ok": False, "supported": False, "error": classify_error(err)}
         expanded = Path(text).expanduser()
         if not expanded.is_symlink() and expanded.is_file():
             return _inspect_local_file(expanded.resolve(), find_tool=find_tool)
@@ -208,7 +212,10 @@ def inspect_target(
 
     try:
         cand_host = (parsed_raw.hostname or "").lower().rstrip(".")
-        if cand_host in toutiao.HOSTS:
+        if video:
+            url, site, domain = engines.route_video(raw_url, no_network=no_network)
+            engine = "yt-dlp"
+        elif cand_host in toutiao.HOSTS:
             url = toutiao.canonical(raw_url)
             site, engine, domain = "Toutiao", "rendered_page", "toutiao.com"
         elif cand_host in PUBLIC_ARTICLE_HOSTS:
@@ -270,7 +277,9 @@ def inspect_target(
     except (OSError, ValueError, RuntimeError) as error:
         return {"ok": False, "supported": False, "error": classify_error(error)}
 
-    audio_only = engines.is_audio_only_site(site) or (parsed_raw.hostname in links.SOUNDCLOUD_SHORT_HOSTS)
+    audio_only = not video and (
+        engines.is_audio_only_site(site) or parsed_raw.hostname in links.SOUNDCLOUD_SHORT_HOSTS
+    )
     effective_audio = bool(audio or audio_only)
     if effective_audio and engine in {"pixiv", "article", "web_article", "x_article"}:
         msg = (
@@ -313,13 +322,13 @@ def inspect_target(
         "kind": "url",
         "site": site,
         "engine": engine,
-        "domain": domain,
+        "domain": domain or urlsplit(url).hostname,
         "canonical_url": None if short_unresolved else url,
         "reference": reference(url),
         "short_link_unresolved": short_unresolved,
         "audio_only": audio_only,
         "effective_audio_mode": effective_audio,
-        "supports_read": engine not in {"pixiv"},
+        "supports_read": engine != "pixiv" and not (video and domain is None),
         "supports_article_download": is_article_target or domain == "x.com",
         "supports_auth": supports_auth,
         "session_state": _session_state(domain, supports_auth),
@@ -341,6 +350,10 @@ def inspect_target(
         return payload
 
     command = [ytdlp, "--skip-download", "--dump-single-json", "--no-playlist", "--no-warnings"]
+    if video:
+        command.append("--ignore-config")
+        if domain is None:
+            command.extend(engines.GENERIC_VIDEO_OPTIONS)
     with tempfile.TemporaryDirectory(prefix="linkget-inspect-") as session_dir:
         cookie_file = Path(session_dir) / "cookies.txt"
         if supports_auth and browser != "none":

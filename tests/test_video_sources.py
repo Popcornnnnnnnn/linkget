@@ -8,11 +8,73 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from linkget import accounts, article_archive, batch, cli, content, inspect_url, links
+from linkget import accounts, article_archive, batch, cli, content, engines, inspect_url, jobs, links
 from media_stub import uninspected
 
 
 class VideoSourceTests(unittest.TestCase):
+    def test_explicit_video_inspection_bypasses_article_detection_without_network(self):
+        url = "https://video.example.org/watch/clip"
+        with patch("socket.getaddrinfo", side_effect=AssertionError("DNS request")):
+            self.assertEqual(inspect_url.inspect_target(url, no_network=True)["engine"], "web_article")
+            result = inspect_url.inspect_target(url, video=True, no_network=True)
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["engine"], "yt-dlp")
+            self.assertEqual(result["domain"], "video.example.org")
+            self.assertFalse(result["supports_article_download"])
+            self.assertFalse(result["supports_auth"])
+            self.assertEqual(result["probe_status"], "skipped_no_network")
+            for invalid in ("https:///video", "http://127.0.0.1/clip", "https://soundcloud.com/user/track"):
+                with self.subTest(invalid=invalid):
+                    self.assertFalse(inspect_url.inspect_target(invalid, video=True, no_network=True)["ok"])
+            known = inspect_url.inspect_target("https://youtu.be/BaW_jenozKc", video=True, no_network=True)
+            self.assertEqual(known["site"], "YouTube")
+            self.assertIn("deno", known["tools_required"])
+
+    def test_explicit_video_batch_rejects_a_collection_and_preserves_mode_on_retry(self):
+        url = "https://video.example.org/watch/clip"
+        media = b"synthetic MP4"
+
+        def run(command, **kwargs):
+            self.assertIn("--no-playlist", command)
+            self.assertNotIn("--cookies", command)
+            if "--dump-single-json" in command:
+                self.assertEqual(command[-1], url)
+                self.assertIn("--flat-playlist", command)
+                self.assertIn("--no-plugin-dirs", command)
+                return CompletedProcess(command, 0, json.dumps(metadata), "")
+            self.assertIn("--load-info-json", command)
+            output = Path(command[command.index("-o") + 1])
+            self.assertEqual(output.name, "%(extractor_key)s_%(id)s.%(ext)s")
+            output.with_name("Generic_clip.mp4").write_bytes(media)
+            return CompletedProcess(command, 0)
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            destination = root / "downloads"
+            metadata = {"_type": "playlist", "entries": []}
+            stdout = io.StringIO()
+            with (
+                patch.object(accounts, "directory", return_value=root / "sessions"),
+                patch.object(accounts, "copy_saved", side_effect=AssertionError("saved browser session access")),
+                patch.object(tempfile, "tempdir", str(root)),
+                patch.object(cli, "find_tool", side_effect=lambda tool: tool),
+                patch.object(cli, "inspect_files", side_effect=uninspected),
+                patch.object(engines, "run_process", side_effect=run) as probe,
+                patch.object(cli, "run_process", side_effect=run) as download,
+                patch("socket.getaddrinfo", return_value=[(None, None, None, None, ("8.8.8.8", 443))]),
+                contextlib.redirect_stdout(stdout),
+            ):
+                self.assertEqual(cli.main(["batch", url, "--video", "--folder", str(destination), "--json"]), 1)
+                download.assert_not_called()
+                task = json.loads(stdout.getvalue())["task_id"]
+                self.assertTrue(jobs.Journal.load(task).data["options"]["video"])
+                metadata = {"id": "clip"}
+                self.assertEqual(cli.main(["retry", task, "--json"]), 0)
+                self.assertEqual(probe.call_count, 2)
+                download.assert_called_once()
+            self.assertEqual((destination / "Generic_clip.mp4").read_bytes(), media)
+
     def test_inspection_routes_share_and_embed_links_as_video(self):
         cases = (
             ("https://www.vimeo.com/12345?share=copy", "Vimeo",
