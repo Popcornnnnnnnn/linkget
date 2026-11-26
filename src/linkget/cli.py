@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 if __package__:
     from . import accounts, agent_output, article_archive, cleanup, inspect_url, jobs, destinations, mcp_server, media_limits, preflight, recovery, staging, transfers, ownership, rendered_page, runtime, web_article, x_article
     from .runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
-    from .output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity
+    from .output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity, cell_width, print_field, wrap_cells
     from .batch import run_batch
     from .engines import SITES, route, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login, is_audio_only_site
     from .photos import originals_directory, retain_originals, verify_library_copies
@@ -38,7 +38,7 @@ if __package__:
 else:  # Homebrew launches this file directly.
     import accounts, agent_output, article_archive, cleanup, inspect_url, jobs, destinations, mcp_server, media_limits, preflight, recovery, staging, transfers, ownership, rendered_page, runtime, web_article, x_article
     from runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
-    from output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity
+    from output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity, cell_width, print_field, wrap_cells
     from batch import run_batch
     from engines import SITES, route, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login, is_audio_only_site
     from photos import originals_directory, retain_originals, verify_library_copies
@@ -883,7 +883,7 @@ def configure(args, parser):
         status("Saved", "Used when no --folder or --photos is specified.")
     else:
         print("\n  Change default:\n")
-        for command, detail in [
+        examples = [
             ("linkget config --reader-browser neo", "Use BrowserOS Neo for page reading"),
             ("linkget config --reader-browser auto", "Follow saved/system browser for page reading"),
             ("linkget config --photos", "Photos"),
@@ -893,8 +893,10 @@ def configure(args, parser):
             ("linkget config --clear-audio-folder", "Clear the saved default audio folder"),
             ("linkget config --article-folder ~/Articles", "Default folder for article downloads"),
             ("linkget config --clear-article-folder", "Clear the saved default article folder"),
-        ]:
-            print(f"  {command:<42} {detail}")
+        ]
+        label_width = max(cell_width(command) for command, _ in examples)
+        for command, detail in examples:
+            print_field(command, detail, label_width=label_width, indent="  ")
         print("\n  To override once, omit config. Your saved default stays unchanged.")
     return 0
 
@@ -1510,7 +1512,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         toutiao_entry = ("Toutiao", "Article downloads & reading, plus local video transcription via linkget read; Chrome and Neo supported")
         wechat_entry = ("WeChat Official Accounts", "Article downloads & reading (direct HTTP with optional Chrome/Neo /s/<id> fallback)")
         web_entry = ("Web articles", "General public HTTPS/HTTP article downloads and Markdown/HTML/plain reads via linkget read")
-        extra_entries = [toutiao_entry, wechat_entry, web_entry]
+        entries = (*SUPPORTED_SITES, toutiao_entry, wechat_entry, web_entry)
         if args.json:
             agent_output.emit({
                 "schema_version": agent_output.SCHEMA_VERSION,
@@ -1523,15 +1525,27 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                         "audio_only": is_audio_only_site(site),
                         "supports_read": site != "Pixiv",
                     }
-                    for site, content in [*SUPPORTED_SITES, *extra_entries]
+                    for site, content in entries
                 ],
             })
             return 0
-        for site, content in SUPPORTED_SITES:
-            status(site, content)
-        for site, content in extra_entries:
-            status(site, content)
-        print("\n  Use --audio (or --audio-format mp3|m4a|flac|wav|opus) to save audio from video posts to a folder.\n  Use linkget URL [--article] --folder DIR to archive offline articles (Markdown, HTML, JSON, local images/videos).\n  Use linkget read for video speech/keyframes, Toutiao, WeChat Official Accounts, or web articles.\n  Pixiv is image-only. Availability varies by URL; read --help shows options.")
+        columns = shutil.get_terminal_size((80, 24)).columns
+        label_width = max(cell_width(site) for site, _ in entries)
+        content_width = columns - label_width - 3
+        for site, content in entries:
+            if content_width >= 30:
+                status(site, wrap_cells(content, content_width), label_width=label_width)
+            elif not runtime.quiet_status():
+                print(f"  {site}")
+                print("    " + wrap_cells(content, columns - 4).replace("\n", "\n    "))
+        print()
+        for note in (
+            "Use --audio (or --audio-format mp3|m4a|flac|wav|opus) to save audio from video posts to a folder.",
+            "Use linkget URL [--article] --folder DIR to archive offline articles (Markdown, HTML, JSON, local images/videos).",
+            "Use linkget read for video speech/keyframes, Toutiao, WeChat Official Accounts, or web articles.",
+            "Pixiv is image-only. Availability varies by URL; read --help shows options.",
+        ):
+            print("  " + wrap_cells(note, columns - 2).replace("\n", "\n  "))
         return 0
     if args.profile and args.browser in {"auto", "none"}:
         parser.error("--profile requires an explicit --browser, such as chrome or firefox.")

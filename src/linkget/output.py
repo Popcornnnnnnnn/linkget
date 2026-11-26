@@ -16,6 +16,9 @@ else:
     from runtime import _batch, batch_lock, check_batch_cancelled, json_mode, non_interactive, quiet_status
     from media import AUDIO, MEDIA, VIDEO
 
+STATUS_LABEL_WIDTH = 23
+
+
 def terminal_styles(stream):
     return (not quiet_status() and not non_interactive() and stream.isatty()
             and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb")
@@ -28,7 +31,7 @@ def emphasis(value, stream=None):
 
 
 
-def status(label, value, color="0", stream=None):
+def status(label, value, color="0", stream=None, *, label_width=STATUS_LABEL_WIDTH):
     """Aligned terminal output; redirected output remains plain text."""
     if json_mode():
         return
@@ -43,14 +46,20 @@ def status(label, value, color="0", stream=None):
             if panel.capture(item[0], label, value, color, stream):
                 return
     prefix = f"[{item[0]}/{item[1]}] " if item else ""
-    field = f"{label:<12}"
-    if terminal_styles(stream):
+    color = color if terminal_styles(stream) else None
+    with batch_lock("output"):
+        print_field(label, value, label_width=label_width, indent="  " + prefix, color=color, stream=stream)
+
+
+def print_field(label, value, *, label_width, indent="", color=None, stream=None):
+    field = pad_cell(label, label_width)
+    continuation = " " * (cell_width(indent + field) + 1)
+    if color is not None:
         field = f"\033[{color}m{field}\033[0m"
     lines = str(value).splitlines() or [""]
-    with batch_lock("output"):
-        print(f"  {prefix}{field} {lines[0]}", file=stream, flush=True)
-        for line in lines[1:]:
-            print(" " * (15 + len(prefix)) + line, file=stream, flush=True)
+    print(f"{indent}{field} {lines[0]}", file=stream, flush=True)
+    for line in lines[1:]:
+        print(continuation + line, file=stream, flush=True)
 
 
 
@@ -104,21 +113,52 @@ def cell_text(value):
 
 
 def cell_width(value):
-    return sum(0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in value)
+    """Measure CJK and combining text in terminal cells, with ambiguous characters narrow."""
+    return sum(
+        2 if unicodedata.east_asian_width(c) in "WF" else 1
+        for c in value
+        if not unicodedata.combining(c) and unicodedata.category(c) not in {"Mn", "Me"}
+    )
+
+
+def pad_cell(value, width):
+    return value + " " * max(0, width - cell_width(value))
+
+
+def wrap_cells(value, width):
+    """Wrap prose on word boundaries without breaking paths or other tokens."""
+    lines = []
+    line = ""
+    used = 0
+    for word in value.split():
+        size = cell_width(word)
+        if line and used + 1 + size > width:
+            lines.append(line)
+            line, used = "", 0
+        if line:
+            line += " "
+            used += 1
+        line += word
+        used += size
+    return "\n".join([*lines, line])
 
 
 def fit_cell(value, width, pad=False):
     value = cell_text(value)
+    ellipsis = "…"
+    if width <= 0:
+        return ""
     if cell_width(value) > width:
         clipped, used = [], 0
+        limit = width - cell_width(ellipsis)
         for c in value:
             size = cell_width(c)
-            if used + size > max(0, width - 1):
+            if used + size > limit:
                 break
             clipped.append(c)
             used += size
-        value = "".join(clipped) + ("…" if width else "")
-    return value + (" " * max(0, width - cell_width(value)) if pad else "")
+        value = "".join(clipped) + ellipsis
+    return pad_cell(value, width) if pad else value
 
 
 class BatchPanel:
@@ -212,7 +252,8 @@ class BatchPanel:
         number_width = max(2, len(str(max(self.rows))))
         # Drop the title column first in narrow terminals; keep stage and result.
         name_width = min(32, max(12, width // 3)) if width >= 65 else 0
-        phase_width = 13
+        # Share extra room between long phase labels and results on wide screens.
+        phase_width = min(21, 13 + max(0, columns - 100) // 2)
         limit = max(0, height - 4)
         for index, row in list(self.rows.items())[:limit]:
             phase = row["phase"]
@@ -236,10 +277,15 @@ class BatchPanel:
             if row["started"] is not None:
                 end = row["finished"] if row["finished"] is not None else now
                 elapsed = f"{end - row['started']:.1f}s"
-            if elapsed and len(elapsed) < width:
-                line = fit_cell(prefix + detail, width - len(elapsed) - 1, pad=True) + " " + elapsed
+            elapsed_width = cell_width(elapsed)
+            show_elapsed = 0 < elapsed_width < width
+            available = width - elapsed_width - 1 if show_elapsed else width
+            prefix_width = cell_width(prefix)
+            if prefix_width < available:
+                line = prefix + fit_cell(detail, available - prefix_width, pad=show_elapsed)
             else:
-                line = fit_cell(prefix + detail, width)
+                line = fit_cell(prefix.rstrip(), available, pad=show_elapsed)
+            line = line + " " + elapsed if show_elapsed else line.rstrip()
             if terminal_styles(self.stream):
                 color = "32" if phase == "Done" else "31" if phase == "Failed" else "33" if phase in {"Waiting", "Cancelled"} or row["warning"] else "0"
                 line = f"\033[{color}m{line}\033[0m"
@@ -284,11 +330,13 @@ class BatchPanel:
             self.finished = time.monotonic()
         self.render()
         self.drawn = 0  # Leave the final rows in scrollback.
-        for index, label, value, color, stream in self.notices:
-            field = f"[{index}] {label}"
-            if terminal_styles(stream):
-                field = f"\033[{color}m{field}\033[0m"
-            print(f"  {field}: {value}", file=stream, flush=True)
+        number_width = len(str(max(self.rows)))
+        notices = [(f"[{index:>{number_width}}] {label}:", value, color, stream)
+                   for index, label, value, color, stream in self.notices]
+        label_width = max((cell_width(label) for label, *_ in notices), default=0)
+        for label, value, color, stream in notices:
+            color = color if terminal_styles(stream) else None
+            print_field(label, value, label_width=label_width, indent="  ", color=color, stream=stream)
 
 
 def batch_media(files, metadata=None):
@@ -340,7 +388,7 @@ def activity(label, media_dir=None):
 
     stopped = threading.Event()
     started = time.monotonic()
-    field = f"{label:<12}"
+    field = pad_cell(label, STATUS_LABEL_WIDTH)
     if "NO_COLOR" not in os.environ:
         field = f"\033[36m{field}\033[0m"
 

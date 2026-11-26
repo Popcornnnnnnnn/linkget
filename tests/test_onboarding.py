@@ -168,7 +168,7 @@ class OnboardingTests(unittest.TestCase):
         for site, domain in accounts.SITES.items():
             with self.subTest(site=site), patch.object(accounts, "status", return_value=session.Session("missing", "Not saved")), patch.object(accounts, "import_browser", return_value=session.Session("unverified", "Website check inconclusive")), patch("builtins.input", return_value="q") as prompt, contextlib.redirect_stdout(io.StringIO()) as out:
                 self.assertEqual(cli.main(["auth", site]), 0)
-                self.assertIn(f"Sign in      {site}", out.getvalue())
+                self.assertIn(f"{'Sign in':<23} {site}", out.getvalue())
                 self.assertIn(session.LOGIN_URLS[domain], out.getvalue())
                 self.assertIn("Open this link in Chrome", out.getvalue())
                 self.assertIn("Press Enter to check again", prompt.call_args.args[0])

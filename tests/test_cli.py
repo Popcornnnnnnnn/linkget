@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 from media_stub import uninspected
 
-from linkget import accounts, cli
+from linkget import accounts, cli, output
 
 
 class CommandTests(unittest.TestCase):
@@ -24,6 +24,21 @@ class CommandTests(unittest.TestCase):
         probe = patch.object(cli, "inspect_files", side_effect=uninspected)
         probe.start()
         self.addCleanup(probe.stop)
+
+    def test_sites_aligns_mixed_width_labels_and_stacks_on_narrow_terminals(self):
+        entries = (("哔哩哔哩", "Site description"), ("Bilibili", "Site description"))
+        with patch.object(cli, "SUPPORTED_SITES", entries):
+            wide = io.StringIO()
+            with patch.dict(os.environ, {"COLUMNS": "100"}), contextlib.redirect_stdout(wide):
+                self.assertEqual(cli.main(["sites"]), 0)
+            first, second = wide.getvalue().splitlines()[:2]
+            self.assertEqual(first, second.replace("Bilibili", "哔哩哔哩"))
+
+            narrow = io.StringIO()
+            with patch.dict(os.environ, {"COLUMNS": "40"}), contextlib.redirect_stdout(narrow):
+                self.assertEqual(cli.main(["sites"]), 0)
+            self.assertIn("  哔哩哔哩\n    Site description", narrow.getvalue())
+            self.assertTrue(all(output.cell_width(line) <= 40 for line in narrow.getvalue().splitlines()))
 
     def test_douyin_connector_data_reaches_downloader_without_browser_access(self):
         from linkget.media import DownloadResult
