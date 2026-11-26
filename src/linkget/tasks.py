@@ -5,16 +5,17 @@ import os
 import re
 from pathlib import Path
 import shlex
+import shutil
 import time
 
 if __package__:
     from . import agent_output, jobs, read_tasks, staging, retention
     from .failures import redact
-    from .output import format_size
+    from .output import format_size, pad_cell, print_field, wrap_cells
 else:
     import agent_output, jobs, read_tasks, staging, retention
     from failures import redact
-    from output import format_size
+    from output import format_size, pad_cell, print_field, wrap_cells
 
 
 def display(value):
@@ -61,57 +62,72 @@ def claimed(journal):
         os.close(fd)
 
 
+def task_heading(kind, identifier, state, detail):
+    print(f'{pad_cell(kind, 8)} {identifier}  {pad_cell(state, 15)}  {detail}')
+
+
+def task_detail(label, value, *, indent='  '):
+    label_width = 25  # Retained size (observed):
+    if label in {'Retained because', 'Reason', 'Preview must keep'}:
+        columns = shutil.get_terminal_size((80, 24)).columns
+        value = wrap_cells(value, columns - label_width - len(indent) - 1)
+    print_field(label + ':', value, label_width=label_width, indent=indent)
+
+
 def show_download(journal, *, preview=False):
     active = claimed(journal)
     rows = journal.data['items']
     complete = sum(row['status'] == 'completed' for row in rows)
     state = 'running' if active else 'needs attention' if complete < len(rows) else 'completed'
-    print(f'Download {journal.identifier}  {state}  {complete}/{len(rows)} completed')
+    task_heading('Download', journal.identifier, state, f'{complete}/{len(rows)} completed')
     destination = journal.data['options'].get('folder') or 'Photos'
-    print('Destination: ' + display(destination))
+    print_field('Destination:', display(destination), label_width=12, indent='  ')
+    item_width = len(str(len(rows)))
     for index, row in enumerate(rows, 1):
         state = row['status']
         if not active and state == 'running':
             state = 'interrupted (recorded running; no active task lock)'
-        print(f'  Item {index}: {state}')
+        print(f'  Item {index:>{item_width}}: {state}')
         if row.get('destination_folder') and row.get('destination_folder') != destination:
-            print('  Destination: ' + display(row['destination_folder']))
+            task_detail('Destination', display(row['destination_folder']), indent='    ')
         failure = row.get('failure')
         if state.startswith(('failed', 'cancelled', 'interrupted')) and not isinstance(failure, dict):
-            print('  Failure: No structured cause recorded; inspect the retained diagnostics.')
+            task_detail('Failure', 'No structured cause recorded; inspect the retained diagnostics.', indent='    ')
         if isinstance(failure, dict) and row['status'] != 'completed':
-            print('  Failure: ' + display(failure.get('message', 'Unknown')))
-            print('  Next: ' + display(failure.get('next_step', 'Inspect retained files.')))
+            task_detail('Failure', display(failure.get('message', 'Unknown')), indent='    ')
+            task_detail('Next', display(failure.get('next_step', 'Inspect retained files.')), indent='    ')
         try:
             paths = list(staging.paths(row))
         except (ValueError,TypeError):
             paths=[]
-            print('  Retained because: Invalid path metadata; no file ownership can be inferred.')
+            task_detail('Retained because', 'Invalid path metadata; no file ownership can be inferred.', indent='    ')
         receipt = row.get('receipt') or {}
         if not isinstance(receipt,dict):
             receipt={}
-            print('  Retained because: Invalid import receipt; resources remain protected.')
+            task_detail('Retained because', 'Invalid import receipt; resources remain protected.', indent='    ')
         resources=receipt.get('staged',[])
         if not isinstance(resources,list):
             resources=[]
-            print('  Retained because: Invalid staged-resource metadata; no resource was inspected.')
+            task_detail('Retained because', 'Invalid staged-resource metadata; no resource was inspected.', indent='    ')
         paths.extend(resource['path'] for resource in resources if isinstance(resource, dict) and isinstance(resource.get('path'), str))
         if paths:
             for reason in retention.reasons(row,active):
-                print('  Retained because: '+display(reason))
-            print('  Retained size (observed): ' + retained_size(paths))
+                task_detail('Retained because', display(reason), indent='    ')
+            task_detail('Retained size (observed)', retained_size(paths), indent='    ')
             for path in dict.fromkeys(paths):
-                print('  Files: ' + display(path))
+                task_detail('Files', display(path), indent='    ')
         if preview:
             for entry in retention.preview(journal,index,active):
-                print('  Preview '+entry['classification']+': '+display(entry['path'] or 'recorded files')+' · '+(retained_size([entry['path']]) if entry['path'] else 'size unknown'))
-                print('  Reason: '+display(entry['reason']))
+                size = retained_size([entry['path']]) if entry['path'] else 'size unknown'
+                task_detail('Preview ' + entry['classification'],
+                            display(entry['path'] or 'recorded files') + ' · ' + size, indent='    ')
+                task_detail('Reason', display(entry['reason']), indent='    ')
         if row.get('receipt'):
-            print(f'  Next: linkget recover {journal.identifier} --item {index} --verify')
+            task_detail('Next', f'linkget recover {journal.identifier} --item {index} --verify', indent='    ')
         elif row.get('ready'):
-            print(f'  Next: linkget recover {journal.identifier} --item {index}')
+            task_detail('Next', f'linkget recover {journal.identifier} --item {index}', indent='    ')
     if complete < len(rows):
-        print('Next: linkget retry ' + journal.identifier)
+        print_field('Next:', 'linkget retry ' + journal.identifier, label_width=12, indent='  ')
     print('')
 
 
@@ -120,32 +136,32 @@ def show_read(value, *, preview=False):
     state = value['status']
     if state not in read_tasks.TERMINAL and not read_tasks.active(value) and (state == 'running' or time.time() - value.get('created', 0) > 10):
         state = 'worker unconfirmed (recorded ' + state + ')'
-    print(f'Read {identifier}  {state}  ' + display(value.get('phase', value['kind'])))
+    task_heading('Read', identifier, state, display(value.get('phase', value['kind'])))
     outputs = value.get('outputs', [])
     for path in outputs:
-        print('Result: ' + display(path))
+        task_detail('Result', display(path))
     retained = list(outputs)
     source = value.get('source_folder')
     if isinstance(source, str) and Path(source).is_absolute():
         retained.append(source)
-        print('Source/checkpoints: ' + display(source))
+        task_detail('Source/checkpoints', display(source))
     if retained:
-        print('Retained because: User results and retry/checkpoints are preserved; reading files are not cleanup candidates.')
+        task_detail('Retained because', 'User results and retry/checkpoints are preserved; reading files are not cleanup candidates.')
         if preview:
-            print('Preview must keep: All read outputs, source media and checkpoints; no deletion or ownership inference.')
-        print('Retained size (observed): ' + retained_size(retained))
+            task_detail('Preview must keep', 'All read outputs, source media and checkpoints; no deletion or ownership inference.')
+        task_detail('Retained size (observed)', retained_size(retained))
     if value['status'] in {'failed', 'interrupted', 'cancelled'}:
-        print('Failure: ' + display(value.get('failure') or 'No structured failure recorded; inspect the private log.'))
-        print('Next: linkget read logs ' + identifier)
+        task_detail('Failure', display(value.get('failure') or 'No structured failure recorded; inspect the private log.'))
+        task_detail('Next', 'linkget read logs ' + identifier)
         if value['kind'] in {'read', 'retry', 'batch'}:
             for path in outputs:
                 if (Path(path) / '.read-job.json').is_file():
-                    print('Next: linkget read retry ' + shlex.quote(path))
+                    task_detail('Next', 'linkget read retry ' + shlex.quote(path))
         elif value['kind'] in {'translate', 'summarize'}:
-            print('Next: inspect the log, then rerun the original read ' + value['kind'] + ' command.')
+            task_detail('Next', 'inspect the log, then rerun the original read ' + value['kind'] + ' command.')
     elif value['status'] in {'queued', 'running'}:
-        print('Next: linkget read status ' + identifier)
-        print('Cancel: linkget read cancel ' + identifier)
+        task_detail('Next', 'linkget read status ' + identifier)
+        task_detail('Cancel', 'linkget read cancel ' + identifier)
     print('')
 
 
