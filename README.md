@@ -1,5 +1,7 @@
 # linkget
 
+**English** · [简体中文](README.zh-CN.md)
+
 Save photos, videos, and audio from a post or music link to **macOS Photos** or a local folder.
 A local-first macOS CLI (`MIT` · current stable release `v0.3.2`) with browser session reuse, completeness checks, and no hosted service.
 
