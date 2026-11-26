@@ -42,6 +42,16 @@ linkget read 'URL' --folder ./notes                  # extract subtitles, speech
 
 > Always wrap URLs in straight ASCII quotes (`'...'` or `"..."`) so the shell does not split `&` or `?`.
 
+## Demos
+
+**Save a video clip to a local folder.** This demo uses [Blender’s Big Buck Bunny](https://vimeo.com/1084537) and the development build.
+
+![Terminal recording of LinkGet saving a five-second Vimeo clip as an MP4](docs/demos/save-video.gif)
+
+**Archive a web page for offline reading.** The saved folder contains HTML, Markdown, and plain text.
+
+![Terminal recording of LinkGet archiving a web page and listing the saved files](docs/demos/save-article.gif)
+
 ## Core Commands
 
 | Command | Purpose |
@@ -74,6 +84,9 @@ linkget read 'URL' --folder ./notes                  # extract subtitles, speech
 | Xiaohongshu *(trial)* | Image sets, videos | Keep full link including `xsec_token` |
 | Weibo | Photos, videos | Heuristic watermark-free JPEG selection ([audit](docs/WEIBO_IMAGE_AUDIT.md)) |
 | YouTube / YouTube Music | Single videos, Shorts, Music tracks | Playlist-only URLs and streams excluded; `music.youtube.com` auto-audio |
+| Vimeo (development) | Single publicly embeddable videos | Accepts `vimeo.com/ID` and `player.vimeo.com/video/ID` |
+| Dailymotion (development) | Single videos | Accepts `dailymotion.com/video/ID` and `dai.ly/ID` |
+| Pornhub (development, trial) | Single videos | Accepts `view_video.php?viewkey=ID` and `/embed/ID`; availability depends on yt-dlp and regional access. Account sign-in is unavailable. |
 | SoundCloud | Single tracks | Public tracks and `on.soundcloud.com` shares; sets excluded |
 | Bandcamp | Single tracks | Public `/track/` links; albums excluded |
 | Reddit *(trial)* | Photos, galleries, videos | Via `gallery-dl` |

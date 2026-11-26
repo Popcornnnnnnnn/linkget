@@ -42,6 +42,16 @@ linkget read 'URL' --folder ./notes                  # 在后台提取字幕、�
 
 > 请始终使用直立 ASCII 引号（`'...'` 或 `"..."`）包裹 URL，避免 Shell 解析 `&` 或 `?`。
 
+## 操作演示
+
+**将视频片段保存到本地文件夹。** 此演示使用开发版，示例视频为 [Blender 的《Big Buck Bunny》](https://vimeo.com/1084537)。
+
+![终端演示：LinkGet 将五秒 Vimeo 视频片段保存为 MP4](docs/demos/save-video.gif)
+
+**将网页归档以供离线阅读。** 保存的文件夹包含 HTML、Markdown 和纯文本。
+
+![终端演示：LinkGet 归档网页并列出保存的文件](docs/demos/save-article.gif)
+
 ## 核心命令
 
 | 命令 | 用途 |
@@ -74,6 +84,9 @@ linkget read 'URL' --folder ./notes                  # 在后台提取字幕、�
 | 小红书 *（试用）* | 图集、视频 | 请保留包含 `xsec_token` 的完整链接 |
 | 微博 | 图片、视频 | 启发式无水印 JPEG 优选（[审计报告](docs/WEIBO_IMAGE_AUDIT.md)） |
 | YouTube / YouTube Music | 单个视频、Shorts、音乐单曲 | 不支持纯播放列表链接与直播流；`music.youtube.com` 自动提取音频 |
+| Vimeo（开发版） | 单个可公开嵌入的视频 | 支持 `vimeo.com/ID` 和 `player.vimeo.com/video/ID` |
+| Dailymotion（开发版） | 单个视频 | 支持 `dailymotion.com/video/ID` 和 `dai.ly/ID` |
+| Pornhub（开发版，试用） | 单个视频 | 支持 `view_video.php?viewkey=ID` 和 `/embed/ID`；可用性取决于 yt-dlp 和所在地区，暂不支持账号登录 |
 | SoundCloud | 单曲 | 支持公开单曲与 `on.soundcloud.com` 分享链接；不支持合集 |
 | Bandcamp | 单曲 | 支持公开 `/track/` 链接；不支持整张专辑 |
 | Reddit *（试用）* | 图片、图集、视频 | 通过 `gallery-dl` 支持 |

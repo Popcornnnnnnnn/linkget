@@ -6,16 +6,17 @@ from urllib.parse import urlsplit
 if __package__:
     from .runtime import run_process
     from .failures import classify
-    from .links import BANDCAMP_RESERVED_HOSTS, soundcloud_track_parts
+    from .links import BANDCAMP_RESERVED_HOSTS, single_video_target, soundcloud_track_parts
     from . import media_limits
 else:
     from runtime import run_process
     from failures import classify
-    from links import BANDCAMP_RESERVED_HOSTS, soundcloud_track_parts
+    from links import BANDCAMP_RESERVED_HOSTS, single_video_target, soundcloud_track_parts
     import media_limits
 SITES = (
     "Instagram, X/Twitter, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, Weibo, "
     "Reddit, Lofter, Pixiv and Pinterest posts; YouTube videos and Shorts; "
+    "Vimeo, Dailymotion and Pornhub videos; "
     "YouTube Music, Bilibili Audio, SoundCloud and Bandcamp tracks"
 )
 AUDIO_ONLY_SITES = {"YouTube Music", "Bilibili Audio", "SoundCloud", "Bandcamp"}
@@ -131,7 +132,11 @@ def prepare_video(command, info_path, log, domain, audio_only=False):
     if domain == "youtube.com":
         site = "YouTube Music" if urlsplit(command[-1]).hostname == "music.youtube.com" else "YouTube"
     else:
-        site = {"weibo.com": "Weibo", "reddit.com": "Reddit", "soundcloud.com": "SoundCloud", "bandcamp.com": "Bandcamp"}.get(domain, "Site")
+        site = {
+            "weibo.com": "Weibo", "reddit.com": "Reddit", "soundcloud.com": "SoundCloud",
+            "bandcamp.com": "Bandcamp", "vimeo.com": "Vimeo", "dailymotion.com": "Dailymotion",
+            "pornhub.com": "Pornhub",
+        }.get(domain, "Site")
     probe = command[:-1] + ["--skip-download", "--dump-single-json", "--no-quiet", command[-1]]
     result = run_process(probe, capture_output=True, text=True, timeout=90)
     lines = result.stdout.rstrip().splitlines()
@@ -197,6 +202,10 @@ def route(url):
             return "YouTube Music", "yt-dlp", "youtube.com"
         if path.startswith(("/playlist", "/browse", "/channel")):
             raise ValueError("Use a single YouTube Music track link, not a playlist, album, or channel.")
+    video = single_video_target(parsed)
+    if video:
+        site, domain, _ = video
+        return site, "yt-dlp", domain
     if host in {"soundcloud.com", "www.soundcloud.com", "m.soundcloud.com"}:
         parts = [part for part in path.split("/") if part]
         if len(parts) >= 2 and parts[1].lower() == "sets":

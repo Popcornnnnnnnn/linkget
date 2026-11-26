@@ -42,6 +42,10 @@ KNOWN_MEDIA_EXACT_HOSTS = (
 KNOWN_MEDIA_BASE_DOMAINS = (
     'youtube.com',
     'youtu.be',
+    'vimeo.com',
+    'dailymotion.com',
+    'dai.ly',
+    'pornhub.com',
     'instagram.com',
     'x.com',
     'twitter.com',

@@ -37,6 +37,36 @@ SOUNDCLOUD_RESERVED_TOKENS = {"albums", "sets", "recommended", "comments", "repo
 BANDCAMP_RESERVED_HOSTS = {"bandcamp.com", "www.bandcamp.com", "daily.bandcamp.com"}
 
 
+def single_video_target(parsed):
+    """Return the site, domain, and canonical URL for a supported video."""
+    host, path = parsed.hostname, parsed.path
+    if host in {"vimeo.com", "www.vimeo.com", "player.vimeo.com"}:
+        pattern = r"/video/([0-9]+)/?" if host == "player.vimeo.com" else r"/([0-9]+)/?"
+        match = re.fullmatch(pattern, path)
+        if match and "h" not in parse_qs(parsed.query, keep_blank_values=True):
+            # yt-dlp's Vimeo page client requires login. Use the public player.
+            return "Vimeo", "vimeo.com", f"https://player.vimeo.com/video/{match[1]}"
+    if host in {"dailymotion.com", "www.dailymotion.com", "dai.ly"}:
+        if host == "dai.ly":
+            pattern = r"/(x[0-9a-z]+)/?"
+        else:
+            pattern = r"/(?:embed/)?video/(x[0-9a-z]+)(?:_[\w-]+)?/?"
+        match = re.fullmatch(pattern, path)
+        if match:
+            return "Dailymotion", "dailymotion.com", f"https://www.dailymotion.com/video/{match[1]}"
+    if host in {"pornhub.com", "www.pornhub.com", "m.pornhub.com"}:
+        match = re.fullmatch(r"/embed/([a-z0-9]+)/?", path)
+        keys = parse_qs(parsed.query, keep_blank_values=True).get("viewkey", [])
+        if match:
+            key = match[1]
+        elif path in {"/view_video.php", "/video/show"} and len(keys) == 1 and re.fullmatch(r"[a-z0-9]+", keys[0]):
+            key = keys[0]
+        else:
+            return None
+        return "Pornhub", "pornhub.com", "https://www.pornhub.com/view_video.php?" + urlencode({"viewkey": key})
+    return None
+
+
 def soundcloud_track_parts(path):
     parts = [part for part in path.split("/") if part]
     if len(parts) not in {2, 3}:
@@ -160,7 +190,8 @@ def canonical_post(url):
         match = re.fullmatch(r"/i/article/(\d+)/?", parsed.path)
         if match:
             return f"https://x.com/i/article/{match[1]}"
-    return None
+    video = single_video_target(parsed)
+    return video[2] if video else None
 
 
 def normalize_link(text):

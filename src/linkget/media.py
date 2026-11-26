@@ -44,9 +44,14 @@ def _ffprobe_binary():
 
 def reference(url):
     parsed = urlsplit(url)
-    value = (parsed.hostname or "") + parsed.path
-    if parsed.path == "/watch" and (parsed.hostname or "").endswith("youtube.com"):
+    host = parsed.hostname or ""
+    value = host + parsed.path
+    if parsed.path == "/watch" and host.endswith("youtube.com"):
         value += "?v=" + parse_qs(parsed.query).get("v", [""])[0]
+    if parsed.path == "/view_video.php" and host == "www.pornhub.com":
+        keys = parse_qs(parsed.query, keep_blank_values=True).get("viewkey", [])
+        if len(keys) == 1 and keys[0].isascii() and keys[0].isalnum() and keys[0] == keys[0].lower():
+            value += "?viewkey=" + keys[0]
     return value
 
 
