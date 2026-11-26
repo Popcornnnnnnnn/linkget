@@ -624,6 +624,9 @@ test("task-format helpers produce human-readable titles, paths, and dates", () =
     formatMachineFilenameTitle(["/tmp/bilibili_BV1NSy8z4EZc.mp4"]),
     { platform: "Bilibili", title: "Bilibili · BV1NSy8z4EZc" },
   );
+  assert.equal(formatMachineFilenameTitle(["/tmp/vimeo_12345.mp4"]).platform, "Vimeo");
+  assert.equal(formatMachineFilenameTitle(["/tmp/dailymotion_x123abc.mp4"]).platform, "Dailymotion");
+  assert.equal(formatMachineFilenameTitle(["/tmp/pornhub_phexample.mp4"]).platform, "Pornhub");
 
   const now = new Date(2026, 10, 24, 21, 0, 0); // local 2026-11-24
   assert.match(formatCompactTaskDate("20261124T123540-77a6892bf380", now) || "", /^\d{2}:\d{2}$/);

@@ -39,7 +39,7 @@ def site_key(text):
                't.cn': 'weibo.com', 'weibo.cn': 'weibo.com', 'b23.tv': 'bilibili.com',
                'youtu.be': 'youtube.com', 'iesdouyin.com': 'douyin.com',
                'tiktokv.com': 'tiktok.com', 'twitter.com': 'x.com',
-               'on.soundcloud.com': 'soundcloud.com'}
+               'on.soundcloud.com': 'soundcloud.com', 'dai.ly': 'dailymotion.com'}
     parts = host.split('.')
     base = '.'.join(parts[-2:])
     return aliases.get(base, base)
