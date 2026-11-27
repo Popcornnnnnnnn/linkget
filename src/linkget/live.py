@@ -4,14 +4,31 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import threading
 import uuid
 
 if __package__:
     from .hashing import digest
-    from . import ownership
+    from . import ownership, photos
 else:
     from hashing import digest
-    import ownership
+    import ownership, photos
+
+_pair_locks_guard = threading.Lock()
+_pair_locks = {}
+
+
+def _retention_lock(root):
+    resolved = Path(root).resolve()
+    if resolved == photos.originals_directory().resolve():
+        return photos.originals_lock()
+    key = str(resolved)
+    with _pair_locks_guard:
+        lock = _pair_locks.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _pair_locks[key] = lock
+    return lock
 
 
 def _transfers():
@@ -152,21 +169,29 @@ def save_pairs(pairs, folder):
 
 def retain_pairs(pairs, root):
     """Carry proof for each retained component; observed copies are never owned."""
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    retained, proofs, inputs = [], [], []
-    for pair in pairs:
-        for source in pair:
-            source_proof = _proof(pair, source)
-            inputs.append(source_proof)
-            target = root / source.name
-            if target.exists() or target.is_symlink():
-                proof = ownership.FileProof.observe(target, expected_hash=source_proof.sha256)
-            else:
-                # A completed retention copy is kept if another component fails;
-                # ownership.copy handles only its own uncertain partial output.
-                proof = ownership.copy(source_proof, target, copier=shutil.copyfileobj)
-            retained.append(target)
-            proofs.append(proof)
-    _verify(inputs)
-    _verify(proofs)
-    return ownership.FileList(retained, proofs)
+    with _retention_lock(root):
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        retained, proofs, inputs = [], {}, []
+        for pair in pairs:
+            for source in pair:
+                source_proof = _proof(pair, source)
+                inputs.append(source_proof)
+                target = root / source.name
+                key = ownership.canonical(target)
+                if key in proofs:
+                    proof = proofs[key].verify()
+                    if proof.sha256 != source_proof.sha256:
+                        raise RuntimeError('A file failed its content check; originals were kept.')
+                elif target.exists() or target.is_symlink():
+                    proof = ownership.FileProof.observe(target, expected_hash=source_proof.sha256)
+                else:
+                    # A completed retention copy is kept if another component fails;
+                    # ownership.copy handles only its own uncertain partial output.
+                    proof = ownership.copy(source_proof, target, copier=shutil.copyfileobj)
+                    proofs[key] = proof
+                if key not in proofs:
+                    proofs[key] = proof
+                retained.append(target)
+        _verify(inputs)
+        _verify(proofs.values())
+        return ownership.FileList(retained, proofs.values())

@@ -235,11 +235,32 @@ def _run(args, pairs, records, download, first_run, status, journal):
             status("Stopping", "Waiting for active requests to finish; downloaded files will be kept.", "33")
             if panel:
                 panel.render()
+    except BaseException:
+        state["cancelled"].set()
+        for pending in futures:
+            pending.cancel()
+        raise
     finally:
+        if any(not future.done() for future in futures):
+            state["cancelled"].set()
+        if state["cancelled"].is_set():
+            while True:
+                try:
+                    request = state["interactions"].get_nowait()
+                except queue.Empty:
+                    break
+                request["error"] = KeyboardInterrupt()
+                request["done"].set()
         executor.shutdown(wait=True, cancel_futures=state["cancelled"].is_set())
         for future, index in futures.items():
             if future.done() and not future.cancelled() and index not in results:
-                results[index] = future.result()
+                if future.exception() is None:
+                    results[index] = future.result()
+                else:
+                    journal.update(index, status="failed")
+                    if panel:
+                        panel.complete(index, 1)
+                    results[index] = 1
         if records is not None:
             records.extend(record for item in item_records.values() for record in item)
         args._batch_records = {index: item_records[index][0] for index, _ in pairs if item_records[index]}

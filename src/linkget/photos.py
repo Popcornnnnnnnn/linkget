@@ -1,10 +1,13 @@
 """Stage Photos imports and verify managed copies before removing source files."""
 
+from contextlib import contextmanager
+import fcntl
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import threading
 
 if __package__:
     from .hashing import digest
@@ -13,9 +16,102 @@ else:
     from hashing import digest
     import accounts, ownership
 
+_originals_lock_state = threading.local()
+
 
 def originals_directory():
     return accounts.directory().parent / "originals"
+
+
+@contextmanager
+def originals_lock():
+    """Serialize shared originals staging, receipt recording, and cleanup across tasks."""
+    lock_path = originals_directory().parent / ".originals.lock"
+    key = str(lock_path)
+    depths = getattr(_originals_lock_state, "depths", None)
+    if depths is None:
+        depths = {}
+        _originals_lock_state.depths = depths
+    if depths.get(key, 0) > 0:
+        depths[key] += 1
+        try:
+            yield
+        finally:
+            depths[key] -= 1
+            if depths[key] == 0:
+                depths.pop(key, None)
+        return
+    lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        depths[key] = 1
+        try:
+            yield
+        finally:
+            depths.pop(key, None)
+    finally:
+        os.close(fd)
+
+
+def referenced_originals(exclude=None):
+    """Return canonical original paths referenced by any other task item's Photos receipt."""
+    if __package__:
+        from . import jobs
+    else:
+        import jobs
+    excluded_id, excluded_index = (exclude[0].identifier, exclude[1]) if exclude else (None, None)
+    referenced = set()
+    for journal in jobs.all_journals():
+        for number, row in enumerate(journal.data.get("items", []), 1):
+            if journal.identifier == excluded_id and number == excluded_index:
+                continue
+            for receipt_key in ("receipt", "pending_receipt"):
+                receipt = row.get(receipt_key)
+                if not receipt:
+                    continue
+                if not isinstance(receipt, dict):
+                    raise ValueError("Another task has an invalid Photos receipt; originals were kept.")
+                for field in ("files", "staged"):
+                    entries = receipt.get(field, [])
+                    if not isinstance(entries, list):
+                        raise ValueError("Another task has an invalid Photos receipt; originals were kept.")
+                    for entry in entries:
+                        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+                            raise ValueError("Another task has an invalid Photos receipt; originals were kept.")
+                        referenced.add(ownership.canonical(entry["path"]))
+    return referenced
+
+
+def prune_receipt(receipt, removed_paths):
+    """Drop unlinked originals from a Photos receipt while keeping remaining entries consistent."""
+    if not isinstance(receipt, dict):
+        return receipt
+    removed = {ownership.canonical(path) for path in removed_paths}
+    staged = [
+        entry for entry in receipt.get("staged", [])
+        if not (isinstance(entry, dict) and isinstance(entry.get("path"), str)
+                and ownership.canonical(entry["path"]) in removed)
+    ]
+    files = receipt.get("files", [])
+    identifiers = receipt.get("identifiers", [])
+    kept_files = []
+    kept_identifiers = []
+    pair_identifiers = isinstance(files, list) and isinstance(identifiers, list) and len(files) == len(identifiers)
+    for index, entry in enumerate(files if isinstance(files, list) else []):
+        if (isinstance(entry, dict) and isinstance(entry.get("path"), str)
+                and ownership.canonical(entry["path"]) in removed):
+            continue
+        kept_files.append(entry)
+        if pair_identifiers:
+            kept_identifiers.append(identifiers[index])
+    if not staged and not kept_files:
+        return None
+    updated = dict(receipt)
+    updated["files"] = kept_files
+    updated["staged"] = staged
+    updated["identifiers"] = kept_identifiers if pair_identifiers else list(identifiers)
+    return updated
 
 
 def retain_originals(files):
@@ -25,24 +121,25 @@ def retain_originals(files):
     else:
         import transfers
     root = originals_directory()
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    retained, proofs = [], {}
-    for path, source in zip(files, transfers.proofs_for(files)):
-        target = root / ("linkget-" + source.sha256 + path.suffix.lower())
-        key = ownership.canonical(target)
-        if key in proofs:
-            proof = proofs[key].verify()
-        elif target.exists():
-            # Existing shared sources are validated, never newly owned.
-            proof = ownership.FileProof.observe(target, source.sha256)
-        else:
-            proof = ownership.copy(source, target, copier=shutil.copyfileobj)
-        source.verify()
-        proofs[key] = proof
-        retained.append(target)
-    for proof in proofs.values():
-        proof.verify()
-    return ownership.FileList(retained, proofs.values())
+    with originals_lock():
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        retained, proofs = [], {}
+        for path, source in zip(files, transfers.proofs_for(files)):
+            target = root / ("linkget-" + source.sha256 + path.suffix.lower())
+            key = ownership.canonical(target)
+            if key in proofs:
+                proof = proofs[key].verify()
+            elif target.exists() or target.is_symlink():
+                # Existing shared sources are validated, never newly owned.
+                proof = ownership.FileProof.observe(target, source.sha256)
+            else:
+                proof = ownership.copy(source, target, copier=shutil.copyfileobj)
+            source.verify()
+            proofs[key] = proof
+            retained.append(target)
+        for proof in proofs.values():
+            proof.verify()
+        return ownership.FileList(retained, proofs.values())
 
 
 

@@ -208,8 +208,9 @@ def read_videos(args):
             read_store.write_json(output, result)
             if not extract_frames and not result.get('frames') and not (result.get('files') or {}).get('html') and not result.get('assets_downloaded'):
                 read_store.cache(key, result)
-            job.update(status='completed', source=None)
-            read_store.save_job(folder, job)
+            completed_job = {**job, 'status': 'completed', 'source': None}
+            read_store.save_job(folder, completed_job)
+            job.update(completed_job)
             completed = True
             if getattr(args, '_batch_collect', None) is not None:
                 args._batch_collect.append({'folder': str(folder), 'content_path': str(output), 'result': result})
@@ -569,6 +570,10 @@ def read_videos(args):
                     if not all(cli.find_tool(t) for t in ('ffmpeg', 'ffprobe', 'whisper-cli')):
                         raise RuntimeError('Toutiao video speech requires the existing local ffmpeg, ffprobe and whisper-cli tools.')
                     temporary = folder / '.toutiao-download'
+                    if temporary.is_symlink():
+                        raise ValueError('Refusing a substituted Toutiao download directory.')
+                    if temporary.exists():
+                        shutil.rmtree(temporary)
                     temporary.mkdir(mode=0o700)
                     try:
                         video = temporary / 'source.mp4'
@@ -590,7 +595,8 @@ def read_videos(args):
                         consume([video], records, DownloadResult(expected_count=1), url, site,
                                 content_metadata(item))
                     finally:
-                        shutil.rmtree(temporary)
+                        if not temporary.is_symlink() and temporary.exists():
+                            shutil.rmtree(temporary)
                 return 0
             download_args = argparse.Namespace(link=url, folder=folder, browser=args.browser, profile=args.profile,
                                                rendered_backend=rendered_backend,
@@ -626,12 +632,17 @@ def read_videos(args):
                     )
             return code
         except BaseException as error:
-            job['status'] = 'cancelled' if isinstance(error, (KeyboardInterrupt, EOFError)) else 'failed'
-            read_store.save_job(folder, job)
+            if not completed and job.get('status') != 'completed':
+                job['status'] = 'cancelled' if isinstance(error, (KeyboardInterrupt, EOFError)) else 'failed'
+                read_store.save_job(folder, job)
             raise
         finally:
-            if completed and not args.keep_media and media_root.exists():
-                shutil.rmtree(media_root)
+            if completed:
+                toutiao_temp = folder / '.toutiao-download'
+                if not toutiao_temp.is_symlink() and toutiao_temp.is_dir():
+                    shutil.rmtree(toutiao_temp)
+                if not args.keep_media and media_root.exists():
+                    shutil.rmtree(media_root)
 
 
 def config_command(argv):

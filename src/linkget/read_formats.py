@@ -3,8 +3,10 @@ import html
 from html.parser import HTMLParser
 import json
 import math
+import os
 from pathlib import Path
 import re
+import tempfile
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
@@ -203,6 +205,22 @@ def write_text(path, text):
         if path.read_text() == text:
             return
         raise ValueError('An export file already contains different text; preserve it and use a new folder.')
-    with path.open('x') as stream:
-        path.chmod(0o600)
-        stream.write(text)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent, prefix='.export-', delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            temporary.chmod(0o600)
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+            stream.close()
+            try:
+                os.link(temporary, path, follow_symlinks=False)
+            except FileExistsError:
+                if path.is_symlink():
+                    raise ValueError('Refusing a substituted export file.') from None
+                if path.read_text() == text:
+                    return
+                raise ValueError('An export file already contains different text; preserve it and use a new folder.') from None
+        finally:
+            temporary.unlink(missing_ok=True)

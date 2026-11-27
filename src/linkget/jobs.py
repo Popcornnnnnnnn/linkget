@@ -111,7 +111,7 @@ class Journal:
                 stage = row.get("stage")
                 if not stage or not Path(stage).is_dir():
                     stage = None
-                row.update(input="", ready=None, receipt=receipt, stage=stage)
+                row.update(input="", ready=None, receipt=receipt, pending_receipt=None, stage=stage)
             self.write()
 
     def incomplete(self):
