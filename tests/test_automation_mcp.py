@@ -105,6 +105,26 @@ class Phase3AutomationMCPTests(unittest.TestCase):
             code = cli.main(list(args))
         return code, out.getvalue(), err.getvalue()
 
+    def test_mcp_save_type_reuses_cli_and_keeps_the_existing_video_scope(self):
+        with patch.object(mcp_server, "_run_cli_json") as run:
+            mcp_server._call_tool("download_media", {
+                "url": "https://www.douyin.com/note/123",
+                "folder": str(self.root),
+                "save_as": "photo",
+            })
+            self.assertIn("--as", run.call_args.args[0])
+            self.assertEqual(run.call_args.args[0][-1], "photo")
+            run.reset_mock()
+            with self.assertRaisesRegex(mcp_server._RPCError, "outside dedicated LinkGet routes"):
+                mcp_server._call_tool("inspect_url", {
+                    "url_or_path": "https://example.com/clip", "save_as": "video",
+                })
+            run.assert_not_called()
+            mcp_server._call_tool("inspect_url", {
+                "url_or_path": "https://vimeo.com/1084537", "save_as": "video", "no_network": True,
+            })
+            self.assertIn("video", run.call_args.args[0])
+
     def test_media_limits_parsers_and_cli_validation(self):
         self.assertEqual(media_limits.parse_duration("90"), 90.0)
         self.assertEqual(media_limits.parse_duration("90s"), 90.0)

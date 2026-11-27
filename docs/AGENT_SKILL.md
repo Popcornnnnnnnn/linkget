@@ -38,14 +38,16 @@ Always pass `--non-interactive --json` (or set `LINKGET_NON_INTERACTIVE=1`) when
    ```sh
    # Normal download to an explicit folder (recommended on headless/Linux or repeatable scripts):
    linkget 'URL' --folder ./downloads --non-interactive --json
+   linkget 'PHOTO_URL' --as photo --folder ./downloads --non-interactive --json
+   linkget 'VIDEO_URL' --as video --folder ./downloads --non-interactive --json
 
    # Audio-only extraction or music track download:
    linkget 'URL' --audio --audio-format mp3 --folder ./music --non-interactive --json
 
    # Offline article archive (auto-detected for X Articles, WeChat, Toutiao/Zhihu, and public web pages;
-   # pass --article to force X status article mode upfront):
+   # choose --as article to archive an X status link explicitly):
    linkget 'https://x.com/USER/status/ID' --folder ./articles --non-interactive --json
-   linkget 'https://example.com/post' --article --no-assets --folder ./articles --non-interactive --json
+   linkget 'https://example.com/post' --as article --no-assets --folder ./articles --non-interactive --json
 
    # Concurrent batch:
    linkget batch 'URL1' 'URL2' --folder ./downloads --non-interactive --json
@@ -102,6 +104,7 @@ Always pass `--non-interactive --json` (or set `LINKGET_NON_INTERACTIVE=1`) when
    ```
 
    Exposes `inspect_url`, `download_media`, `read_content`, `get_task`, and `doctor` over newline-delimited JSON-RPC 2.0 or `Content-Length`-framed stdio.
+   Use `save_as` with `inspect_url` or `download_media` to choose `auto`, `photo`, `video`, or `article`. MCP video mode uses dedicated LinkGet routes. Use the CLI directly for other yt-dlp video links.
 
 ## Exit Codes & Error Categories
 

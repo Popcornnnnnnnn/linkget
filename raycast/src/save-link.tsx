@@ -20,6 +20,7 @@ import { formatBytes, formatDuration } from "./lib/articles";
 import { getFrontmostBrowserUrl } from "./lib/browser";
 import {
   downloadLink,
+  effectiveSaveMode,
   ensureFolderExists,
   getConfig,
   inspectUrl,
@@ -33,6 +34,7 @@ import {
   startBackgroundDownload,
   submitReadTask,
 } from "./lib/cli";
+import { shortenHomePath } from "./lib/task-format";
 import type {
   AudioFormat,
   BrowserOption,
@@ -48,11 +50,12 @@ interface SaveLinkLaunchContext {
 }
 
 const MODE_LABELS: { value: SaveMode; title: string }[] = [
-  { value: "auto", title: "Auto Detect (Article / Media / Audio)" },
-  { value: "article", title: "Article Archive (Markdown, HTML, Assets)" },
-  { value: "media", title: "Photos & Videos" },
-  { value: "audio", title: "Audio Only" },
-  { value: "read", title: "Background Read / Transcript / OCR" },
+  { value: "auto", title: "Auto" },
+  { value: "photo", title: "Photos" },
+  { value: "video", title: "Video" },
+  { value: "article", title: "Article" },
+  { value: "audio", title: "Audio" },
+  { value: "read", title: "Transcript or Text" },
 ];
 
 const AUDIO_FORMATS: { value: AudioFormat; title: string }[] = [
@@ -130,7 +133,6 @@ export default function SaveLinkCommand(
   );
   const [urlError, setUrlError] = useState<string | undefined>();
   const [mode, setMode] = useState<SaveMode>("auto");
-  const modeManualRef = useRef<boolean>(false);
 
   const [destination, setDestination] = useState<DestinationChoice>("default");
   const [folderPaths, setFolderPaths] = useState<string[]>([]);
@@ -148,14 +150,79 @@ export default function SaveLinkCommand(
     prefs.defaultBrowser || "auto",
   );
 
-  const [inspectResult, setInspectResult] = useState<InspectResponse | null>(
-    null,
-  );
+  const [inspection, setInspection] = useState<{
+    key: string;
+    result: InspectResponse;
+  } | null>(null);
+  const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [isInspecting, setIsInspecting] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const activeRunAbortRef = useRef<AbortController | null>(null);
-  const inspectedTargetRef = useRef<string | null>(null);
   const inspectReqIdRef = useRef<number>(0);
+  const target = resolveInputTarget(urlInput);
+  const isLocalPath = Boolean(target && !/^https?:\/\//.test(target));
+  const inspectionKey = JSON.stringify([target, mode, browser]);
+  const inspectResult =
+    inspection?.key === inspectionKey ? inspection.result : null;
+  const previewMode = isLocalPath
+    ? "read"
+    : effectiveSaveMode(mode, inspectResult);
+  const allowsPhotos = ["auto", "media", "photo", "video"].includes(
+    previewMode,
+  );
+  const showClipOptions = ["auto", "media", "video", "audio"].includes(
+    previewMode,
+  );
+  const visibleDestination =
+    destination === "photos" && !allowsPhotos ? "default" : destination;
+  const defaultTarget =
+    previewMode === "read"
+      ? null
+      : resolveDefaultDownloadTarget(previewMode, prefs, config, inspectResult);
+  const destinationName =
+    visibleDestination === "folder"
+      ? folderPaths[0]
+        ? shortenHomePath(folderPaths[0])
+        : "a folder"
+      : visibleDestination === "photos"
+        ? "Apple Photos"
+        : defaultTarget?.folder
+          ? shortenHomePath(defaultTarget.folder)
+          : defaultTarget
+            ? "Apple Photos"
+            : "the default read folder";
+  const mediaType =
+    previewMode === "photo" ||
+    (previewMode === "auto" && inspectResult?.engine === "pixiv")
+      ? "photos"
+      : previewMode === "video" ||
+          (previewMode === "auto" &&
+            ["yt-dlp", "kuaishou"].includes(inspectResult?.engine || ""))
+        ? "video"
+        : previewMode === "auto" || previewMode === "media"
+          ? "photos and videos"
+          : previewMode;
+  let previewText = `Save ${mediaType === "read" ? "extracted text" : mediaType} to ${destinationName}`;
+  if (previewMode === "auto" && !inspectResult) {
+    previewText = "Detecting what to save…";
+  } else if (
+    previewMode === "auto" &&
+    visibleDestination === "default" &&
+    defaultTarget?.destination === "default" &&
+    !defaultTarget.folder
+  ) {
+    previewText = `Save media to Apple Photos or archive the article in ${shortenHomePath(resolveEffectiveArticleFolder(prefs, config))}`;
+  }
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void getConfig({ binaryPath: prefs.linkgetPath, signal: controller.signal })
+      .then((result) => {
+        if (!controller.signal.aborted && result.ok) setConfig(result);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [prefs.linkgetPath]);
 
   useEffect(() => {
     if (props.launchContext?.url || prefs.autoDetectClipboard === false) {
@@ -184,11 +251,8 @@ export default function SaveLinkCommand(
   }, [props.launchContext?.url, prefs.autoDetectClipboard]);
 
   useEffect(() => {
-    const target = resolveInputTarget(urlInput);
     if (!target) {
       inspectReqIdRef.current += 1;
-      inspectedTargetRef.current = null;
-      setInspectResult(null);
       setIsInspecting(false);
       return;
     }
@@ -203,6 +267,7 @@ export default function SaveLinkCommand(
           noNetwork: true,
           article: mode === "article" ? true : undefined,
           audio: mode === "audio" ? true : undefined,
+          saveAs: mode === "photo" || mode === "video" ? mode : undefined,
           browser,
         },
         { binaryPath: prefs.linkgetPath, signal: controller.signal },
@@ -211,20 +276,7 @@ export default function SaveLinkCommand(
           if (controller.signal.aborted || reqId !== inspectReqIdRef.current) {
             return;
           }
-          inspectedTargetRef.current = target;
-          setInspectResult(res);
-          if (!modeManualRef.current && res.ok) {
-            if (res.kind === "local_file") {
-              setMode("read");
-              setDestination((prev) => (prev === "photos" ? "default" : prev));
-            } else if (isArticleInspectTarget(res)) {
-              setMode("article");
-              setDestination((prev) => (prev === "photos" ? "default" : prev));
-            } else if (res.effective_audio_mode || res.audio_only) {
-              setMode("audio");
-              setDestination((prev) => (prev === "photos" ? "default" : prev));
-            }
-          }
+          setInspection({ key: inspectionKey, result: res });
         })
         .catch(() => {
           // ignore aborted or transient inspection failures during typing
@@ -240,7 +292,7 @@ export default function SaveLinkCommand(
       clearTimeout(timer);
       controller.abort();
     };
-  }, [urlInput, mode, browser, prefs.linkgetPath]);
+  }, [target, mode, browser, prefs.linkgetPath, inspectionKey]);
 
   useEffect(() => {
     return () => {
@@ -259,9 +311,7 @@ export default function SaveLinkCommand(
       });
       return;
     }
-    modeManualRef.current = false;
-    inspectedTargetRef.current = null;
-    setInspectResult(null);
+    setInspection(null);
     setMode("auto");
     setUrlError(undefined);
     setUrlInput(activeUrl);
@@ -290,24 +340,15 @@ export default function SaveLinkCommand(
           noNetwork: false,
           article: mode === "article" ? true : undefined,
           audio: mode === "audio" ? true : undefined,
+          saveAs: mode === "photo" || mode === "video" ? mode : undefined,
           browser,
         },
         { binaryPath: prefs.linkgetPath },
       );
       if (reqId === inspectReqIdRef.current) {
-        inspectedTargetRef.current = target;
-        setInspectResult(res);
+        setInspection({ key: inspectionKey, result: res });
       }
       if (res.ok) {
-        if (!modeManualRef.current) {
-          if (isArticleInspectTarget(res)) {
-            setMode("article");
-            setDestination((prev) => (prev === "photos" ? "default" : prev));
-          } else if (res.effective_audio_mode || res.audio_only) {
-            setMode("audio");
-            setDestination((prev) => (prev === "photos" ? "default" : prev));
-          }
-        }
         toast.style = Toast.Style.Success;
         toast.title = res.metadata?.title || res.site || "Metadata Loaded";
       } else {
@@ -340,6 +381,8 @@ export default function SaveLinkCommand(
         effectiveDest: DestinationChoice;
         downloadDest: DestinationChoice;
         chosenFolder?: string;
+        articleFolder?: string;
+        pairLivePhotos: boolean;
         cachedConfig: ConfigResponse | null;
       };
 
@@ -364,7 +407,20 @@ export default function SaveLinkCommand(
 
     const isLocalPath =
       !target.startsWith("http://") && !target.startsWith("https://");
-    const effectiveMode: SaveMode = isLocalPath ? "read" : mode;
+    let currentInspect = inspectResult;
+    if (!currentInspect && !isLocalPath && mode === "auto") {
+      currentInspect = await inspectUrl(
+        target,
+        { noNetwork: true, browser },
+        { binaryPath: prefs.linkgetPath, signal },
+      ).catch((err) => {
+        if (err instanceof Error && err.name === "AbortError") throw err;
+        return null;
+      });
+    }
+    const effectiveMode = isLocalPath
+      ? "read"
+      : effectiveSaveMode(mode, currentInspect);
     const effectiveDest: DestinationChoice =
       (effectiveMode === "article" ||
         effectiveMode === "audio" ||
@@ -379,37 +435,17 @@ export default function SaveLinkCommand(
       return failValidation(msg, "Choose a Destination Folder");
     }
 
-    if (
-      effectiveMode !== "article" &&
-      effectiveMode !== "read" &&
+    const pairLivePhotos =
       livePhotos &&
-      clipRange.trim()
-    ) {
+      (effectiveMode === "auto" || effectiveMode === "media") &&
+      effectiveDest !== "folder" &&
+      (effectiveDest === "photos" || !prefs.defaultMediaFolder?.trim()) &&
+      !["yt-dlp", "kuaishou"].includes(currentInspect?.engine || "");
+    if (pairLivePhotos && clipRange.trim()) {
       return failValidation(
         "Clip Range cannot be combined with Live Photos.",
         "Incompatible Options",
       );
-    }
-
-    let currentInspect =
-      inspectResult && inspectedTargetRef.current === target
-        ? inspectResult
-        : null;
-    if (
-      !currentInspect &&
-      effectiveMode === "auto" &&
-      effectiveDest === "default"
-    ) {
-      currentInspect = await inspectUrl(
-        target,
-        { noNetwork: true, browser },
-        { binaryPath: prefs.linkgetPath, signal },
-      ).catch((err) => {
-        if (err instanceof Error && err.name === "AbortError") {
-          throw err;
-        }
-        return null;
-      });
     }
 
     if (signal?.aborted) {
@@ -419,6 +455,7 @@ export default function SaveLinkCommand(
     }
 
     let chosenFolder: string | undefined;
+    let articleFolder: string | undefined;
     let downloadDest: DestinationChoice = effectiveDest;
     let cachedConfig: ConfigResponse | null = null;
 
@@ -432,15 +469,17 @@ export default function SaveLinkCommand(
     if (effectiveDest === "folder") {
       chosenFolder = ensureFolderExists(folderPaths[0]);
     } else if (effectiveDest === "default") {
-      cachedConfig = await getConfig({
-        binaryPath: prefs.linkgetPath,
-        signal,
-      }).catch((err) => {
-        if (err instanceof Error && err.name === "AbortError") {
-          throw err;
-        }
-        return null;
-      });
+      cachedConfig =
+        config ??
+        (await getConfig({
+          binaryPath: prefs.linkgetPath,
+          signal,
+        }).catch((err) => {
+          if (err instanceof Error && err.name === "AbortError") {
+            throw err;
+          }
+          return null;
+        }));
       if (signal?.aborted) {
         const abortErr = new Error("Aborted");
         abortErr.name = "AbortError";
@@ -453,6 +492,7 @@ export default function SaveLinkCommand(
         currentInspect,
       );
       downloadDest = resolved.destination;
+      articleFolder = resolved.articleFolder;
       if (resolved.folder) {
         chosenFolder = ensureFolderExists(resolved.folder);
       }
@@ -465,14 +505,14 @@ export default function SaveLinkCommand(
       effectiveDest,
       downloadDest,
       chosenFolder,
+      articleFolder,
+      pairLivePhotos,
       cachedConfig,
     };
   };
 
   const resetUrlForNextEntry = () => {
-    modeManualRef.current = false;
-    inspectedTargetRef.current = null;
-    setInspectResult(null);
+    setInspection(null);
     setMode("auto");
     setUrlError(undefined);
     setFolderError(undefined);
@@ -539,12 +579,13 @@ export default function SaveLinkCommand(
           mode: prepared.effectiveMode,
           destination: prepared.downloadDest,
           folder: prepared.chosenFolder,
+          articleFolder: prepared.articleFolder,
           noAssets: !downloadAssets,
           audioFormat,
           clip: clipRange,
           maxDuration,
           maxSize,
-          livePhotos,
+          livePhotos: prepared.pairLivePhotos,
           browser,
         },
         { binaryPath: prefs.linkgetPath },
@@ -643,12 +684,13 @@ export default function SaveLinkCommand(
           mode: prepared.effectiveMode,
           destination: prepared.downloadDest,
           folder: prepared.chosenFolder,
+          articleFolder: prepared.articleFolder,
           noAssets: !downloadAssets,
           audioFormat,
           clip: clipRange,
           maxDuration,
           maxSize,
-          livePhotos,
+          livePhotos: prepared.pairLivePhotos,
           browser,
         },
         {
@@ -739,7 +781,7 @@ export default function SaveLinkCommand(
       actions={
         <ActionPanel>
           <Action.SubmitForm
-            title="Start Save"
+            title="Save Link"
             icon={Icon.Download}
             onSubmit={() => void handleSubmit()}
           />
@@ -784,38 +826,24 @@ export default function SaveLinkCommand(
         error={urlError}
         onChange={(value) => {
           setUrlError(undefined);
-          modeManualRef.current = false;
-          inspectedTargetRef.current = null;
-          setInspectResult(null);
+          setInspection(null);
           setMode("auto");
           setUrlInput(value);
         }}
       />
 
-      <Form.Description
-        title="Detected"
-        text={summarizeInspect(inspectResult)}
-      />
-
       <Form.Dropdown
         id="mode"
-        title="Mode"
-        value={mode}
-        onChange={(next) => {
-          const nextMode = next as SaveMode;
-          modeManualRef.current = true;
-          setMode(nextMode);
-          if (
-            (nextMode === "article" ||
-              nextMode === "audio" ||
-              nextMode === "read") &&
-            destination === "photos"
-          ) {
-            setDestination("default");
-          }
-        }}
+        title="Save as"
+        value={isLocalPath ? "read" : mode}
+        onChange={(next) => setMode(next as SaveMode)}
       >
-        {MODE_LABELS.map((item) => (
+        {MODE_LABELS.filter(({ value }) =>
+          isLocalPath
+            ? value === "read"
+            : (value !== "photo" && value !== "video") ||
+              config?.save_types?.includes(value),
+        ).map((item) => (
           <Form.Dropdown.Item
             key={item.value}
             value={item.value}
@@ -827,17 +855,14 @@ export default function SaveLinkCommand(
       <Form.Dropdown
         id="destination"
         title="Destination"
-        value={destination}
+        value={visibleDestination}
         onChange={(next) => {
           setFolderError(undefined);
           setDestination(next as DestinationChoice);
         }}
       >
-        <Form.Dropdown.Item
-          value="default"
-          title="Default (Photos for Media · ~/Downloads for Articles)"
-        />
-        {(mode === "auto" || mode === "media") && (
+        <Form.Dropdown.Item value="default" title="Default" />
+        {allowsPhotos && (
           <Form.Dropdown.Item value="photos" title="Apple Photos" />
         )}
         <Form.Dropdown.Item value="folder" title="Choose Specific Folder…" />
@@ -859,7 +884,24 @@ export default function SaveLinkCommand(
         />
       )}
 
-      {(mode === "auto" || mode === "media") &&
+      {target && (
+        <Form.Description
+          title="Preview"
+          text={
+            inspectResult && !inspectResult.ok
+              ? summarizeInspect(inspectResult)
+              : [
+                  previewText,
+                  inspectResult?.metadata?.title || inspectResult?.site,
+                ]
+                  .filter(Boolean)
+                  .join("\n")
+          }
+        />
+      )}
+
+      {(previewMode === "auto" || previewMode === "media") &&
+        mediaType !== "video" &&
         destination !== "folder" &&
         !isArticleInspectTarget(inspectResult) &&
         !inspectResult?.effective_audio_mode &&
@@ -874,10 +916,9 @@ export default function SaveLinkCommand(
           />
         )}
 
-      {(mode === "article" ||
-        mode === "read" ||
-        (mode === "auto" &&
-          (isArticleInspectTarget(inspectResult) || showAdvanced))) && (
+      {(previewMode === "article" ||
+        previewMode === "read" ||
+        (mode === "auto" && showAdvanced)) && (
         <Form.Checkbox
           id="downloadAssets"
           title="Article Assets"
@@ -887,7 +928,7 @@ export default function SaveLinkCommand(
         />
       )}
 
-      {mode === "audio" && (
+      {previewMode === "audio" && (
         <Form.Dropdown
           id="audioFormat"
           title="Audio Format"
@@ -904,7 +945,7 @@ export default function SaveLinkCommand(
         </Form.Dropdown>
       )}
 
-      {mode === "read" && (
+      {previewMode === "read" && (
         <>
           <Form.Checkbox
             id="frames"
@@ -941,7 +982,7 @@ export default function SaveLinkCommand(
 
       {showAdvanced && (
         <>
-          {(mode === "auto" || mode === "media" || mode === "audio") && (
+          {showClipOptions && (
             <>
               <Form.TextField
                 id="clip"
@@ -957,14 +998,23 @@ export default function SaveLinkCommand(
                 value={maxDuration}
                 onChange={setMaxDuration}
               />
-              <Form.TextField
-                id="maxSize"
-                title="Max Size"
-                placeholder="Optional cap, e.g. 200MB or 1.5GB"
-                value={maxSize}
-                onChange={setMaxSize}
-              />
             </>
+          )}
+          {(showClipOptions || previewMode === "photo") && (
+            <Form.TextField
+              id="maxSize"
+              title="Max Size"
+              placeholder="Optional cap, e.g. 200MB or 1.5GB"
+              value={maxSize}
+              onChange={setMaxSize}
+            />
+          )}
+
+          {inspectResult?.ok && (
+            <Form.Description
+              title="Source Details"
+              text={summarizeInspect(inspectResult)}
+            />
           )}
 
           <Form.Dropdown

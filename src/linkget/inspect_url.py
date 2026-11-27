@@ -175,6 +175,7 @@ def inspect_target(
     audio=False,
     article=False,
     video=False,
+    photo_only=False,
     browser="auto",
     no_network=False,
     find_tool=None,
@@ -190,8 +191,8 @@ def inspect_target(
         return {"ok": False, "supported": False, "error": classify_error(err)}
 
     if not re.search(r"https?://", text):
-        if video:
-            err = ValueError("--video requires one public HTTP or HTTPS URL.")
+        if video or photo_only or article:
+            err = ValueError("Photo, video, and article save modes require one HTTP or HTTPS URL.")
             return {"ok": False, "supported": False, "error": classify_error(err)}
         expanded = Path(text).expanduser()
         if not expanded.is_symlink() and expanded.is_file():
@@ -274,6 +275,8 @@ def inspect_target(
         else:
             url = web_article.validate_public_web_url(raw_url, resolve_dns=False)
             site, engine, domain = cand_host or "Web", "web_article", cand_host or None
+        if photo_only and not short_unresolved:
+            engines.check_photo_source(engine)
     except (OSError, ValueError, RuntimeError) as error:
         return {"ok": False, "supported": False, "error": classify_error(error)}
 
@@ -294,6 +297,9 @@ def inspect_target(
         engine in {"article", "web_article", "x_article"}
         or (domain == "toutiao.com" and "/article/" in urlsplit(url).path)
     )
+    if article and not is_article_target:
+        err = ValueError("Unsupported URL for article mode. Use a public web page or X Article link.")
+        return {"ok": False, "supported": False, "error": classify_error(err)}
     supports_auth = domain in accounts.SITES.values()
     tools_required = _required_tools(engine, domain, effective_audio)
     tools_missing = [name for name in tools_required if not find_tool(name)]

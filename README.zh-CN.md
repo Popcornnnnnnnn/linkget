@@ -30,11 +30,12 @@ linkget
 ```sh
 linkget                                              # 交互式输入（默认保存至照片）
 linkget 'https://www.bilibili.com/video/BV1bK411W797/' --folder ~/Downloads
-linkget 'VIDEO_URL' --video --folder ~/Downloads      # 由 yt-dlp 处理单个视频链接
+linkget 'PHOTO_URL' --as photo --photos              # 将静态图片保存到 Apple 照片
+linkget 'VIDEO_URL' --as video --folder ~/Downloads  # 通过 yt-dlp 保存单个视频
 linkget 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' --audio --folder ~/Music
 linkget 'https://soundcloud.com/artist/track'        # 音乐链接会自动下载音频
 linkget 'https://x.com/USER/status/ID' --folder ~/Articles   # 自动离线归档 X Articles
-linkget 'https://example.com/post' --article --folder ~/Articles  # 保存网页文章与本地资源
+linkget 'https://example.com/post' --as article --folder ~/Articles
 linkget --photos --live-photos                       # 封装静态图 + 动态视频为实况照片
 linkget batch                                        # 每行粘贴一个链接，空行开始下载
 linkget retry                                        # 重试最近一次任务中未完成的条目
@@ -43,7 +44,9 @@ linkget read 'URL' --folder ./notes                  # 在后台提取字幕、�
 
 > 请始终使用直立 ASCII 引号（`'...'` 或 `"..."`）包裹 URL，避免 Shell 解析 `&` 或 `?`。
 
-开发版的 `--video` 可尝试下载下方列表以外的公开视频。可用性取决于已安装的 yt-dlp 版本，以及网站提供的 MP4 格式。
+开发版默认自动识别链接内容。可用 `--as photo`、`--as video` 或 `--as article` 指定要保存的内容，再用 `--photos` 选择 Apple 照片，或用 `--folder PATH` 选择本地文件夹。文章保存到文件夹。`--video` 和 `--article` 仍可作为快捷选项。
+
+视频模式可以尝试列表以外的网站。可用性取决于安装的 yt-dlp 版本和网站提供的 MP4 格式。
 
 ## 操作演示
 
@@ -112,7 +115,7 @@ uv build
 
 可使用仓库内置的 [Raycast 扩展](raycast/README.md)（`raycast/`），通过专注的双命令 macOS 启动器界面操作 `linkget`（图片/视频默认存入 **Apple 照片**，文章默认存入 **`~/Downloads`**）：
 
-- **Save Link (`lg`)** — 粘贴链接（或抓取剪贴板 / 当前浏览器标签页），检查能力、选择模式、目标位置、片段/画质上限、音频格式或浏览器会话，并查看已保存文件。
+- **Save Link (`lg`)** — 粘贴链接后预览要保存的内容和位置，按需调整类型或目标位置。可直接保存，也可在后台保存并通过 Status Board 查看进度。
 - **Status Board (`lgs`)** — 统一看板，查看近期下载与已保存文章（封面与 Markdown 预览、行内阅读器、打开 `article.html`、重试失败项），以及 CLI 默认设置、引擎、站点登录态和 `linkget clean`。
 
 ## 文档索引

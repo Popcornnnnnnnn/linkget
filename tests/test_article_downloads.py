@@ -762,6 +762,19 @@ class CLIAndMCPArticleIntegrationTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn('Photos', json.loads(out)['error']['message'])
 
+            # Raycast can supply a per-run article folder while keeping Photos as the media default.
+            with patch.object(cli.sys, 'platform', 'darwin'), \
+                 patch.object(cli, 'preflight'):
+                code, out, err = self.run_cli(
+                    'https://x.com/404jsh/status/2124506790020948428',
+                    '--article-folder', str(self.root / 'only-this-run'),
+                    '--browser', 'none',
+                    '--json',
+                )
+            self.assertEqual(code, 0, err + out)
+            self.assertEqual(Path(json.loads(out)['article_folder']).parent, (self.root / 'only-this-run').resolve())
+            self.assertIsNone(cli.configured_article_destination())
+
             # 3. Dynamic X status -> X Article promotion in `linkget read`
             read_out = self.root / 'read-x-article'
             code, out, err = self.run_cli(

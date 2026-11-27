@@ -19,7 +19,7 @@ if __package__:
     from .runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from .output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity, cell_width, print_field, wrap_cells
     from .batch import run_batch
-    from .engines import SITES, route, route_video, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login, is_audio_only_site
+    from .engines import SITES, SAVE_TYPES, route, route_video, check_photo_source, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login, is_audio_only_site
     from .photos import originals_directory, retain_originals, verify_library_copies
     from .failures import classify, redact
     from .version import VERSION
@@ -40,7 +40,7 @@ else:  # Homebrew launches this file directly.
     from runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity, cell_width, print_field, wrap_cells
     from batch import run_batch
-    from engines import SITES, route, route_video, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login, is_audio_only_site
+    from engines import SITES, SAVE_TYPES, route, route_video, check_photo_source, browser_spec, command_for, restricted_bilibili_quality, prepare_bilibili, selected_quality, prepare_video, LoginRequired, needs_login, is_audio_only_site
     from photos import originals_directory, retain_originals, verify_library_copies
     from failures import classify, redact
     from version import VERSION
@@ -713,6 +713,8 @@ def download_article_target(args, target, setup_results, evidence, started, *, p
 
     if getattr(args, "_explicit_folder", False) and getattr(args, "folder", None) is not None:
         parent_folder = resolve_article_folder(args.folder)
+    elif getattr(args, "article_folder", None) is not None:
+        parent_folder = resolve_article_folder(args.article_folder)
     elif getattr(args, "folder_from_default", False) or not getattr(args, "folder", None):
         parent_folder = resolve_article_folder(None)
     else:
@@ -864,6 +866,7 @@ def configure(args, parser):
             "schema_version": agent_output.SCHEMA_VERSION,
             "ok": True,
             "command": "config",
+            "save_types": SAVE_TYPES,
             "destination": setting,
             "audio_destination": audio_setting,
             "article_destination": article_setting,
@@ -940,11 +943,17 @@ def _is_audio_only_link_text(text):
         return False
 
 
-def validate_video_options(args):
+def validate_save_options(args):
     if getattr(args, "video", False) and (
         args.audio or args.article or args.no_assets or args.live_photos or args.page_data
     ):
         raise ValueError("--video cannot be combined with --audio, --article, --no-assets, --live-photos, or --page-data.")
+    if getattr(args, "photo_only", False) and (
+        args.audio or args.article or args.video or args.no_assets or args.live_photos
+        or args.clip is not None or args.max_duration is not None
+    ):
+        raise ValueError("--as photo saves still images. Choose a single save type and use Auto for Live Photos "
+                         "or Video for clipping and duration limits.")
 
 
 def main(argv=None):
@@ -1050,6 +1059,8 @@ Examples:
   linkget URL --photos                 Save to Photos this time
   linkget URL --folder                 Save to the current folder
   linkget URL --folder ~/Downloads     Save to a folder
+  linkget URL --as photo --photos      Save still images to Apple Photos
+  linkget URL --as article --folder .  Archive an article in the current folder
   linkget URL --video --folder         Save one video; let yt-dlp select the extractor
   linkget URL --audio --folder ~/Music Save original audio stream with tags & cover
   linkget URL --audio-format mp3       Convert extracted audio to MP3
@@ -1085,6 +1096,8 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                                      help="save to FOLDER, or the current folder if omitted; overrides the default")
     destination_options.add_argument("--photos", action="store_true", help="save to Photos; overrides the default")
     parser.add_argument("--audio", action="store_true", help="save audio only to a folder (music links enable this automatically)")
+    parser.add_argument("--as", dest="save_as", choices=SAVE_TYPES,
+                        help="choose what to save; auto detects the type from the link (default)")
     parser.add_argument("--video", action="store_true", help="save a single video with yt-dlp, including from sites outside linkget sites")
     parser.add_argument("--audio-format", choices=list(AUDIO_FORMATS), metavar="FORMAT",
                         help="convert audio to FORMAT (" + ", ".join(AUDIO_FORMATS) + "); implies --audio")
@@ -1097,7 +1110,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     parser.add_argument("--no-assets", action="store_true",
                         help="article downloads only: skip downloading embedded images and videos")
     parser.add_argument("--article-folder", nargs="?", const=True, type=Path,
-                        help="config only: save the default article folder; omit PATH for the current folder on each run")
+                        help="use a separate folder for articles detected during this run; with config, save the default")
     parser.add_argument("--clear-article-folder", action="store_true",
                         help="config only: clear the saved default article folder")
     parser.add_argument("--json", action="store_true", help="print structured JSON output on stdout (implies --non-interactive)")
@@ -1130,9 +1143,9 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     parser.add_argument("--apply", action="store_true",
                         help="clean only: delete eligible old temporary stages")
     tokens = list(sys.argv[1:] if argv is None else argv)
-    # An HTTP URL immediately after bare --folder is the post, never a directory.
+    # An HTTP URL immediately after a bare folder option is the post.
     for index in range(len(tokens) - 2, -1, -1):
-        if tokens[index] == "--folder" and tokens[index + 1].startswith(("http://", "https://")):
+        if tokens[index] in {"--folder", "--article-folder"} and tokens[index + 1].startswith(("http://", "https://")):
             tokens.insert(index + 1, ".")
     if __package__:
         from . import command_help
@@ -1141,7 +1154,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     if command_help.show(parser, tokens):
         return 0
     for action in parser._actions:
-        if action.dest in {'reader_browser', 'probe_browser', 'check_session', 'audio_folder', 'clear_audio_folder', 'article_folder', 'clear_article_folder', 'no_network', 'verify', 'item', 'redownload', 'older_than', 'dry_run', 'apply'}:
+        if action.dest in {'reader_browser', 'probe_browser', 'check_session', 'audio_folder', 'clear_audio_folder', 'clear_article_folder', 'no_network', 'verify', 'item', 'redownload', 'older_than', 'dry_run', 'apply'}:
             action.help = argparse.SUPPRESS
     args = parser.parse_intermixed_args(tokens)
     if args.non_interactive or args.json:
@@ -1184,16 +1197,29 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         parser.error("--audio-folder and --clear-audio-folder are saved with linkget config only.")
     if args.audio_folder is not None and args.clear_audio_folder:
         parser.error("Do not combine --audio-folder with --clear-audio-folder.")
-    if (args.article_folder is not None or args.clear_article_folder) and args.link != ["config"]:
-        parser.error("--article-folder and --clear-article-folder are saved with linkget config only.")
+    if args.clear_article_folder and args.link != ["config"]:
+        parser.error("--clear-article-folder is available with linkget config.")
+    if args.article_folder is not None and args.link != ["config"]:
+        if args.link and args.link[0] in (command_help.SPECS.keys() - {"batch"}) | {"login"}:
+            parser.error("--article-folder applies to downloads, batch, and config. Retry uses the original setting.")
+        args.article_folder = resolve_article_folder(args.article_folder)
     if args.article_folder is not None and args.clear_article_folder:
         parser.error("Do not combine --article-folder with --clear-article-folder.")
     if args.audio_format is not None:
         args.audio = True
+    if args.save_as is not None:
+        if args.link and args.link[0] in (command_help.SPECS.keys() - {"batch", "inspect"}) | {"login"}:
+            parser.error("--as applies to downloads, batch, and inspect. Retry uses the original task mode.")
+        if (args.audio or (args.video and args.save_as != "video")
+                or (args.article and args.save_as != "article")):
+            parser.error("--as conflicts with the selected audio, video, or article option.")
+        args.article = args.article or args.save_as == "article"
+        args.video = args.video or args.save_as == "video"
+    args.photo_only = args.save_as == "photo"
     if args.video and args.link and args.link[0] in (command_help.SPECS.keys() - {"batch", "inspect"}) | {"login"}:
         parser.error("--video applies to downloads, batch, and inspect. Retry uses the original task mode.")
     try:
-        validate_video_options(args)
+        validate_save_options(args)
     except ValueError as error:
         parser.error(str(error))
     if args.audio:
@@ -1244,12 +1270,13 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 or args.jobs is not None or args.verify or args.item is not None
                 or args.redownload or args.folder is not None or args.page_data is not None
                 or args.no_assets):
-            parser.error("Use --video, --audio, --article, --browser, --no-network, --json, or --non-interactive with linkget inspect.")
+            parser.error("Use --as, --video, --audio, --article, --browser, --no-network, --json, or --non-interactive with linkget inspect.")
         payload = inspect_url.inspect_target(
             target,
             audio=args.audio,
             article=args.article,
             video=args.video,
+            photo_only=args.photo_only,
             browser=args.browser,
             no_network=args.no_network,
             find_tool=find_tool,
@@ -1578,7 +1605,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         args._explicit_photos = bool(args.photos)
         args.folder_from_default = False
         is_article_run = bool(getattr(args, "article", False)) or (
-            not (args.audio or args.video) and (
+            not (args.audio or args.video or args.photo_only) and (
                 (not is_batch and args.link and _is_article_link_text(args.link))
                 or (is_batch and batch_links and all(_is_article_link_text(link) for link in batch_links))
             )
@@ -1592,7 +1619,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 raise ValueError("--live-photos cannot be used with article downloads.")
             if args.audio:
                 raise ValueError("Article pages do not contain downloadable audio.")
-        if not (is_article_run or args.audio or args.video) and (
+        if not (is_article_run or args.audio or args.video or args.photo_only) and (
             (not is_batch and args.link and _is_audio_only_link_text(args.link))
             or (is_batch and batch_links and all(_is_audio_only_link_text(link) for link in batch_links))
         ):
@@ -1606,7 +1633,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         if args.audio:
             args.folder = resolve_audio_folder(args.folder)
         elif is_article_run:
-            args.folder = resolve_article_folder(args.folder)
+            args.folder = resolve_article_folder(args.folder or args.article_folder)
             if not args._explicit_folder:
                 args.folder_from_default = True
         elif args.photos:
@@ -1706,7 +1733,7 @@ def restore_options(args, journal, tokens):
         args.folder_from_default = False
     if getattr(args, "audio_format", None) is not None:
         args.audio = True
-    validate_video_options(args)
+    validate_save_options(args)
     if args._reader_browser_override and not args._rendered_backend_override:
         args.rendered_backend = None
     if args.photos:
@@ -1734,7 +1761,7 @@ def restore_options(args, journal, tokens):
         if getattr(args, "audio", False):
             raise ValueError("Do not combine --article with --audio.")
         if args.folder is None:
-            args.folder = resolve_article_folder()
+            args.folder = resolve_article_folder(getattr(args, "article_folder", None))
             args.folder_from_default = True
     if args.folder is not None and args.date_now:
         raise ValueError("--date-now applies to Photos imports only.")
@@ -1870,13 +1897,14 @@ def download(args, setup_results, records=None, media_consumer=None):
         jobs.record(input=url, status="running", failure=None, ready=None, receipt=None, stage=None, stage_identity=None)
         started = time.monotonic()
         video_mode = getattr(args, "video", False)
+        photo_mode = getattr(args, "photo_only", False)
         if video_mode:
             url, site, domain = route_video(single_url(url))
             engine = "yt-dlp"
         else:
             with activity("Resolving") if any(host in url for host in ("v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/", "xhslink.com", "xhslink.cn", "t.cn/", "on.soundcloud.com")) else nullcontext():
                 url = normalize_link(url)
-            if media_consumer is None:
+            if media_consumer is None and not photo_mode:
                 article_target = article_archive.classify_article_target(url, force_article=bool(getattr(args, "article", False)))
                 if article_target is not None:
                     domain = article_target.get("domain")
@@ -1885,6 +1913,8 @@ def download(args, setup_results, records=None, media_consumer=None):
                 if getattr(args, "article", False):
                     raise ValueError("--article supports X posts/articles, WeChat, Toutiao articles, Zhihu articles, or public web article URLs.")
             site, engine, domain = route(url)
+        if photo_mode:
+            check_photo_source(engine)
         evidence.update(reference=reference(url), site=site)
         audio_mode = (media_consumer is None) and (getattr(args, "audio", False) or is_audio_only_site(site))
         clip_range = media_limits.parse_clip(args.clip) if (media_consumer is None and getattr(args, "clip", None)) else None
@@ -2038,7 +2068,7 @@ def download(args, setup_results, records=None, media_consumer=None):
                                     downloader = download_pixiv
                                 else:
                                     downloader = download_kuaishou
-                                if engine == "douyin" and not audio_mode and (args.live_photos or not args.folder):
+                                if engine == "douyin" and not (audio_mode or photo_mode) and (args.live_photos or not args.folder):
                                     notes = downloader(url, media_dir, cookie_path,
                                                        browser_item=browser_item, require_motion=True)
                                 else:
@@ -2098,6 +2128,8 @@ def download(args, setup_results, records=None, media_consumer=None):
                         except x_article.XArticleError:
                             pass
                     if x_article_detected:
+                        if photo_mode:
+                            raise ValueError("This link contains an X Article. Use --as article to archive it.")
                         if stage is not None and stage.name.startswith("linkget-") and not stage.is_symlink():
                             shutil.rmtree(stage, ignore_errors=True)
                             jobs.record(stage=None, stage_identity=None)
@@ -2226,6 +2258,14 @@ def download(args, setup_results, records=None, media_consumer=None):
                     continue
                 raise LoginRequired(reason) from None
         transfers.verify(files)
+        if photo_mode:
+            photos = [path for path in files if path.suffix.lower() not in VIDEO]
+            if not photos:
+                raise ValueError("This post contains no downloadable photos.")
+            files = ownership.FileList(photos, [files.proof(path) for path in photos])
+            download_info.live_pairs = []
+            download_info.missing_motion = 0
+            download_info.expected_count = len(files)
         if clip_range is not None and engine != "yt-dlp" and media_consumer is None:
             phase = 'postprocess'
             with activity("Clipping"):

@@ -1,7 +1,8 @@
 export type BrowserOption =
   "auto" | "none" | "chrome" | "firefox" | "safari" | "edge" | "brave";
 
-export type SaveMode = "auto" | "article" | "media" | "audio" | "read";
+export type SaveType = "auto" | "photo" | "video" | "article";
+export type SaveMode = SaveType | "media" | "audio" | "read";
 
 export type DestinationChoice = "default" | "photos" | "folder";
 
@@ -190,6 +191,7 @@ export interface ConfigResponse {
   schema_version?: number;
   ok: boolean;
   command?: string;
+  save_types?: SaveType[];
   destination?: DestinationSetting;
   audio_destination?: DestinationSetting | null;
   article_destination?: DestinationSetting | null;
