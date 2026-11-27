@@ -691,7 +691,10 @@ class Phase3AutomationMCPTests(unittest.TestCase):
         self.assertEqual(by_id[1]["result"]["protocolVersion"], "2025-06-18")
         self.assertEqual(by_id[2]["result"], {})
         tool_names = [t["name"] for t in by_id[3]["result"]["tools"]]
-        self.assertEqual(tool_names, ["inspect_url", "download_media", "read_content", "get_task", "doctor"])
+        self.assertEqual(
+            tool_names,
+            ["inspect_url", "download_media", "batch_download", "read_content", "get_task", "retry_task", "clean_stages", "doctor"],
+        )
         self.assertEqual(by_id[4]["result"]["structuredContent"]["command"], "doctor")
         self.assertEqual(by_id[5]["result"]["structuredContent"]["command"], "inspect")
         self.assertEqual(by_id[6]["result"]["structuredContent"]["tasks"][0]["content"]["title"], "Sample Article")
@@ -843,6 +846,68 @@ class Phase3AutomationMCPTests(unittest.TestCase):
         sub_msgs = [json.loads(line) for line in sub_lines]
         self.assertEqual([m["id"] for m in sub_msgs], [1, 2, 3])
         self.assertEqual(sub_msgs[2]["result"]["structuredContent"]["command"], "doctor")
+
+    def test_mcp_batch_download_retry_task_and_clean_stages(self):
+        with patch.object(mcp_server, "_run_cli_json", return_value={"ok": True, "command": "batch"}) as mock_run:
+            res = mcp_server.handle_request({
+                "jsonrpc": "2.0",
+                "id": 20,
+                "method": "tools/call",
+                "params": {
+                    "name": "batch_download",
+                    "arguments": {
+                        "urls": ["https://vimeo.com/1084537", "https://www.dailymotion.com/video/x123"],
+                        "folder": str(self.root / "batch-out"),
+                        "save_as": "video",
+                        "jobs": 2,
+                        "browser": "none",
+                    },
+                },
+            })
+            self.assertFalse(res["result"]["isError"])
+            argv = mock_run.call_args.args[0]
+            self.assertEqual(argv[:3], ["batch", "https://vimeo.com/1084537", "https://www.dailymotion.com/video/x123"])
+            self.assertIn(f"--folder={self.root / 'batch-out'}", argv)
+            self.assertIn("--as", argv)
+            self.assertIn("--jobs=2", argv)
+            self.assertIn("--browser=none", argv)
+            self.assertEqual(mock_run.call_args.kwargs.get("command"), "batch")
+
+        for bad_args in (
+            {"urls": [], "folder": str(self.root)},
+            {"urls": ["ftp://example.com/a"], "folder": str(self.root)},
+            {"urls": ["https://vimeo.com/1084537", "https://example.com/clip"], "folder": str(self.root), "save_as": "video"},
+            {"urls": ["https://vimeo.com/1084537"], "folder": str(self.root), "jobs": 99},
+            {"urls": ["https://vimeo.com/1084537"], "folder": str(self.root), "jobs": True},
+        ):
+            with self.subTest(bad_args=bad_args), self.assertRaises(mcp_server._RPCError) as err:
+                mcp_server._call_tool("batch_download", bad_args)
+            self.assertEqual(err.exception.code, -32602)
+
+        with patch.object(mcp_server, "_run_cli_json", return_value={"ok": True, "command": "retry"}) as mock_run:
+            mcp_server._call_tool("retry_task", {})
+            self.assertEqual(mock_run.call_args.args[0], ["retry", "--non-interactive", "--json"])
+            mcp_server._call_tool("retry_task", {"task_id": "20261124T120000-abcdef123456", "redownload": True, "jobs": 3})
+            self.assertEqual(
+                mock_run.call_args.args[0],
+                ["retry", "20261124T120000-abcdef123456", "--redownload", "--jobs=3", "--non-interactive", "--json"],
+            )
+            self.assertEqual(mock_run.call_args.kwargs.get("command"), "retry")
+
+        with self.assertRaises(mcp_server._RPCError) as bad_retry:
+            mcp_server._call_tool("retry_task", {"task_id": "../bad"})
+        self.assertEqual(bad_retry.exception.code, -32602)
+
+        with patch.object(mcp_server, "_run_cli_json", return_value={"ok": True, "command": "clean"}) as mock_run:
+            mcp_server._call_tool("clean_stages", {})
+            self.assertEqual(mock_run.call_args.args[0], ["clean", "--older-than=7d", "--dry-run", "--non-interactive", "--json"])
+            mcp_server._call_tool("clean_stages", {"older_than": "24h", "apply": True})
+            self.assertEqual(mock_run.call_args.args[0], ["clean", "--older-than=24h", "--apply", "--non-interactive", "--json"])
+
+        for bad_age in ("-7d", "bad-age"):
+            with self.assertRaises(mcp_server._RPCError) as bad_clean:
+                mcp_server._call_tool("clean_stages", {"older_than": bad_age})
+            self.assertEqual(bad_clean.exception.code, -32602)
 
 
 if __name__ == "__main__":

@@ -61,6 +61,7 @@ export interface InspectResponse {
   effective_audio_mode?: boolean;
   supports_read?: boolean;
   supports_article_download?: boolean;
+  supports_article_photos?: boolean;
   supports_auth?: boolean;
   session_state?: string | null;
   tools_required?: string[];
@@ -100,10 +101,24 @@ export interface DownloadResponse {
   saved_files?: string[];
   files?: SavedFileMeta[];
   article_folder?: string | null;
+  article_png?: string | null;
+  article_photo?: string | null;
   title?: string | null;
   author?: string | null;
   assets_downloaded?: number;
   assets_failed?: number;
+  error?: LinkgetErrorInfo | string | null;
+}
+
+export interface BatchDownloadResponse {
+  schema_version?: number;
+  ok: boolean;
+  command?: string;
+  task_id?: string | null;
+  exit_code?: number;
+  completed_count?: number;
+  failed_count?: number;
+  items?: DownloadResponse[];
   error?: LinkgetErrorInfo | string | null;
 }
 
@@ -195,6 +210,7 @@ export interface ConfigResponse {
   destination?: DestinationSetting;
   audio_destination?: DestinationSetting | null;
   article_destination?: DestinationSetting | null;
+  x_article_photos?: boolean;
   reader_browser?: string;
   page_controller?: {
     browser: string;

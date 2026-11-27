@@ -28,7 +28,7 @@ Always pass `--non-interactive --json` (or set `LINKGET_NON_INTERACTIVE=1`) when
    Inspect creates no task receipts and downloads no media. Check:
    - `ok` / `supported`
    - `site`, `engine`, `canonical_url`
-   - `audio_only` / `effective_audio_mode` / `supports_article_download`
+   - `audio_only` / `effective_audio_mode` / `supports_article_download` / `supports_article_photos`
    - `destination_preview` / `destination_error`
    - `metadata.duration`, `metadata.is_live`, `metadata.filesize_approx`, `metadata.subtitles_available`
    - `tools_missing`, `session_state`, `login_required`
@@ -45,9 +45,13 @@ Always pass `--non-interactive --json` (or set `LINKGET_NON_INTERACTIVE=1`) when
    linkget 'URL' --audio --audio-format mp3 --folder ./music --non-interactive --json
 
    # Offline article archive (auto-detected for X Articles, WeChat, Toutiao/Zhihu, and public web pages;
-   # choose --as article to archive an X status link explicitly):
+   # choose --as article to archive an X status link explicitly, or --photos to render an X Article PNG into Apple Photos):
    linkget 'https://x.com/USER/status/ID' --folder ./articles --non-interactive --json
+   linkget 'https://x.com/USER/article/ID' --photos --non-interactive --json
    linkget 'https://example.com/post' --as article --no-assets --folder ./articles --non-interactive --json
+
+   # Configure an Obsidian/notes vault folder once for offline article archives:
+   linkget config --article-folder ~/path/to/Vault/Clippings --json
 
    # Concurrent batch:
    linkget batch 'URL1' 'URL2' --folder ./downloads --non-interactive --json
@@ -103,8 +107,8 @@ Always pass `--non-interactive --json` (or set `LINKGET_NON_INTERACTIVE=1`) when
    linkget mcp
    ```
 
-   Exposes `inspect_url`, `download_media`, `read_content`, `get_task`, and `doctor` over newline-delimited JSON-RPC 2.0 or `Content-Length`-framed stdio.
-   Use `save_as` with `inspect_url` or `download_media` to choose `auto`, `photo`, `video`, or `article`. MCP video mode uses dedicated LinkGet routes. Use the CLI directly for other yt-dlp video links.
+   Exposes `inspect_url`, `download_media`, `batch_download`, `read_content`, `get_task`, `retry_task`, `clean_stages`, and `doctor` over newline-delimited JSON-RPC 2.0 or `Content-Length`-framed stdio.
+   Use `save_as` with `inspect_url`, `download_media`, or `batch_download` to choose `auto`, `photo`, `video`, or `article`. MCP video mode uses dedicated LinkGet routes. Use the CLI directly for other yt-dlp video links.
 
 ## Exit Codes & Error Categories
 

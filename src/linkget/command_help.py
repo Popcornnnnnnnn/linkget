@@ -5,8 +5,8 @@ from copy import copy
 COMMON={'folder','photos','audio','audio_format','article','no_assets','browser','profile','live_photos','date_now','report','json','non_interactive','clip','max_duration','max_size'}
 SPECS={
  'config':('View or save personal defaults. Omit options for a read-only query.',
-           {'folder','photos','audio_folder','clear_audio_folder','article_folder','clear_article_folder','reader_browser','json','non_interactive'},
-           'linkget config\nlinkget config --reader-browser neo\nlinkget config --folder ~/Downloads\nlinkget config --audio-folder ~/Music\nlinkget config --article-folder ~/Articles\nThese settings are permanent. One-time page override: linkget URL --rendered-backend chrome.\n--reader-browser is configuration only; omit config for one-time --folder/--photos.'),
+           {'folder','photos','audio_folder','clear_audio_folder','article_folder','clear_article_folder','x_article_photos','reader_browser','json','non_interactive'},
+           'linkget config\nlinkget config --reader-browser neo\nlinkget config --folder ~/Downloads\nlinkget config --audio-folder ~/Music\nlinkget config --article-folder ~/Articles\nlinkget config --x-article-photos\nThese settings are permanent. One-time page override: linkget URL --rendered-backend chrome.\n--reader-browser is configuration only; omit config for one-time --folder/--photos.'),
  'doctor':('Inspect local tools, page-controller selection and saved-session metadata. Default: no website or browser requests.',
            {'folder','photos','audio','audio_format','live_photos','browser','rendered_backend','probe_browser','check_session','json','non_interactive'},
            'linkget doctor\nlinkget doctor --probe-browser neo\nlinkget doctor --check-session bilibili\nConnection/control checks do not establish actual article or website availability.'),
@@ -25,7 +25,7 @@ SPECS={
  'clean':('Inspect or remove old temporary staging directories from completed tasks while preserving active, incomplete, unverified-Photos, symlink, and user folders.',
           {'older_than','dry_run','apply','json','non_interactive'},
           'linkget clean\nlinkget clean --older-than 7d --json\nlinkget clean --apply --older-than 3d --json\nDefault is a read-only dry run. Pass --apply to delete eligible linkget-* staging folders.'),
- 'mcp':('Start a thin stdlib JSON-RPC 2.0 stdio MCP server exposing inspect_url, download_media, read_content, get_task, and doctor.',
+ 'mcp':('Start a thin stdlib JSON-RPC 2.0 stdio MCP server exposing inspect_url, download_media, batch_download, read_content, get_task, retry_task, clean_stages, and doctor.',
         set(),
         'linkget mcp\nSpeak newline-delimited JSON-RPC 2.0 or Content-Length-framed MCP messages on stdin/stdout.'),
  'auth':('Check saved logins and public access. Select a site for explicit connection. No profile is copied by help.',
@@ -60,6 +60,7 @@ def show(parser,tokens):
                           'clear_audio_folder':'Clear the saved default audio folder.',
                           'article_folder':'Save a default folder for article downloads; omit PATH for the current folder on each run.',
                           'clear_article_folder':'Clear the saved default article folder.',
+                          'x_article_photos':'Render X Articles as PNGs for Photos (disable with --no-x-article-photos).',
                           'reader_browser':'Save the personal page reader; auto follows the saved/system browser.'},
                 'doctor':{'folder':'Check destination writability; no media is saved.',
                           'photos':'Check Photos staging prerequisites; no import.',

@@ -15,7 +15,7 @@ import time
 from urllib.parse import urlsplit
 
 if __package__:
-    from . import accounts, agent_output, article_archive, cleanup, inspect_url, jobs, destinations, mcp_server, media_limits, preflight, recovery, staging, transfers, ownership, rendered_page, runtime, web_article, x_article
+    from . import accounts, agent_output, article_archive, article_image, cleanup, inspect_url, jobs, destinations, mcp_server, media_limits, preflight, recovery, staging, transfers, ownership, rendered_page, runtime, web_article, x_article
     from .runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from .output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity, cell_width, print_field, wrap_cells
     from .batch import run_batch
@@ -36,7 +36,7 @@ if __package__:
     from .audio import AUDIO_FORMATS, prepare_audio
     from .live import prepare_pairs, save_pairs
 else:  # Homebrew launches this file directly.
-    import accounts, agent_output, article_archive, cleanup, inspect_url, jobs, destinations, mcp_server, media_limits, preflight, recovery, staging, transfers, ownership, rendered_page, runtime, web_article, x_article
+    import accounts, agent_output, article_archive, article_image, cleanup, inspect_url, jobs, destinations, mcp_server, media_limits, preflight, recovery, staging, transfers, ownership, rendered_page, runtime, web_article, x_article
     from runtime import _batch, batch_lock, check_batch_cancelled, batch_interaction, run_process
     from output import status, activity, terminal_styles, emphasis, format_size, downloaded_bytes, saved_description, batch_media, saving_activity, cell_width, print_field, wrap_cells
     from batch import run_batch
@@ -486,6 +486,14 @@ def _is_article_link_text(text, force_article=False):
         return False
 
 
+def _is_x_article_capable(text):
+    try:
+        target = article_archive.classify_article_target(text, force_article=True)
+        return target is not None and target.get("kind") == "x_article"
+    except ValueError:
+        return False
+
+
 def _acquire_x_article(url, args, setup_results, find_tool, *, cookie_path=None):
     blocked = set(accounts.preferences().get("blocked", []))
     browser_mode = getattr(args, "browser", "auto")
@@ -697,10 +705,82 @@ def _acquire_article_for_download(url, target, args, setup_results):
     raise ValueError(f"Unsupported article target kind: {kind}")
 
 
+def download_x_article_photo(args, article, evidence, started):
+    status("Destination", "Photos")
+    status("Article", article.get("title") or "X Article")
+    jobs.record(destination_folder="Photos", destination_files=[])
+    evidence.update(title=article.get("title"), author=article.get("author"), article_photo="failed")
+    phase = "download"
+    try:
+        with tempfile.TemporaryDirectory(prefix="linkget-article-") as directory:
+            bundle = Path(directory) / "bundle"
+            bundle.mkdir()
+            clean, _ = article_archive.write_article_bundle(
+                bundle, article, mode="download", ffprobe_bin=find_tool("ffprobe"),
+            )
+            evidence.update(assets_downloaded=clean.get("assets_downloaded", 0),
+                            assets_failed=clean.get("assets_failed", 0))
+            phase = "save"
+            with saving_activity("Rendering article PNG"):
+                browser = rendered_page.selection(getattr(args, "rendered_backend", None))["browser"]
+                filename = article_archive.slugify_folder_name(article) + ".png"
+                png = article_image.render(bundle, clean.get("assets", []), find_tool("node"),
+                                           browser, filename=filename, ffmpeg=find_tool("ffmpeg"))
+            files = ownership.FileList([png.path], [png])
+            phase = "import"
+            try:
+                with saving_activity("Importing article PNG"):
+                    saved, skipped = import_photos(files, bool(getattr(args, "date_now", False)))
+            except (OSError, ValueError, RuntimeError) as error:
+                # Keep the finished image when Photos fails, even if its importer
+                # failed before creating a protected original.
+                try:
+                    if args.folder or configured_article_destination() or configured_destination()["mode"] != "photos":
+                        folder = resolve_article_folder(args.folder)
+                    else:
+                        folder = Path.home() / "Downloads"
+                    jobs.record(destination_folder=str(folder), destination_files=[])
+                    save_folder(files, folder)
+                except (OSError, ValueError, RuntimeError) as copy_error:
+                    retained = retain_originals(files)
+                    evidence["article_png"] = str(retained[0])
+                    raise RuntimeError(f"{error}\nPNG retained at {retained[0]}. {copy_error}") from error
+                if jobs.current():
+                    journal, index = jobs.current()
+                    outputs = journal.data["items"][index - 1]["destination_files"]
+                    evidence["article_png"] = outputs[0]["path"]
+                raise RuntimeError(f"{error}\nFinished PNG saved in {folder}.") from error
+            evidence.update(status="completed", article_photo="imported" if saved else "duplicate",
+                            saved_count=len(saved), skipped_count=skipped)
+            status("Done", f"{'Saved to Photos' if saved else 'Already in Photos'} · "
+                           f"{format_size(png.identity[2])} · {time.monotonic() - started:.1f}s", "32")
+            return 0
+    except (OSError, ValueError, RuntimeError) as error:
+        evidence["status"] = "failed"
+        record_failure(args, error, phase)
+        evidence["failure"] = report_failure(error, phase=phase)
+        return 1
+
+
 def download_article_target(args, target, setup_results, evidence, started, *, prefetched_article=None, cookie_path=None):
-    if getattr(args, "_explicit_photos", False) or getattr(args, "photos", False):
-        raise ValueError("Articles cannot be imported into Photos. Use --folder [PATH] or omit --photos.")
-    if getattr(args, "date_now", False):
+    explicit_photos = bool(getattr(args, "_explicit_photos", False) or getattr(args, "photos", False))
+    explicit_folder = bool(
+        (getattr(args, "_explicit_folder", False) and getattr(args, "folder", None) is not None)
+        or getattr(args, "article_folder", None) is not None
+    )
+    if target["kind"] == "x_article":
+        if explicit_photos and getattr(args, "no_assets", False):
+            raise ValueError("Rendering an X Article for Photos requires its assets; omit --no-assets.")
+        photo_mode = explicit_photos or (
+            not explicit_folder
+            and not getattr(args, "no_assets", False)
+            and accounts.preferences().get("x_article_photos") is True
+        )
+    else:
+        if explicit_photos:
+            raise ValueError("Articles cannot be imported into Photos. Use --folder [PATH] or omit --photos.")
+        photo_mode = False
+    if getattr(args, "date_now", False) and not photo_mode:
         raise ValueError("--date-now applies to Photos imports only, not article downloads.")
     if getattr(args, "live_photos", False):
         raise ValueError("--live-photos cannot be used with article downloads.")
@@ -711,20 +791,20 @@ def download_article_target(args, target, setup_results, evidence, started, *, p
     if getattr(args, "page_data", None) and target["kind"] != "toutiao_article":
         raise ValueError("--page-data applies only to Douyin or Toutiao posts with --browser none.")
 
-    if getattr(args, "_explicit_folder", False) and getattr(args, "folder", None) is not None:
-        parent_folder = resolve_article_folder(args.folder)
-    elif getattr(args, "article_folder", None) is not None:
-        parent_folder = resolve_article_folder(args.article_folder)
-    elif getattr(args, "folder_from_default", False) or not getattr(args, "folder", None):
-        parent_folder = resolve_article_folder(None)
-    else:
-        parent_folder = resolve_article_folder(args.folder)
-    preflight.writable_directory(parent_folder)
+    if not photo_mode:
+        if getattr(args, "_explicit_folder", False) and getattr(args, "folder", None) is not None:
+            parent_folder = resolve_article_folder(args.folder)
+        elif getattr(args, "article_folder", None) is not None:
+            parent_folder = resolve_article_folder(args.article_folder)
+        elif getattr(args, "folder_from_default", False) or not getattr(args, "folder", None):
+            parent_folder = resolve_article_folder(None)
+        else:
+            parent_folder = resolve_article_folder(args.folder)
+        preflight.writable_directory(parent_folder)
 
     url = target["url"]
     evidence.update(reference=reference(url), site=target["site"])
     status("Source", target["site"])
-    status("Destination", str(parent_folder))
 
     if prefetched_article is not None:
         article = prefetched_article
@@ -732,6 +812,11 @@ def download_article_target(args, target, setup_results, evidence, started, *, p
         article = _acquire_x_article(url, args, setup_results, find_tool, cookie_path=cookie_path)
     else:
         article = _acquire_article_for_download(url, target, args, setup_results)
+
+    if photo_mode:
+        return download_x_article_photo(args, {**article, "site": "X"}, evidence, started)
+
+    status("Destination", str(parent_folder))
 
     bundle_dir = article_archive.allocate_bundle_dir(parent_folder, article)
     try:
@@ -841,6 +926,8 @@ def configure(args, parser):
     changed_article = args.clear_article_folder or args.article_folder is not None
     if args.reader_browser is not None:
         changes["reader_browser"] = args.reader_browser
+    if args.x_article_photos is not None:
+        changes["x_article_photos"] = args.x_article_photos
     if changes:
         accounts.set_preferences(**changes)
     description = {"photos": "Photos", "cwd": "Current folder (where you run linkget)", "folder": setting.get("path")}[setting["mode"]]
@@ -858,6 +945,7 @@ def configure(args, parser):
     status("Audio default", audio_description)
     status("Article default", article_description)
     preferences = accounts.preferences()
+    x_article_photos = preferences.get("x_article_photos") is True
     choice = rendered_page.selection()
     sources = preferences.get('sources', {})
     names = sorted({value.split('/', 1)[0].split(':', 1)[0] for value in sources.values() if isinstance(value, str)})
@@ -870,6 +958,7 @@ def configure(args, parser):
             "destination": setting,
             "audio_destination": audio_setting,
             "article_destination": article_setting,
+            "x_article_photos": x_article_photos,
             "reader_browser": preferences.get("reader_browser", "auto"),
             "page_controller": choice,
             "login_browsers": names,
@@ -878,11 +967,12 @@ def configure(args, parser):
         })
         return 0
     status("Page preference", preferences.get("reader_browser", "auto"))
+    status("X Article PNG to Photos", "On" if x_article_photos else "Off")
     status("Effective reader", choice['browser'] + " · " + choice['source'] + ("" if choice['supported'] else " · controller unavailable"))
     status("Login browser sources", ", ".join(names) if names else preferences.get('browser') or "None configured")
     status("Selection", "Page option > browser option > environment > personal reader > saved browser > system default")
     status("Privacy", "Login refresh sources and page controller are separate; saved login validity was not checked.")
-    if changed_dest or changed_audio or changed_article:
+    if changed_dest or changed_audio or changed_article or args.x_article_photos is not None:
         status("Saved", "Used when no --folder or --photos is specified.")
     else:
         print("\n  Change default:\n")
@@ -896,6 +986,7 @@ def configure(args, parser):
             ("linkget config --clear-audio-folder", "Clear the saved default audio folder"),
             ("linkget config --article-folder ~/Articles", "Default folder for article downloads"),
             ("linkget config --clear-article-folder", "Clear the saved default article folder"),
+            ("linkget config --x-article-photos", "Render X Articles as PNGs for Photos (disable: --no-x-article-photos)"),
         ]
         label_width = max(cell_width(command) for command, _ in examples)
         for command, detail in examples:
@@ -1113,6 +1204,8 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                         help="use a separate folder for articles detected during this run; with config, save the default")
     parser.add_argument("--clear-article-folder", action="store_true",
                         help="config only: clear the saved default article folder")
+    parser.add_argument("--x-article-photos", action=argparse.BooleanOptionalAction,
+                        help="config only: render X Articles as PNGs for Apple Photos")
     parser.add_argument("--json", action="store_true", help="print structured JSON output on stdout (implies --non-interactive)")
     parser.add_argument("--non-interactive", action="store_true", help="never prompt or animate terminal spinners")
     parser.add_argument("--no-network", action="store_true", help="inspect only: skip resolving short links or probing remote metadata")
@@ -1154,7 +1247,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
     if command_help.show(parser, tokens):
         return 0
     for action in parser._actions:
-        if action.dest in {'reader_browser', 'probe_browser', 'check_session', 'audio_folder', 'clear_audio_folder', 'clear_article_folder', 'no_network', 'verify', 'item', 'redownload', 'older_than', 'dry_run', 'apply'}:
+        if action.dest in {'reader_browser', 'probe_browser', 'check_session', 'audio_folder', 'clear_audio_folder', 'clear_article_folder', 'x_article_photos', 'no_network', 'verify', 'item', 'redownload', 'older_than', 'dry_run', 'apply'}:
             action.help = argparse.SUPPRESS
     args = parser.parse_intermixed_args(tokens)
     if args.non_interactive or args.json:
@@ -1205,6 +1298,8 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         args.article_folder = resolve_article_folder(args.article_folder)
     if args.article_folder is not None and args.clear_article_folder:
         parser.error("Do not combine --article-folder with --clear-article-folder.")
+    if args.x_article_photos is not None and args.link != ["config"]:
+        parser.error("--x-article-photos is saved with linkget config only.")
     if args.audio_format is not None:
         args.audio = True
     if args.save_as is not None:
@@ -1236,10 +1331,25 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             parser.error("Use linkget config --article-folder [PATH] to set the default article folder.")
         if args.audio:
             parser.error("Do not combine --article with --audio.")
+        article_links = (
+            args.link[1:]
+            if (args.link and args.link[0] == "batch")
+            else ([" ".join(args.link)] if args.link and args.link[0] != "inspect" else [])
+        )
+        all_x_capable = bool(article_links) and all(_is_x_article_capable(item) for item in article_links)
         if args.photos:
-            parser.error("Articles cannot be imported into Photos. Use --folder or linkget config --article-folder.")
+            if args.no_assets:
+                parser.error("Rendering an X Article for Photos requires its assets; omit --no-assets.")
+            if not all_x_capable:
+                parser.error("Articles cannot be imported into Photos. Use --folder or linkget config --article-folder.")
         if args.date_now:
-            parser.error("--date-now applies to Photos imports only, not --article.")
+            will_photo_x = all_x_capable and not args.no_assets and (
+                args.photos
+                or (args.folder is None and args.article_folder is None
+                    and accounts.preferences().get("x_article_photos") is True)
+            )
+            if not will_photo_x:
+                parser.error("--date-now applies to Photos imports only, not --article.")
         if args.live_photos:
             parser.error("--live-photos cannot be combined with --article.")
         if has_media_limits:
@@ -1359,7 +1469,11 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                         (journal.data["items"][i - 1].get("ready") or {}).get("evidence", {}).get("audio_mode") is True
                         for i in valid_indices
                     )
-            if not all_audio_recovery:
+            article_retry = command == "retry" and bool(journal.incomplete()) and all(
+                _is_article_link_text(journal.data["items"][i - 1]["input"], force_article=args.article)
+                for i in journal.incomplete()
+            )
+            if not (all_audio_recovery or article_retry):
                 if command == "recover":
                     preflight.destination(args, find_tool, require_audio_tools=False)
                 else:
@@ -1610,10 +1724,25 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 or (is_batch and batch_links and all(_is_article_link_text(link) for link in batch_links))
             )
         )
+        article_items = (
+            batch_links if (is_batch and batch_links)
+            else ([args.link] if (not is_batch and args.link) else [])
+        )
+        all_x_articles = bool(article_items) and all(_is_x_article_capable(item) for item in article_items)
         if is_article_run:
             if args.photos:
-                raise ValueError("Articles cannot be imported into Photos. Use --folder or linkget config --article-folder.")
-            if args.date_now:
+                if not all_x_articles:
+                    raise ValueError("Articles cannot be imported into Photos. Use --folder or linkget config --article-folder.")
+                if args.no_assets:
+                    raise ValueError("Rendering an X Article for Photos requires its assets; omit --no-assets.")
+                if sys.platform != "darwin":
+                    raise ValueError("Photos is available on macOS only. Use --folder to choose a destination.")
+            will_photo_x = all_x_articles and not args.no_assets and (
+                args.photos
+                or (not args._explicit_folder and getattr(args, "article_folder", None) is None
+                    and accounts.preferences().get("x_article_photos") is True)
+            )
+            if args.date_now and not will_photo_x:
                 raise ValueError("--date-now applies to Photos imports only, not article downloads.")
             if args.live_photos:
                 raise ValueError("--live-photos cannot be used with article downloads.")
@@ -1633,9 +1762,10 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
         if args.audio:
             args.folder = resolve_audio_folder(args.folder)
         elif is_article_run:
-            args.folder = resolve_article_folder(args.folder or args.article_folder)
             if not args._explicit_folder:
                 args.folder_from_default = True
+            elif args.folder is True:
+                args.folder = Path.cwd()
         elif args.photos:
             args.folder = None
         elif args.folder is True:
@@ -1652,7 +1782,8 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             if args.json:
                 raise ValueError("--date-now applies to Photos imports. Use --photos --date-now to override a folder default.")
             parser.error("--date-now applies to Photos imports. Use --photos --date-now to override a folder default.")
-        preflight.destination(args, find_tool)
+        if not is_article_run:
+            preflight.destination(args, find_tool)
         records = []
         if is_batch:
             code = batch_download(args, parser, batch_links, records)
@@ -1752,17 +1883,27 @@ def restore_options(args, journal, tokens):
         if args.folder is None:
             args.folder = resolve_audio_folder()
     if getattr(args, "article", False):
+        incomplete_inputs = [
+            row.get("input", "") for row in journal.data["items"]
+            if row.get("status") in jobs.INCOMPLETE and row.get("input")
+        ]
+        all_x_retry = bool(incomplete_inputs) and all(_is_x_article_capable(item) for item in incomplete_inputs)
         if args.photos:
-            raise ValueError("Articles cannot be imported into Photos. Use --folder or linkget config --article-folder.")
-        if args.date_now:
+            if not all_x_retry:
+                raise ValueError("Articles cannot be imported into Photos. Use --folder or linkget config --article-folder.")
+            if getattr(args, "no_assets", False):
+                raise ValueError("Rendering an X Article for Photos requires its assets; omit --no-assets.")
+        will_photo_x = all_x_retry and not getattr(args, "no_assets", False) and (
+            args.photos
+            or (args.folder is None and getattr(args, "article_folder", None) is None
+                and accounts.preferences().get("x_article_photos") is True)
+        )
+        if args.date_now and not will_photo_x:
             raise ValueError("--date-now applies to Photos imports only, not --article.")
         if args.live_photos:
             raise ValueError("--live-photos cannot be combined with --article.")
         if getattr(args, "audio", False):
             raise ValueError("Do not combine --article with --audio.")
-        if args.folder is None:
-            args.folder = resolve_article_folder(getattr(args, "article_folder", None))
-            args.folder_from_default = True
     if args.folder is not None and args.date_now:
         raise ValueError("--date-now applies to Photos imports only.")
     if args.profile and args.browser in {"auto", "none"}:
@@ -1807,7 +1948,7 @@ def _agent_download_item(journal, index, evidence=None):
         "saved_files": dest_files,
         "files": ev.get("files", []),
     }
-    for opt_key in ("article_folder", "title", "author", "assets_downloaded", "assets_failed"):
+    for opt_key in ("article_folder", "title", "author", "assets_downloaded", "assets_failed", "article_png", "article_photo"):
         if ev.get(opt_key) is not None:
             item[opt_key] = ev[opt_key]
     failure_info = row.get("failure")

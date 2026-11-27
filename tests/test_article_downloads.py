@@ -1,9 +1,11 @@
 """Offline tests for X Articles, rich web article extraction, offline archives, CLI, and MCP."""
+import base64
 import contextlib
 import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import struct
 from subprocess import CompletedProcess
@@ -28,6 +30,41 @@ def _jpeg_bytes(width=2000, height=800):
 
 def _mp4_bytes():
     return b'\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isommp41mdat\x01\x02\x03\x04'
+
+
+@unittest.skipUnless(os.environ.get('LINKGET_TEST_ARTICLE_RENDERER') == '1',
+                     'requires the local Neo, Node.js, and FFmpeg installation')
+class ArticleImageRenderTests(unittest.TestCase):
+    def test_long_png_keeps_a_photo_below_the_chromium_surface_limit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary)
+            assets = bundle / 'assets'
+            assets.mkdir()
+            (assets / 'red.png').write_bytes(base64.b64decode(
+                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC'
+            ))
+            (bundle / 'article.html').write_text(
+                '<!doctype html><meta charset="utf-8"><main><article>'
+                '<div style="height:5600px">Start of the article</div>'
+                '<img style="height:80px" src="assets/red.png" loading="lazy"></article></main>'
+            )
+            ffmpeg = cli.find_tool('ffmpeg')
+            with patch.dict(os.environ, {'TMPDIR': str(bundle.resolve())}):
+                png = cli.article_image.render(bundle, [], cli.find_tool('node'), 'neo', ffmpeg=ffmpeg)
+            helper = subprocess.run([
+                '/usr/bin/pgrep', '-qf',
+                rf'browseros-claw-server --config={re.escape(str(bundle.resolve()))}/linkget-article-render-',
+            ], check=False)
+            self.assertEqual(helper.returncode, 1, 'Article rendering left a BrowserOS MCP helper running')
+            with png.open() as stream:
+                width, height = struct.unpack('>II', stream.read(24)[16:24])
+            self.assertEqual(width, 2400)
+            self.assertGreater(height, 16384)
+            bottom = subprocess.check_output([
+                ffmpeg, '-v', 'error', '-i', str(png.path), '-vf', 'crop=1:ih:1200:0',
+                '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-',
+            ])
+            self.assertIn(b'\xff\x00\x00' * 100, bottom[16384 * 3:])
 
 
 class FakeResponse:
@@ -241,6 +278,35 @@ class XArticleExtractionTests(unittest.TestCase):
         self.assertIn('[@handle](https://x.com/handle)', rendered['markdown'])
         self.assertIn('[#tag](https://x.com/hashtag/tag)', rendered['markdown'])
         self.assertIn('https://x.com/i/web/status/999888777', rendered['markdown'])
+
+    def test_raw_post_retains_source_author_badges_and_engagement_for_share_layout(self):
+        url = 'https://x.com/writer/status/2124506790020948428'
+        badge = 'https://pbs.twimg.com/profile_images/123/team.jpg'
+        avatar = 'https://pbs.twimg.com/profile_images/321/writer.jpg'
+        raw = {
+            'rest_id': '2124506790020948428',
+            'legacy': {'id_str': '2124506790020948428', 'favorite_count': 1500},
+            'views': {'count': '30100'},
+            'core': {'user_results': {'result': {
+                'core': {'screen_name': 'writer', 'name': 'Author & Editor'},
+                'avatar': {'image_url': avatar},
+                'is_blue_verified': True,
+                'verification': {'verified': False},
+                'affiliates_highlighted_label': {'label': {'description': 'Team & Co', 'badge': {'url': badge}}},
+            }}},
+            'article': _sample_x_graphql_item()['article'],
+        }
+        payload = json.dumps([[2, raw]])
+        with patch.object(x_article, 'run_process', return_value=CompletedProcess([], 0, payload, '')) as run:
+            article = x_article.fetch_via_gallery_dl(url, 'gallery-dl')
+        self.assertIn('extractor.twitter.transform=false', run.call_args.args[0])
+        self.assertIs(article['author_detail']['verified'], True)
+        self.assertEqual(article['metrics'], {'views': 30100, 'likes': 1500})
+        self.assertIn('affiliation', [asset['role'] for asset in article['media_items']])
+        html = article_archive._build_article_html(article, {avatar: 'assets/avatar.jpg', badge: 'assets/badge.jpg'})
+        for part in ('Author &amp; Editor', '@writer', 'Verified on X', 'Team &amp; Co',
+                     'assets/avatar.jpg', 'assets/badge.jpg', '30,100', '1,500'):
+            self.assertIn(part, html)
 
     def test_fetch_via_gallery_dl_states(self):
         sample = _sample_x_graphql_item()
@@ -677,9 +743,126 @@ class CLIAndMCPArticleIntegrationTests(unittest.TestCase):
         self.assertIsNone(json.loads(out)['article_destination'])
 
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            cli.main(['--photos', '--article', 'https://x.com/404jsh/status/1'])
+            cli.main(['--photos', '--article', 'https://example.com/a'])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            cli.main(['--photos', '--article', '--no-assets', 'https://x.com/404jsh/status/1'])
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             cli.main(['inspect', 'https://example.com/a', '--no-assets'])
+
+    def test_x_article_photo_default_stages_privately_and_unified_overrides(self):
+        out_root = self.root / 'articles'
+        url = 'https://x.com/404jsh/article/2124506790020948428'
+        status_url = 'https://x.com/404jsh/status/2124506790020948428'
+        code, out, _ = self.run_cli('config', '--article-folder', str(out_root), '--x-article-photos', '--json')
+        self.assertEqual(code, 0)
+        self.assertTrue(json.loads(out)['x_article_photos'])
+
+        code, out, _ = self.run_cli('inspect', url, '--no-network', '--json')
+        self.assertEqual(code, 0)
+        insp_x = json.loads(out)
+        self.assertTrue(insp_x['supports_article_photos'])
+        self.assertEqual(insp_x['destination_preview'], 'Photos')
+
+        def save_bundle(bundle, article, **kwargs):
+            archive = bundle / 'article.html'
+            archive.write_text('<article>The article and its photos.</article>')
+            return {'assets': [{'role': 'cover', 'status': 'downloaded'}]}, [archive]
+
+        staged = []
+
+        def render(bundle, assets, node, browser, *, filename, ffmpeg):
+            self.assertTrue((bundle / 'article.html').is_file())
+            self.assertEqual(assets, [{'role': 'cover', 'status': 'downloaded'}])
+            self.assertNotIn(out_root, bundle.parents)
+            staged.append(bundle)
+            png = bundle / filename
+            png.write_bytes(_png_bytes(2, 2))
+            return cli.ownership.FileProof.observe(png)
+
+        def import_verified(files, date_now):
+            cli.transfers.verify_outputs()
+            self.assertEqual(len(files), 1)
+            return files, 0
+
+        with patch.object(cli, '_acquire_article_for_download', return_value={'title': 'A photo article'}), \
+             patch.object(article_archive, 'write_article_bundle', side_effect=save_bundle), \
+             patch.object(cli.article_image, 'render', side_effect=render) as renderer, \
+             patch.object(cli, 'import_photos', side_effect=import_verified) as importer:
+            # 1. Default x_article_photos=True imports to Photos without writing to out_root
+            code, out, err = self.run_cli(url, '--browser', 'none', '--json')
+            self.assertEqual(code, 0, err + out)
+            item = json.loads(out)
+            self.assertEqual(item['article_photo'], 'imported')
+            self.assertEqual(item['destination'], 'Photos')
+            self.assertFalse(out_root.exists())
+            self.assertFalse(staged[-1].exists())
+            importer.assert_called_once()
+
+            # 2. Explicit --folder overrides x_article_photos=True and writes an offline bundle
+            code, out, err = self.run_cli(url, '--folder', str(out_root), '--browser', 'none', '--json')
+            self.assertEqual(code, 0, err + out)
+            folder_item = json.loads(out)
+            self.assertNotIn('article_photo', folder_item)
+            self.assertTrue((Path(folder_item['article_folder']) / 'article.html').is_file())
+            self.assertEqual(renderer.call_count, 1)
+
+            # 3. Photos import failure keeps finished PNG in configured fallback folder
+            importer.side_effect = RuntimeError('Photos access denied')
+            code, out, err = self.run_cli(url, '--browser', 'none', '--json')
+            self.assertEqual(code, 1, err + out)
+            item = json.loads(out)
+            self.assertEqual(item['article_photo'], 'failed')
+            self.assertTrue(Path(item['article_png']).is_file())
+            self.assertEqual(Path(item['article_png']).parent, out_root.resolve())
+            self.assertFalse(staged[-1].exists())
+            self.assertIn('Photos access denied', item['error']['message'])
+
+            # 4. Renderer failure does not import or leave article_png
+            renderer.side_effect = RuntimeError('An article photo is missing from the offline archive.')
+            code, out, err = self.run_cli(url, '--browser', 'none', '--json')
+            self.assertEqual(code, 1, err + out)
+            self.assertNotIn('article_png', json.loads(out))
+            self.assertEqual(importer.call_count, 2)
+
+            # 5. --no-assets saves an archive bundle even when x_article_photos=True
+            code, out, err = self.run_cli(url, '--no-assets', '--browser', 'none', '--json')
+            self.assertEqual(code, 0, err + out)
+            self.assertTrue((Path(json.loads(out)['article_folder']) / 'article.html').is_file())
+            self.assertEqual(renderer.call_count, 3)
+            self.assertEqual(importer.call_count, 2)
+
+        # 6. Turn off x_article_photos: explicit --photos and --as article --photos still render & import
+        code, out, _ = self.run_cli('config', '--no-x-article-photos', '--json')
+        self.assertEqual(code, 0)
+        self.assertFalse(json.loads(out)['x_article_photos'])
+
+        with patch.object(cli.sys, 'platform', 'darwin'), \
+             patch.object(cli, '_acquire_article_for_download', return_value={'title': 'Explicit photo article'}), \
+             patch.object(article_archive, 'write_article_bundle', side_effect=save_bundle), \
+             patch.object(cli.article_image, 'render', side_effect=render) as explicit_renderer, \
+             patch.object(cli, 'import_photos', side_effect=import_verified) as explicit_importer:
+            code, out, err = self.run_cli(url, '--photos', '--non-interactive', '--browser', 'none', '--json')
+            self.assertEqual(code, 0, err + out)
+            self.assertEqual(json.loads(out)['article_photo'], 'imported')
+
+            code, out, err = self.run_cli(status_url, '--as', 'article', '--photos', '--date-now', '--non-interactive', '--browser', 'none', '--json')
+            self.assertEqual(code, 0, err + out)
+            self.assertEqual(json.loads(out)['article_photo'], 'imported')
+            self.assertEqual(explicit_renderer.call_count, 2)
+            self.assertEqual(explicit_importer.call_count, 2)
+            self.assertTrue(explicit_importer.call_args.args[1])
+
+        # 7. Explicit --photos on non-X articles and --photos --no-assets on X Articles fail cleanly
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as ctx_web:
+            cli.main(['https://example.com/post', '--as', 'article', '--photos', '--non-interactive', '--json'])
+        self.assertEqual(ctx_web.exception.code, 2)
+        code, out, _ = self.run_cli(url, '--photos', '--no-assets', '--non-interactive', '--json')
+        self.assertEqual(code, 1)
+        self.assertIn('--no-assets', json.loads(out)['error']['message'])
+        code, out, _ = self.run_cli('https://example.com/post', '--photos', '--non-interactive', '--json')
+        # Normal web URL with --photos is classified as web_article and refused cleanly
+        self.assertEqual(code, 1)
+        self.assertIn('Articles cannot be imported into Photos', json.loads(out)['error']['message'])
 
     def test_x_status_auto_promotion_download_and_read_and_normal_tweet_preserved(self):
         sample = _sample_x_graphql_item()
@@ -715,9 +898,10 @@ class CLIAndMCPArticleIntegrationTests(unittest.TestCase):
         created_stages = []
         orig_mkdtemp = cli.tempfile.mkdtemp
 
-        def tracked_mkdtemp(**kwargs):
-            p = orig_mkdtemp(**kwargs)
-            if kwargs.get('prefix') == 'linkget-':
+        def tracked_mkdtemp(*args, **kwargs):
+            p = orig_mkdtemp(*args, **kwargs)
+            prefix = kwargs.get('prefix') if 'prefix' in kwargs else (args[1] if len(args) > 1 else None)
+            if prefix == 'linkget-':
                 created_stages.append(Path(p))
             return p
 
@@ -750,17 +934,24 @@ class CLIAndMCPArticleIntegrationTests(unittest.TestCase):
             # Promoted temporary stage must be cleaned cleanly
             self.assertFalse(created_stages[-1].exists())
 
-            # 2. Explicit --photos is refused cleanly on promoted X Article
+            # 2. Explicit --photos on promoted X Article renders PNG and imports to Photos
             with patch.object(cli.sys, 'platform', 'darwin'), \
-                 patch.object(cli, 'preflight') as mock_preflight:
+                 patch.object(cli, 'preflight'), \
+                 patch.object(cli.article_image, 'render', side_effect=lambda bundle, *a, **kw: (
+                     (bundle / kw['filename']).write_bytes(_png_bytes(2, 2)),
+                     cli.ownership.FileProof.observe(bundle / kw['filename']),
+                 )[1]), \
+                 patch.object(cli, 'import_photos', side_effect=lambda files, dn: (cli.transfers.verify_outputs(), (files, 0))[1]):
                 code, out, err = self.run_cli(
                     'https://x.com/404jsh/status/2124506790020948428',
                     '--photos',
                     '--browser', 'none',
                     '--json',
                 )
-            self.assertEqual(code, 1)
-            self.assertIn('Photos', json.loads(out)['error']['message'])
+            self.assertEqual(code, 0, err + out)
+            promoted_photo = json.loads(out)
+            self.assertEqual(promoted_photo['article_photo'], 'imported')
+            self.assertEqual(promoted_photo['destination'], 'Photos')
 
             # Raycast can supply a per-run article folder while keeping Photos as the media default.
             with patch.object(cli.sys, 'platform', 'darwin'), \

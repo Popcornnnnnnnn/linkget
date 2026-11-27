@@ -35,6 +35,7 @@ linkget 'VIDEO_URL' --as video --folder ~/Downloads  # 通过 yt-dlp 保存单�
 linkget 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' --audio --folder ~/Music
 linkget 'https://soundcloud.com/artist/track'        # 音乐链接会自动下载音频
 linkget 'https://x.com/USER/status/ID' --folder ~/Articles   # 自动离线归档 X Articles
+linkget 'https://x.com/USER/article/ID' --photos             # 将 X Article 渲染为高清长图导入 Apple 照片
 linkget 'https://example.com/post' --as article --folder ~/Articles
 linkget --photos --live-photos                       # 封装静态图 + 动态视频为实况照片
 linkget batch                                        # 每行粘贴一个链接，空行开始下载
@@ -44,7 +45,7 @@ linkget read 'URL' --folder ./notes                  # 在后台提取字幕、�
 
 > 请始终使用直立 ASCII 引号（`'...'` 或 `"..."`）包裹 URL，避免 Shell 解析 `&` 或 `?`。
 
-开发版默认自动识别链接内容。可用 `--as photo`、`--as video` 或 `--as article` 指定要保存的内容，再用 `--photos` 选择 Apple 照片，或用 `--folder PATH` 选择本地文件夹。文章保存到文件夹。`--video` 和 `--article` 仍可作为快捷选项。
+开发版默认自动识别链接内容。可用 `--as photo`、`--as video` 或 `--as article` 指定要保存的内容，再用 `--photos` 选择 Apple 照片，或用 `--folder PATH` 选择本地文件夹。文章默认保存到文件夹（可通过 `linkget config --article-folder ~/path/to/Vault/Clippings` 直接归档至 Obsidian 等笔记库），X Articles 也可通过 `--photos` 或 `linkget config --x-article-photos` 渲染为高清长图并导入 Apple 照片。`--video` 和 `--article` 仍可作为快捷选项。
 
 视频模式可以尝试列表以外的网站。可用性取决于安装的 yt-dlp 版本和网站提供的 MP4 格式。
 
@@ -65,12 +66,12 @@ linkget read 'URL' --folder ./notes                  # 在后台提取字幕、�
 | `linkget help` / `linkget COMMAND --help` | 查看总览用法或子命令选项 |
 | `linkget sites` / `linkget doctor` | 列出支持的站点，或检查本地工具与登录态 |
 | `linkget inspect URL` | 不执行下载，仅检查路由、元数据、工具与登录态 |
-| `linkget config [--photos \| --folder [PATH] \| --audio-folder [PATH] \| --article-folder [PATH]]` | 查看或修改媒体、音频、文章及阅读器浏览器的默认配置 |
+| `linkget config [--photos \| --folder [PATH] \| --audio-folder [PATH] \| --article-folder [PATH] \| --x-article-photos]` | 查看或修改媒体、音频、文章、X Article 照片及阅读器浏览器的默认配置 |
 | `linkget batch [URL ...]` | 并发下载多个帖子或文章（`--jobs N`） |
 | `linkget tasks [TASK]` | 查看下载与后台阅读任务状态 |
 | `linkget retry [TASK]` / `linkget recover [TASK]` | 恢复失败任务或保存已校验的暂存媒体 |
 | `linkget clean [--apply] [--older-than 7d]` | 预览或清理旧的已完成临时暂存目录 |
-| `linkget mcp` | 运行基于标准库的 JSON-RPC 2.0 stdio MCP 服务器（`inspect_url`、`download_media`、`read_content`、`get_task`、`doctor`） |
+| `linkget mcp` | 运行基于标准库的 JSON-RPC 2.0 stdio MCP 服务器（`inspect_url`、`download_media`、`batch_download`、`read_content`、`get_task`、`retry_task`、`clean_stages`、`doctor`） |
 | `linkget read URL --folder DIR` | 提取正文/字幕/语音识别/关键帧、网页与微信文章，支持 `wait`、`show`、`summarize` 或 `translate`（[docs/READ.md](docs/READ.md)） |
 | `linkget auth [SITE]` / `linkget logout [SITE\|all]` | 查看、连接或断开可选站点登录 |
 | `linkget upgrade [--check]` | 检查更新并升级 linkget |
@@ -82,7 +83,7 @@ linkget read 'URL' --folder ./notes                  # 在后台提取字幕、�
 | 站点 | 支持媒体 | 说明 |
 | --- | --- | --- |
 | Instagram | 图片、视频、Reels | — |
-| X / Twitter | 图片、视频、**X Articles** | 自动识别 `/status/ID` 与 `/article/ID` 文章（`--folder` / `--article-folder` 会写入 `article.md`、`article.html`、`content.json` 及本地 `assets/`） |
+| X / Twitter | 图片、视频、**X Articles** | 自动识别 `/status/ID` 与 `/article/ID` 文章（`--folder` / `--article-folder` 会写入 `article.md`、`article.html`、`content.json` 及本地 `assets/`；`--photos` 或 `config --x-article-photos` 可渲染为高清长图导入 Apple 照片） |
 | 微信 / 头条 / 知乎 / 网页*（文章）* | 离线文章（`article.md`、`article.html`、资源文件） | 微信/头条/知乎/公开网页文章默认自动开启（`--article` 强制检查 X `/status/ID`；`--no-assets` 跳过媒体下载） |
 | Bilibili | 视频（`BV`/`av`）、图文 Opus、音频（`au`） | 登录后可获取更高画质；每次仅下载单个分 P 或单曲 |
 | TikTok | 图文帖、视频 | 支持分享短链 |
@@ -115,8 +116,8 @@ uv build
 
 可使用仓库内置的 [Raycast 扩展](raycast/README.md)（`raycast/`），通过专注的双命令 macOS 启动器界面操作 `linkget`（图片/视频默认存入 **Apple 照片**，文章默认存入 **`~/Downloads`**）：
 
-- **Save Link (`lg`)** — 粘贴链接后预览要保存的内容和位置，按需调整类型或目标位置。可直接保存，也可在后台保存并通过 Status Board 查看进度。
-- **Status Board (`lgs`)** — 统一看板，查看近期下载与已保存文章（封面与 Markdown 预览、行内阅读器、打开 `article.html`、重试失败项），以及 CLI 默认设置、引擎、站点登录态和 `linkget clean`。
+- **Save Link (`lg`)** — 粘贴一个或多个链接，预览要保存的内容和位置，按需调整类型或目标位置（支持多链接批量粘贴与 X Article → Apple 照片）。可直接保存，也可在后台保存并通过 Status Board 查看进度。
+- **Status Board (`lgs`)** — 统一看板，查看近期下载与已保存文章（封面与 Markdown 预览、行内阅读器、复制文章 Markdown、打开 `article.html`、重试失败项），以及 CLI 默认设置、引擎、站点登录态和 `linkget clean`。
 
 ## 文档索引
 

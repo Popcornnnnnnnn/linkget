@@ -309,6 +309,8 @@ def inspect_target(
     try:
         if effective_audio and resolve_audio_folder is not None:
             dest_preview = str(resolve_audio_folder(None))
+        elif engine == "x_article" and accounts.preferences().get("x_article_photos") is True:
+            dest_preview = "Photos"
         elif is_article_target and resolve_article_folder is not None:
             dest_preview = str(resolve_article_folder(None))
         elif configured_destination is not None:
@@ -336,6 +338,7 @@ def inspect_target(
         "effective_audio_mode": effective_audio,
         "supports_read": engine != "pixiv" and not (video and domain is None),
         "supports_article_download": is_article_target or domain == "x.com",
+        "supports_article_photos": bool(engine == "x_article" or domain == "x.com"),
         "supports_auth": supports_auth,
         "session_state": _session_state(domain, supports_auth),
         "tools_required": tools_required,

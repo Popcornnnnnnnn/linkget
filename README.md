@@ -35,6 +35,7 @@ linkget 'VIDEO_URL' --as video --folder ~/Downloads  # save a single video with 
 linkget 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' --audio --folder ~/Music
 linkget 'https://soundcloud.com/artist/track'        # music links download audio automatically
 linkget 'https://x.com/USER/status/ID' --folder ~/Articles   # auto-archives X Articles offline
+linkget 'https://x.com/USER/article/ID' --photos             # render X Article as PNG into Apple Photos
 linkget 'https://example.com/post' --as article --folder ~/Articles
 linkget --photos --live-photos                       # package picture + motion pairs
 linkget batch                                        # paste one URL per line, blank line to start
@@ -44,7 +45,7 @@ linkget read 'URL' --folder ./notes                  # extract subtitles, speech
 
 > Always wrap URLs in straight ASCII quotes (`'...'` or `"..."`) so the shell does not split `&` or `?`.
 
-The development build detects what to save by default. Use `--as photo`, `--as video`, or `--as article` to choose the output. Set the destination separately with `--photos` for Apple Photos or `--folder PATH` for a local folder. Articles use a folder. Both `--video` and `--article` still work as shortcuts.
+The development build detects what to save by default. Use `--as photo`, `--as video`, or `--as article` to choose the output. Set the destination separately with `--photos` for Apple Photos or `--folder PATH` for a local folder. Articles use a folder by default (Obsidian-ready `article.md` via `linkget config --article-folder ~/path/to/Vault/Clippings`), and X Articles can also be rendered as high-resolution PNGs into Apple Photos (`--photos` or `linkget config --x-article-photos`). Both `--video` and `--article` still work as shortcuts.
 
 Video mode can try sites beyond the list below. Availability depends on your installed yt-dlp and the MP4 formats the site offers.
 
@@ -65,12 +66,12 @@ Video mode can try sites beyond the list below. Availability depends on your ins
 | `linkget help` / `linkget COMMAND --help` | Show usage or subcommand options |
 | `linkget sites` / `linkget doctor` | List supported sites or inspect local tools & sessions |
 | `linkget inspect URL` | Inspect routing, metadata, tools, and session state without downloading |
-| `linkget config [--photos \| --folder [PATH] \| --audio-folder [PATH] \| --article-folder [PATH]]` | Show or change defaults for media, audio, articles, and reader browser |
+| `linkget config [--photos \| --folder [PATH] \| --audio-folder [PATH] \| --article-folder [PATH] \| --x-article-photos]` | Show or change defaults for media, audio, articles, X Article Photos, and reader browser |
 | `linkget batch [URL ...]` | Download multiple posts or articles concurrently (`--jobs N`) |
 | `linkget tasks [TASK]` | Inspect download and background read task states |
 | `linkget retry [TASK]` / `linkget recover [TASK]` | Resume failed tasks or save verified staged media |
 | `linkget clean [--apply] [--older-than 7d]` | Preview or remove old completed temporary staging folders |
-| `linkget mcp` | Run a stdlib JSON-RPC 2.0 stdio MCP server (`inspect_url`, `download_media`, `read_content`, `get_task`, `doctor`) |
+| `linkget mcp` | Run a stdlib JSON-RPC 2.0 stdio MCP server (`inspect_url`, `download_media`, `batch_download`, `read_content`, `get_task`, `retry_task`, `clean_stages`, `doctor`) |
 | `linkget read URL --folder DIR` | Extract text/subtitles/ASR/keyframes, web & WeChat articles, `wait`, `show`, `summarize`, or `translate` ([docs/READ.md](docs/READ.md)) |
 | `linkget auth [SITE]` / `linkget logout [SITE\|all]` | Inspect, connect, or disconnect optional site logins |
 | `linkget upgrade [--check]` | Check for updates and upgrade linkget |
@@ -82,7 +83,7 @@ Video mode can try sites beyond the list below. Availability depends on your ins
 | Site | Supported Media | Notes |
 | --- | --- | --- |
 | Instagram | Photos, videos, Reels | — |
-| X / Twitter | Photos, videos, **X Articles** | Auto-detects Articles on `/status/ID` & `/article/ID` (`--folder` / `--article-folder` writes `article.md`, `article.html`, `content.json`, local `assets/`) |
+| X / Twitter | Photos, videos, **X Articles** | Auto-detects Articles on `/status/ID` & `/article/ID` (`--folder` / `--article-folder` writes `article.md`, `article.html`, `content.json`, local `assets/`; `--photos` or `config --x-article-photos` renders a high-res PNG to Apple Photos) |
 | WeChat / Toutiao / Zhihu / Web *(articles)* | Offline articles (`article.md`, `article.html`, assets) | Auto-enabled on WeChat/Toutiao/Zhihu/public web articles (`--article` forces X `/status/ID` checks; `--no-assets` skips media) |
 | Bilibili | Video (`BV`/`av`), Opus, Audio (`au`) | Login exposes higher quality; one part or track per URL |
 | TikTok | Photo posts, videos | Supports share links |
@@ -115,8 +116,8 @@ uv build
 
 Use the bundled [Raycast Extension](raycast/README.md) (`raycast/`) for a focused two-command macOS launcher UI over `linkget` (**Apple Photos** by default for pics/videos, **`~/Downloads`** for articles):
 
-- **Save Link (`lg`)** — Paste a link, review what will be saved and where, and override the detected type or destination when needed. Save in the foreground or track a background save in Status Board.
-- **Status Board (`lgs`)** — Unified board for recent downloads & saved articles (cover & Markdown preview, inline reader, open `article.html`, retry failures) plus CLI defaults, engines, site sessions, and `linkget clean`.
+- **Save Link (`lg`)** — Paste one or more links, review what will be saved and where, and override the detected type or destination when needed (including multi-link batch paste and X Article → Apple Photos). Save in the foreground or track a background save in Status Board.
+- **Status Board (`lgs`)** — Unified board for recent downloads & saved articles (cover & Markdown preview, inline reader, Copy Article Markdown, open `article.html`, retry failures) plus CLI defaults, engines, site sessions, and `linkget clean`.
 
 ## Documentation
 
