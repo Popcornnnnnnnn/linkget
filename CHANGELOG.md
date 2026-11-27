@@ -4,6 +4,14 @@
 
 - Nothing yet.
 
+## 0.4.0 (2026-11-27)
+
+- Add X Article Photos (`--photos`, `--as article --photos`, and `linkget config --x-article-photos`) to render X Articles and promoted `/status/ID` long posts offline in headless Chromium into Apple Photos PNGs, while preserving `photos` state and `--folder` overrides in `linkget retry` (#36).
+- Unify save type selection across CLI, inspect, and batch routes (`--as auto|photo|video|article`, explicit `--video`, and per-run `--photos` / `--folder` / `--article-folder` overrides) and expand single-video site support (#33, #34, #35).
+- Expand `linkget mcp` with `batch_download`, `retry_task`, and `clean_stages` tools alongside `inspect_url`, `download`, `list_tasks`, `task_status`, and `get_config` (#36).
+- Add the Raycast extension (`raycast/`) with **Save Link** (multi-link batch paste, unified save types, X Article Photos routing) and **Status Board** (inline article reader, `Copy Article Markdown`, task recovery, and cleanup preview), `raycast/CHANGELOG.md`, and a `macos-15` `raycast` CI job (#29, #30, #31, #35, #36).
+- Polish terminal status, progress, site column, and recovery alignment and add Simplified Chinese documentation (`README.zh-CN.md`) plus README demos (#32, #33).
+
 ## 0.3.2 (2026-11-24)
 
 - Add offline article archive downloads (`--article`, `--no-assets`, `--article-folder`) for X Articles (including automatic `/status/ID` article promotion, GraphQL Draft.js body rendering with embedded media, code, and quotes, and browser fallback), WeChat, Toutiao, Zhihu, and public web articles, saving `article.md`, standalone `article.html`, `content.json`, `content.txt`, `source/`, and local `assets/` with IP-pinned SSRF protection and gated Fake-IP proxy support (#28).

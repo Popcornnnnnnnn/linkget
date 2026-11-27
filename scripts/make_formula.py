@@ -19,7 +19,7 @@ digest = hashlib.sha256(args.archive.read_bytes()).hexdigest()
 url = json.dumps(args.url).replace("#{", "\\#{")
 args.output.parent.mkdir(parents=True, exist_ok=True)
 args.output.write_text('''class Linkget < Formula
-  desc "Save post photos and videos to macOS Photos or a folder"
+  desc "Save post photos, videos, audio, and articles to macOS Photos or a folder"
   homepage "https://github.com/Popcornnnnnnnn/linkget"
   url %s
   version "%s"
@@ -53,6 +53,7 @@ args.output.write_text('''class Linkget < Formula
 
   test do
     assert_match "%s", shell_output("#{bin}/linkget --version")
+    assert_match "upgrade", shell_output("#{bin}/linkget upgrade --help")
     assert_match "Instagram", shell_output("#{bin}/linkget sites")
     assert_match "--folder [FOLDER]", shell_output("#{bin}/linkget help")
     assert_match "Public access", shell_output("LINKGET_HOME=#{testpath}/data #{bin}/linkget auth")

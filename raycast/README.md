@@ -7,7 +7,7 @@ Control your local [`linkget`](https://github.com/Popcornnnnnnnn/linkget) CLI di
 ## Requirements
 
 - macOS with **Raycast** installed
-- **`linkget >= 0.3.2`** on your system (default: `/opt/homebrew/bin/linkget` via Homebrew: `brew install Popcornnnnnnnn/tap/linkget`). The **Photos** and **Video** overrides require a CLI build with `--as`.
+- **`linkget >= 0.4.0`** on your system (default: `/opt/homebrew/bin/linkget` via Homebrew: `brew install Popcornnnnnnnn/tap/linkget`), which includes `--as`, batch paste, and X Article Photos support.
 
 > **Tip:** You can also customize your permanent CLI defaults at any time:
 > ```sh
