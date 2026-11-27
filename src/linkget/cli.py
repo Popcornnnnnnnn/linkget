@@ -1970,6 +1970,26 @@ def _agent_download_item(journal, index, evidence=None):
     return item
 
 
+def _has_retained_receipt(row):
+    receipt = row.get("receipt")
+    if not receipt:
+        return False
+    if not isinstance(receipt, dict):
+        return True
+    resources = []
+    for field in ("staged", "files"):
+        entries = receipt.get(field, [])
+        if not isinstance(entries, list):
+            return True
+        resources.extend(entries)
+    return any(
+        not isinstance(resource, dict)
+        or not isinstance(resource.get("path"), str)
+        or Path(resource["path"]).exists()
+        for resource in resources
+    )
+
+
 def batch_download(args, parser, links, records=None):
     return run_batch(args, parser, links, records, download, first_run, status, jobs.Journal.create)
 
@@ -2038,7 +2058,10 @@ def download(args, setup_results, records=None, media_consumer=None):
                 jobs.record(previous_stages=list(dict.fromkeys(stages)))
         if getattr(args, 'redownload', False):
             transfers.reset_progress()
-        jobs.record(input=url, status="running", failure=None, ready=None, receipt=None, stage=None, stage_identity=None)
+        start_updates = dict(input=url, status="running", failure=None, ready=None, stage=None, stage_identity=None)
+        if not (current and _has_retained_receipt(journal.data["items"][index - 1])):
+            start_updates["receipt"] = None
+        jobs.record(**start_updates)
         started = time.monotonic()
         video_mode = getattr(args, "video", False)
         photo_mode = getattr(args, "photo_only", False)

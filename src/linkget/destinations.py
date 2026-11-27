@@ -4,12 +4,12 @@ import re
 import shutil
 import subprocess
 if __package__:
-    from .photos import originals_directory
+    from .photos import originals_directory, originals_lock, referenced_originals
     from .hashing import digest_session
     from .live import retain_pairs
     from . import jobs, transfers, staging, ownership
 else:
-    from photos import originals_directory
+    from photos import originals_directory, originals_lock, referenced_originals
     from hashing import digest_session
     from live import retain_pairs
     import jobs, transfers, staging, ownership
@@ -57,10 +57,8 @@ def import_photos(files, date_now, live_pairs, retain_originals, verify_library_
 
 def _import_photos(files, date_now, live_pairs, retain_originals, verify_library_copies):
     sources = transfers.proofs_for(files)
-    retained = retain_originals(files)
-    if len(retained) != len(sources):
-        raise RuntimeError('The original producer returned an incomplete set; import was not started.')
     proofs = {}
+    pair_inputs = []
     def produced(container, path, expected):
         # New producers carry their writer proof. Legacy/injected callbacks may
         # only establish a read proof once, BEFORE reading their returned path.
@@ -71,33 +69,36 @@ def _import_photos(files, date_now, live_pairs, retain_originals, verify_library
             raise RuntimeError('The original producer changed its evidence; import was not started.')
         proofs[proof.path] = proof
         return proof
-    for source, path in zip(sources, retained):
-        source.verify()
-        produced(retained, path, source.sha256)
-    pair_inputs = []
-    if live_pairs:
-        for pair in live_pairs.values():
-            pair_inputs.extend(transfers.proofs_for(pair))
-        paired = retain_pairs(list(live_pairs.values()), originals_directory())
-        source_pairs = [path for pair in live_pairs.values() for path in pair]
-        if len(paired) != len(source_pairs):
-            raise RuntimeError('The pair producer returned an incomplete set; import was not started.')
-        for source, path in zip(pair_inputs, paired):
+    with originals_lock():
+        retained = retain_originals(files)
+        if len(retained) != len(sources):
+            raise RuntimeError('The original producer returned an incomplete set; import was not started.')
+        for source, path in zip(sources, retained):
             source.verify()
-            produced(paired, path, source.sha256)
-        replacements = dict(zip((name for pair in live_pairs for name in pair), paired))
-        retained = [replacements.get(source.name, path) for source, path in zip(files, retained)]
-    unique = list(dict.fromkeys(retained))
-    first_indexes = {}
-    for index, path in enumerate(retained):
-        first_indexes.setdefault(path, index)
-    source_indexes = [first_indexes[path] for path in unique]
-    unique_proofs = [proofs[ownership.canonical(path)] for path in unique]
-    staged_proofs = [proof for proof in proofs.values() if proof.created]
-    receipt = ({"files": [proof.record() for proof in unique_proofs],
-                "staged": [proof.record() for proof in staged_proofs], "identifiers": []}
-               if jobs.active() else {"identifiers": []})
-    jobs.record(receipt=receipt)
+            produced(retained, path, source.sha256)
+        if live_pairs:
+            for pair in live_pairs.values():
+                pair_inputs.extend(transfers.proofs_for(pair))
+            paired = retain_pairs(list(live_pairs.values()), originals_directory())
+            source_pairs = [path for pair in live_pairs.values() for path in pair]
+            if len(paired) != len(source_pairs):
+                raise RuntimeError('The pair producer returned an incomplete set; import was not started.')
+            for source, path in zip(pair_inputs, paired):
+                source.verify()
+                produced(paired, path, source.sha256)
+            replacements = dict(zip((name for pair in live_pairs for name in pair), paired))
+            retained = [replacements.get(source.name, path) for source, path in zip(files, retained)]
+        unique = list(dict.fromkeys(retained))
+        first_indexes = {}
+        for index, path in enumerate(retained):
+            first_indexes.setdefault(path, index)
+        source_indexes = [first_indexes[path] for path in unique]
+        unique_proofs = [proofs[ownership.canonical(path)] for path in unique]
+        staged_proofs = [proof for proof in proofs.values() if proof.created]
+        receipt = ({"files": [proof.record() for proof in unique_proofs],
+                    "staged": [proof.record() for proof in staged_proofs], "identifiers": []}
+                   if jobs.active() else {"identifiers": []})
+        jobs.record(receipt=receipt)
     importer = Path(__file__).with_name("import.applescript")
     for proof in (*sources, *pair_inputs, *proofs.values()):
         proof.verify(fresh=True)
@@ -130,10 +131,19 @@ def _import_photos(files, date_now, live_pairs, retain_originals, verify_library
         proof.verify(fresh=True)
     if isinstance(managed, ownership.FileList):
         transfers.record_outputs(managed.proofs.values())
-        for proof in staged_proofs:
-            transfers.verify_outputs()
-            for target in managed.proofs.values():
-                target.verify(fresh=True)
-            proof.remove()
+        if staged_proofs:
+            with originals_lock():
+                try:
+                    referenced = referenced_originals(exclude=jobs.current())
+                except (OSError, ValueError, RuntimeError, TypeError):
+                    referenced = None
+                if referenced is not None:
+                    for proof in staged_proofs:
+                        if proof.path in referenced:
+                            continue
+                        transfers.verify_outputs()
+                        for target in managed.proofs.values():
+                            target.verify(fresh=True)
+                        proof.remove()
     # Legacy verification callbacks returning no evidence authorize no deletion.
     return [files[source_indexes[index - 1]] for index in indexes], skipped + len(files) - len(unique)

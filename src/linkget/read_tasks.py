@@ -1,6 +1,7 @@
 """Detached read/AI workers with private receipts, results and safe cancellation."""
 import argparse
 from datetime import datetime, timezone
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -49,6 +50,8 @@ def update(identifier, **changes):
     record, lock, _, _ = paths(identifier)
     with read_store.lock(lock, wait=True):
         value = load(identifier)
+        if value['status'] in TERMINAL:
+            return value
         value.update(changes)
         read_store.write_json(record, value)
         return value
@@ -69,12 +72,36 @@ def record_output(path):
     record, lock, _, _ = paths(_current)
     with read_store.lock(lock, wait=True):
         value = load(_current)
+        if value['status'] in TERMINAL:
+            return
         value['outputs'] = list(dict.fromkeys([*value.get('outputs', []), str(Path(path).resolve())]))
         read_store.write_json(record, value)
 
 
 def worker_file():
     return Path(__file__).resolve().with_name('cli.py')
+
+
+def worker_claimed(identifier):
+    _, _, claim, _ = paths(identifier)
+    if claim.is_symlink():
+        return True
+    if not claim.exists():
+        return False
+    try:
+        fd = os.open(claim, os.O_RDWR | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return False
+        except BlockingIOError:
+            return True
+    finally:
+        os.close(fd)
 
 
 def active(value):
@@ -90,14 +117,20 @@ def active(value):
         return False
 
 
+def _refresh_locked(identifier, record, value):
+    if (value['status'] not in TERMINAL and not worker_claimed(identifier) and not active(value)
+            and (value['status'] == 'running' or time.time() - value['created'] > 10)):
+        value.update(status='cancelled' if value.get('cancel_requested') else 'interrupted',
+                     phase='worker stopped; source/checkpoints retained', finished=time.time())
+        read_store.write_json(record, value)
+    return value
+
+
 def refresh(identifier):
     record, lock, _, _ = paths(identifier)
     with read_store.lock(lock, wait=True):
         value = load(identifier)
-        if value['status'] not in TERMINAL and not active(value) and (value['status'] == 'running' or time.time() - value['created'] > 10):
-            value.update(status='cancelled' if value.get('cancel_requested') else 'interrupted', phase='worker stopped; source/checkpoints retained', finished=time.time())
-            read_store.write_json(record, value)
-        return value
+        return _refresh_locked(identifier, record, value)
 
 
 def show(value):
@@ -300,11 +333,18 @@ def cancel(argv):
     parser = argparse.ArgumentParser(prog='linkget read cancel', description='Stop the verified task and its child tools; retain source text and recognition checkpoints.')
     parser.add_argument('task', help='Submitted task ID')
     args = parser.parse_args(argv)
-    value = refresh(args.task)
-    if value['status'] in TERMINAL:
-        show(value)
+    record, lock, _, _ = paths(args.task)
+    with read_store.lock(lock, wait=True):
+        value = _refresh_locked(args.task, record, load(args.task))
+        if value['status'] in TERMINAL:
+            terminal = value
+        else:
+            terminal = None
+            value.update(cancel_requested=True, phase='cancellation requested')
+            read_store.write_json(record, value)
+    if terminal is not None:
+        show(terminal)
         return 0
-    value = update(args.task, cancel_requested=True, phase='cancellation requested')
     # Verify the exact detached worker command before signalling its process group.
     if value['status'] == 'running' and active(value):
         try:
@@ -318,23 +358,32 @@ def cancel(argv):
 def submit(argv, kind):
     directory().mkdir(parents=True, exist_ok=True, mode=0o700)
     identifier = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S') + '-' + uuid.uuid4().hex[:12]
-    record, _, _, log = paths(identifier)
+    record, lock, _, log = paths(identifier)
     worker_argv = [arg for arg in argv if arg != '--json']
     read_store.write_json(record, {'schema': 1, 'id': identifier, 'kind': kind, 'argv': worker_argv,
         'created': time.time(), 'status': 'queued', 'phase': 'queued', 'outputs': [], 'pid': None,
         'source_folder': str(Path(worker_argv[1]).expanduser().resolve()) if kind in {'translate', 'summarize', 'retry'} and len(worker_argv) > 1 else None})
+    child = None
     try:
         fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, 'wb') as stream:
             child = subprocess.Popen([sys.executable, str(worker_file()), 'read', '_worker', identifier],
                 cwd=os.getcwd(), env={**os.environ, 'PYTHONUNBUFFERED': '1', 'LINKGET_BACKGROUND_JOB': '1', 'LINKGET_HOME': str(read_store.root().resolve())},
                 stdin=subprocess.DEVNULL, stdout=stream, stderr=stream, start_new_session=True, close_fds=True)
-        threading.Thread(target=child.wait, name='linkget-worker-reaper', daemon=True).start()
-        # The worker may already be running or complete: never overwrite its state.
-        update(identifier, pid=child.pid)
     except (OSError, RuntimeError):
-        update(identifier, status='failed', phase='worker could not start', finished=time.time())
+        if child is None:
+            update(identifier, status='failed', phase='worker could not start', finished=time.time())
         raise
+    try:
+        threading.Thread(target=child.wait, name='linkget-worker-reaper', daemon=True).start()
+    except RuntimeError:
+        pass
+    # The worker may already be running or complete: never overwrite its state.
+    with read_store.lock(lock, wait=True):
+        current_value = load(identifier)
+        if current_value['status'] not in TERMINAL and current_value.get('pid') is None:
+            current_value['pid'] = child.pid
+            read_store.write_json(record, current_value)
     if runtime.json_mode():
         agent_output.emit({
             'schema_version': agent_output.SCHEMA_VERSION,
@@ -393,9 +442,19 @@ def worker(identifier):
             print('Background processing failed; source/checkpoints were preserved.', file=sys.stderr)
             code = 1
         finally:
-            final = 'completed' if code == 0 else 'cancelled' if code == 130 else 'failed'
-            update(identifier, status=final, phase=final, exit_code=code, finished=time.time(),
-                   failure=None if code == 0 else 'Cancelled by request.' if code == 130 else load(identifier).get('failure') or 'Processing failed (exit ' + str(code) + '); inspect the private log for the cause.')
+            with read_store.lock(lock, wait=True):
+                current_value = load(identifier)
+                if current_value['status'] not in TERMINAL:
+                    final = 'completed' if code == 0 else 'cancelled' if code == 130 else 'failed'
+                    current_value.update(
+                        status=final,
+                        phase=final,
+                        exit_code=code,
+                        finished=time.time(),
+                        failure=(None if code == 0 else 'Cancelled by request.' if code == 130
+                                 else current_value.get('failure') or 'Processing failed (exit ' + str(code) + '); inspect the private log for the cause.'),
+                    )
+                    read_store.write_json(record, current_value)
             _current = None
         return code
 

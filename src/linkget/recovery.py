@@ -7,14 +7,14 @@ from urllib.parse import urlsplit
 if __package__:
     from . import jobs, media_limits, staging, transfers, ownership
     from .failures import redact
-    from .photos import originals_directory, verify_library_copies, digest
+    from .photos import originals_directory, originals_lock, referenced_originals, verify_library_copies, digest
     from .media import inspect_files
     from .live import prepare_pairs, save_pairs
     from .output import saving_activity, batch_media
 else:
     import jobs, media_limits, staging, transfers, ownership
     from failures import redact
-    from photos import originals_directory, verify_library_copies, digest
+    from photos import originals_directory, originals_lock, referenced_originals, verify_library_copies, digest
     from media import inspect_files
     from live import prepare_pairs, save_pairs
     from output import saving_activity, batch_media
@@ -65,21 +65,30 @@ def listing(status, records=None):
     return 0
 
 
-def remove_verified(records, root):
+def remove_verified(records, root, *, protect_shared=False):
     if records == []:
         return 0
     jobs.verified_files(records, root)
     transfers.verify_outputs()
     removed = 0
-    for record in records:
-        # A matching old hash is a read check, never fresh cleanup authority.
-        if record.get('created') is not True or 'file_identity' not in record:
-            continue
-        proof = ownership.FileProof.from_record(record)
-        if proof.path.exists():
-            transfers.verify_outputs()
-            proof.remove()
-            removed += 1
+    with originals_lock() if protect_shared else nullcontext():
+        referenced = set()
+        if protect_shared:
+            try:
+                referenced = referenced_originals(exclude=jobs.current())
+            except (OSError, ValueError, RuntimeError, TypeError):
+                return 0
+        for record in records:
+            # A matching old hash is a read check, never fresh cleanup authority.
+            if record.get('created') is not True or 'file_identity' not in record:
+                continue
+            proof = ownership.FileProof.from_record(record)
+            if protect_shared and proof.path in referenced:
+                continue
+            if proof.path.exists():
+                transfers.verify_outputs()
+                proof.remove()
+                removed += 1
     return removed
 
 
@@ -119,14 +128,14 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                         jobs.record(destination_files=[])
                         transfers.record_outputs(managed.proofs.values())
                         ready = row.get("ready")
-                        stage = Path(row.get("stage", ""))
+                        stage = Path(row.get("stage") or "")
                         if ready:
                             if not stage.name.startswith("linkget-") or stage.is_symlink() or not stage.is_dir():
                                 raise ValueError("The staging folder changed; retained files have been kept.")
                             jobs.verified_files(ready["files"], stage)
                             for pair in ready.get("prepared", []):
                                 jobs.verified_files(pair, stage)
-                        removed = remove_verified(receipt["staged"], originals_directory())
+                        removed = remove_verified(receipt["staged"], originals_directory(), protect_shared=True)
                         if ready:
                             remove_verified(ready["files"], stage)
                             for pair in ready.get("prepared", []):
@@ -179,7 +188,7 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                                 raise ValueError("Retained Douyin motion completeness is unknown. Refresh connector page data "
                                                  "and retry --redownload before Photos import or Live Photo packaging; "
                                                  "separate files can still be recovered with --folder.")
-                        stage = Path(row.get("stage", ""))
+                        stage = Path(row.get("stage") or "")
                         if not stage.name.startswith("linkget-") or stage.is_symlink() or not stage.is_dir():
                             raise ValueError("The recorded staging folder is unavailable; use retry --redownload.")
                         files = jobs.verified_files(ready["files"], stage)

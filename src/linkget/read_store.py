@@ -123,7 +123,19 @@ def checkpoint(folder, source, options):
 
 
 def save_job(folder, value):
-    write_json(folder / '.read-job.json', value)
+    job_path = folder / '.read-job.json'
+    if value.get('status') != 'completed' and job_path.exists():
+        try:
+            existing = read_json(job_path)
+        except (OSError, ValueError):
+            existing = None
+        if isinstance(existing, dict) and existing.get('status') == 'completed':
+            value['status'] = 'completed'
+            value['source'] = None
+            write_json(root() / 'read-jobs' / (value['id'] + '.json'),
+                       {'folder': str(folder), 'status': 'completed', 'created': existing.get('created', value['created'])})
+            return
+    write_json(job_path, value)
     write_json(root() / 'read-jobs' / (value['id'] + '.json'),
                {'folder': str(folder), 'status': value['status'], 'created': value['created']})
 
@@ -133,8 +145,11 @@ def unfinished():
     for path in (root() / 'read-jobs').glob('*.json'):
         try:
             value = read_json(path)
-            if value.get('status') != 'completed' and (Path(value.get('folder', '')) / '.read-job.json').is_file():
-                values.append(value)
+            job_path = Path(value.get('folder', '')) / '.read-job.json'
+            if value.get('status') != 'completed' and job_path.is_file():
+                job_data = read_json(job_path)
+                if job_data.get('status') != 'completed':
+                    values.append(value)
         except (OSError, ValueError):
             continue
     return sorted(values, key=lambda v: v.get('created', 0), reverse=True)
