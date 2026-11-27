@@ -65,7 +65,7 @@ def listing(status, records=None):
     return 0
 
 
-def remove_verified(records, root, *, protect_shared=False, removed_paths=None):
+def remove_verified(records, root, *, protect_shared=False, removed_paths=None, on_removed=None):
     if records == []:
         return 0
     jobs.verified_files(records, root)
@@ -91,6 +91,8 @@ def remove_verified(records, root, *, protect_shared=False, removed_paths=None):
                 removed += 1
                 if removed_paths is not None:
                     removed_paths.add(proof.path)
+                if on_removed is not None:
+                    on_removed(proof.path)
     return removed
 
 
@@ -138,15 +140,17 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                             for pair in ready.get("prepared", []):
                                 jobs.verified_files(pair, stage)
                         with originals_lock():
-                            removed_originals = set()
+                            current_receipt = receipt
+                            def prune_removed_original(path):
+                                nonlocal current_receipt
+                                current_receipt = prune_receipt(current_receipt, {path})
+                                jobs.record(receipt=current_receipt)
                             removed = remove_verified(
                                 receipt["staged"],
                                 originals_directory(),
                                 protect_shared=True,
-                                removed_paths=removed_originals,
+                                on_removed=prune_removed_original,
                             )
-                            if removed_originals:
-                                jobs.record(receipt=prune_receipt(receipt, removed_originals))
                         if ready:
                             remove_verified(ready["files"], stage)
                             for pair in ready.get("prepared", []):

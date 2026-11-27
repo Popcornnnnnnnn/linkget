@@ -173,16 +173,34 @@ def _import_photos(files, date_now, live_pairs, retain_originals, verify_library
             or any(index < 1 or index > len(unique) for index in indexes)):
         raise RuntimeError("Photos returned an unexpected item count. Original files have been kept.")
     returned_ids = identifier_text.split("\t") if identifier_text else []
-    if (not returned_ids and recoverable_existing
+    if (recoverable_existing
             and _same_receipt_files(existing_receipt.get("files", []), receipt.get("files", []))):
-        receipt["identifiers"] = list(existing_receipt["identifiers"])
+        existing_ids = list(existing_receipt.get("identifiers", []))
+        saved_positions = set(indexes)
+        if len(existing_ids) == len(unique):
+            receipt["identifiers"] = [
+                existing_ids[pos]
+                if ((pos + 1) not in saved_positions and existing_ids[pos])
+                else (returned_ids[pos] if pos < len(returned_ids) and returned_ids[pos] else existing_ids[pos])
+                for pos in range(len(unique))
+            ]
+        elif not returned_ids:
+            receipt["identifiers"] = existing_ids
+        else:
+            receipt["identifiers"] = returned_ids
     else:
         receipt["identifiers"] = returned_ids
-    jobs.record(receipt=receipt, pending_receipt=None)
+    if jobs.active():
+        if recoverable_existing:
+            jobs.record(pending_receipt=receipt)
+        else:
+            jobs.record(receipt=receipt, pending_receipt=None)
     try:
         managed = verify_library_copies(ownership.FileList(unique, unique_proofs), receipt["identifiers"])
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         raise RuntimeError(str(error) + "\nOriginals are safe in: " + str(originals_directory())) from error
+    if jobs.active() and recoverable_existing:
+        jobs.record(receipt=receipt, pending_receipt=None)
     # Verification consumes the same evidence; it never creates new authority.
     for proof in (*sources, *pair_inputs, *proofs.values()):
         proof.verify(fresh=True)
@@ -194,7 +212,7 @@ def _import_photos(files, date_now, live_pairs, retain_originals, verify_library
                     referenced = referenced_originals(exclude=jobs.current())
                 except (OSError, ValueError, RuntimeError, TypeError):
                     referenced = None
-                removed_originals = set()
+                current_receipt = receipt
                 if referenced is not None:
                     for proof in staged_proofs:
                         if proof.path in referenced:
@@ -203,8 +221,8 @@ def _import_photos(files, date_now, live_pairs, retain_originals, verify_library
                         for target in managed.proofs.values():
                             target.verify(fresh=True)
                         proof.remove()
-                        removed_originals.add(proof.path)
-                if removed_originals and jobs.active():
-                    jobs.record(receipt=prune_receipt(receipt, removed_originals))
+                        if jobs.active() and current_receipt is not None:
+                            current_receipt = prune_receipt(current_receipt, {proof.path})
+                            jobs.record(receipt=current_receipt)
     # Legacy verification callbacks returning no evidence authorize no deletion.
     return [files[source_indexes[index - 1]] for index in indexes], skipped + len(files) - len(unique)

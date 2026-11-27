@@ -962,6 +962,122 @@ class LifecycleInvariantTests(unittest.TestCase):
             self.assertEqual(refreshed["status"], "completed")
             self.assertEqual(refreshed["exit_code"], 0)
 
+    def test_redownload_duplicate_skip_with_mismatched_id_preserves_recoverable_receipt(self):
+        payload = b"duplicate skip mismatched id payload"
+        library = self.root / "Photos.photoslibrary"
+        managed_a = library / "originals/9/90FA4F22-C80E-43F2-A2AF-FE5BA03A989E.jpg"
+        managed_a.parent.mkdir(parents=True, exist_ok=True)
+        src_dir = self.root / "dup-src"
+        src_dir.mkdir()
+        source = src_dir / "photo.jpg"
+        self._write_owned(source, payload)
+
+        task = jobs.Journal.create(["https://example.com/dup"], argparse.Namespace())
+        with jobs.item(task, 1), patch.object(
+            destinations.subprocess, "run", return_value=CompletedProcess([], 0, "1:0:1\n" + self.identifier_a, "")
+        ), patch.object(photos, "library_directory", return_value=library):
+            with self.assertRaises(RuntimeError):
+                destinations.import_photos([source], False, None, photos.retain_originals, photos.verify_library_copies)
+
+        staged_orig = Path(jobs.Journal.load(task.identifier).data["items"][0]["receipt"]["staged"][0]["path"])
+        redl_dir = self.root / "dup-redl"
+        redl_dir.mkdir()
+        redl_source = redl_dir / "photo.jpg"
+        self._write_owned(redl_source, payload)
+
+        # Case A: Photos reports a duplicate skip (0:1) with a mismatched filename match identifier_b;
+        # verification fails because managed_a isn't written yet -> recoverable identifier_a stays intact.
+        with jobs.item(task, 1), patch.object(
+            destinations.subprocess, "run", return_value=CompletedProcess([], 0, "0:1\n" + self.identifier_b, "")
+        ), patch.object(photos, "library_directory", return_value=library):
+            with self.assertRaises(RuntimeError):
+                destinations.import_photos([redl_source], False, None, photos.retain_originals, photos.verify_library_copies)
+        self.assertEqual(
+            jobs.Journal.load(task.identifier).data["items"][0]["receipt"]["identifiers"],
+            [self.identifier_a],
+        )
+
+        # Case B: Second attempt imports new identifier_b whose library copy is missing -> still keeps identifier_a.
+        with jobs.item(task, 1), patch.object(
+            destinations.subprocess, "run", return_value=CompletedProcess([], 0, "1:0:1\n" + self.identifier_b, "")
+        ), patch.object(photos, "library_directory", return_value=library):
+            with self.assertRaises(RuntimeError):
+                destinations.import_photos([redl_source], False, None, photos.retain_originals, photos.verify_library_copies)
+        self.assertEqual(
+            jobs.Journal.load(task.identifier).data["items"][0]["receipt"]["identifiers"],
+            [self.identifier_a],
+        )
+
+        # Case C: Duplicate skip returns wrong ID while managed_a IS present -> preserved identifier_a verifies & cleans up.
+        managed_a.write_bytes(payload)
+        with jobs.item(task, 1), patch.object(
+            destinations.subprocess, "run", return_value=CompletedProcess([], 0, "0:1\n" + self.identifier_b, "")
+        ), patch.object(photos, "library_directory", return_value=library):
+            saved, skipped = destinations.import_photos([redl_source], False, None, photos.retain_originals, photos.verify_library_copies)
+        self.assertEqual((saved, skipped), ([], 1))
+        self.assertFalse(staged_orig.exists())
+        self.assertEqual(jobs.Journal.load(task.identifier).needs_verification(), [])
+
+    def test_cleanup_error_mid_loop_prunes_already_removed_original_for_retry(self):
+        payload_1 = b"cleanup mid loop one"
+        payload_2 = b"cleanup mid loop two"
+        library = self.root / "Photos.photoslibrary"
+        managed_1 = library / "originals/9/90FA4F22-C80E-43F2-A2AF-FE5BA03A989E.jpg"
+        managed_2 = library / "originals/A/A1FB5033-D91F-4403-B3B0-0F6CB14B09AF.jpg"
+        managed_1.parent.mkdir(parents=True, exist_ok=True)
+        managed_2.parent.mkdir(parents=True, exist_ok=True)
+
+        dl = self.root / "dl-mid"
+        dl.mkdir()
+        src_1 = dl / "one.jpg"
+        src_2 = dl / "two.jpg"
+        self._write_owned(src_1, payload_1)
+        self._write_owned(src_2, payload_2)
+
+        task = jobs.Journal.create(["https://example.com/mid"], argparse.Namespace())
+        with jobs.item(task, 1), patch.object(
+            destinations.subprocess,
+            "run",
+            return_value=CompletedProcess([], 0, f"2:0:1:2\n{self.identifier_a}\t{self.identifier_b}", ""),
+        ), patch.object(photos, "library_directory", return_value=library):
+            with self.assertRaises(RuntimeError):
+                destinations.import_photos([src_1, src_2], False, None, photos.retain_originals, photos.verify_library_copies)
+
+        rec = jobs.Journal.load(task.identifier).data["items"][0]["receipt"]
+        orig_1 = Path(rec["staged"][0]["path"])
+        orig_2 = Path(rec["staged"][1]["path"])
+        managed_1.write_bytes(payload_1)
+        managed_2.write_bytes(payload_2)
+
+        real_remove = ownership.FileProof.remove
+        calls = 0
+
+        def fail_second_remove(proof_self):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise PermissionError("transient EACCES")
+            return real_remove(proof_self)
+
+        with patch.object(cli.sys, "platform", "darwin"), \
+                patch.object(photos, "library_directory", return_value=library), \
+                patch.object(ownership.FileProof, "remove", fail_second_remove):
+            code1, _, _ = self._run_cli("recover", task.identifier, "--verify")
+        self.assertEqual(code1, 1)
+        self.assertFalse(orig_1.exists())
+        self.assertTrue(orig_2.is_file())
+        pruned = jobs.Journal.load(task.identifier).data["items"][0]["receipt"]
+        self.assertEqual([entry["path"] for entry in pruned["files"]], [str(orig_2)])
+        self.assertEqual([entry["path"] for entry in pruned["staged"]], [str(orig_2)])
+        self.assertEqual(pruned["identifiers"], [self.identifier_b])
+
+        with patch.object(cli.sys, "platform", "darwin"), patch.object(photos, "library_directory", return_value=library):
+            code2, out2, err2 = self._run_cli("recover", task.identifier, "--verify")
+        self.assertEqual(code2, 0, out2 + err2)
+        self.assertIn("1 staged copies removed", out2)
+        self.assertFalse(orig_2.exists())
+        self.assertEqual(jobs.Journal.load(task.identifier).needs_verification(), [])
+
 
 if __name__ == "__main__":
     unittest.main()
