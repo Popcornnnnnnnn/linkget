@@ -1,0 +1,196 @@
+/* Linkget Showcase Design Tokens — Warm Archival Paper & Darkroom
+ * Layer architecture + light-dark() + prefers-color-scheme + :has(meta[name="color-scheme"])
+ */
+
+@layer reset, base, theme, components, utilities;
+
+@layer theme {
+  :root {
+    --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
+    --font-body: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Mono", Consolas, monospace;
+
+    /* Fluid typography (max <= 2.5 * min for WCAG 1.4.4 200% zoom) */
+    --text-hero: clamp(2.05rem, 1.3rem + 2.4vw, 3.25rem);
+    --text-h2: clamp(1.5rem, 1.15rem + 1.3vw, 2.25rem);
+    --text-h3: clamp(1.08rem, 0.98rem + 0.4vw, 1.32rem);
+    --text-lead: clamp(1.02rem, 0.95rem + 0.32vw, 1.2rem);
+
+    /* Warm Archival Paper (Light) & Warm Darkroom (Dark) */
+    --raw-bg-light: #F7F5F0;
+    --raw-bg-dark: #11100E;
+    --raw-surface-light: #FFFFFF;
+    --raw-surface-dark: #191714;
+    --raw-slab-light: #ECE8DF;
+    --raw-slab-dark: #24211C;
+    --raw-glass-light: rgba(247, 245, 240, 0.86);
+    --raw-glass-dark: rgba(17, 16, 14, 0.86);
+
+    --raw-ink-light: #141311;
+    --raw-ink-dark: #F3EFE8;
+    --raw-ink-secondary-light: #4A453E;
+    --raw-ink-secondary-dark: #B9B1A5;
+    --raw-ink-muted-light: #6A6359;
+    --raw-ink-muted-dark: #938A7E;
+
+    --raw-border-light: rgba(20, 19, 17, 0.11);
+    --raw-border-dark: rgba(243, 239, 232, 0.12);
+    --raw-border-strong-light: rgba(20, 19, 17, 0.22);
+    --raw-border-strong-dark: rgba(243, 239, 232, 0.22);
+
+    --raw-accent-light: #A83412;
+    --raw-accent-dark: #F2825A;
+    --raw-accent-solid-light: #A83412;
+    --raw-accent-solid-dark: #C2411C;
+    --raw-accent-tint-light: rgba(168, 52, 18, 0.10);
+    --raw-accent-tint-dark: rgba(242, 130, 90, 0.16);
+
+    --raw-ok-ink-light: #166534;
+    --raw-ok-ink-dark: #4ADE80;
+    --raw-ok-bg-light: #DCFCE7;
+    --raw-ok-bg-dark: rgba(34, 197, 94, 0.16);
+
+    --raw-info-ink-light: #1D4ED8;
+    --raw-info-ink-dark: #60A5FA;
+    --raw-info-bg-light: #DBEAFE;
+    --raw-info-bg-dark: rgba(59, 130, 246, 0.16);
+
+    --raw-warn-ink-light: #92400E;
+    --raw-warn-ink-dark: #FBBF24;
+    --raw-warn-bg-light: #FEF3C7;
+    --raw-warn-bg-dark: rgba(245, 158, 11, 0.16);
+
+    --raw-scroll-track-light: #ECE8DF;
+    --raw-scroll-track-dark: #191714;
+    --raw-scroll-thumb-light: #8B8378;
+    --raw-scroll-thumb-dark: #5C554C;
+
+    /* Progressive enhancement defaults (light fallback) */
+    --bg: var(--raw-bg-light);
+    --surface: var(--raw-surface-light);
+    --slab: var(--raw-slab-light);
+    --glass: var(--raw-glass-light);
+    --ink: var(--raw-ink-light);
+    --ink-secondary: var(--raw-ink-secondary-light);
+    --ink-muted: var(--raw-ink-muted-light);
+    --border: var(--raw-border-light);
+    --border-strong: var(--raw-border-strong-light);
+    --accent: var(--raw-accent-light);
+    --accent-solid: var(--raw-accent-solid-light);
+    --accent-tint: var(--raw-accent-tint-light);
+    --ok-ink: var(--raw-ok-ink-light);
+    --ok-bg: var(--raw-ok-bg-light);
+    --info-ink: var(--raw-info-ink-light);
+    --info-bg: var(--raw-info-bg-light);
+    --warn-ink: var(--raw-warn-ink-light);
+    --warn-bg: var(--raw-warn-bg-light);
+    --scroll-track: var(--raw-scroll-track-light);
+    --scroll-thumb: var(--raw-scroll-thumb-light);
+
+    @media (prefers-color-scheme: dark) {
+      --bg: var(--raw-bg-dark);
+      --surface: var(--raw-surface-dark);
+      --slab: var(--raw-slab-dark);
+      --glass: var(--raw-glass-dark);
+      --ink: var(--raw-ink-dark);
+      --ink-secondary: var(--raw-ink-secondary-dark);
+      --ink-muted: var(--raw-ink-muted-dark);
+      --border: var(--raw-border-dark);
+      --border-strong: var(--raw-border-strong-dark);
+      --accent: var(--raw-accent-dark);
+      --accent-solid: var(--raw-accent-solid-dark);
+      --accent-tint: var(--raw-accent-tint-dark);
+      --ok-ink: var(--raw-ok-ink-dark);
+      --ok-bg: var(--raw-ok-bg-dark);
+      --info-ink: var(--raw-info-ink-dark);
+      --info-bg: var(--raw-info-bg-dark);
+      --warn-ink: var(--raw-warn-ink-dark);
+      --warn-bg: var(--raw-warn-bg-dark);
+      --scroll-track: var(--raw-scroll-track-dark);
+      --scroll-thumb: var(--raw-scroll-thumb-dark);
+    }
+
+    @supports (color: light-dark(white, black)) {
+      --bg: light-dark(var(--raw-bg-light), var(--raw-bg-dark));
+      --surface: light-dark(var(--raw-surface-light), var(--raw-surface-dark));
+      --slab: light-dark(var(--raw-slab-light), var(--raw-slab-dark));
+      --glass: light-dark(var(--raw-glass-light), var(--raw-glass-dark));
+      --ink: light-dark(var(--raw-ink-light), var(--raw-ink-dark));
+      --ink-secondary: light-dark(var(--raw-ink-secondary-light), var(--raw-ink-secondary-dark));
+      --ink-muted: light-dark(var(--raw-ink-muted-light), var(--raw-ink-muted-dark));
+      --border: light-dark(var(--raw-border-light), var(--raw-border-dark));
+      --border-strong: light-dark(var(--raw-border-strong-light), var(--raw-border-strong-dark));
+      --accent: light-dark(var(--raw-accent-light), var(--raw-accent-dark));
+      --accent-solid: light-dark(var(--raw-accent-solid-light), var(--raw-accent-solid-dark));
+      --accent-tint: light-dark(var(--raw-accent-tint-light), var(--raw-accent-tint-dark));
+      --ok-ink: light-dark(var(--raw-ok-ink-light), var(--raw-ok-ink-dark));
+      --ok-bg: light-dark(var(--raw-ok-bg-light), var(--raw-ok-bg-dark));
+      --info-ink: light-dark(var(--raw-info-ink-light), var(--raw-info-ink-dark));
+      --info-bg: light-dark(var(--raw-info-bg-light), var(--raw-info-bg-dark));
+      --warn-ink: light-dark(var(--raw-warn-ink-light), var(--raw-warn-ink-dark));
+      --warn-bg: light-dark(var(--raw-warn-bg-light), var(--raw-warn-bg-dark));
+      --scroll-track: light-dark(var(--raw-scroll-track-light), var(--raw-scroll-track-dark));
+      --scroll-thumb: light-dark(var(--raw-scroll-thumb-light), var(--raw-scroll-thumb-dark));
+    }
+
+    color-scheme: light dark;
+    accent-color: var(--accent);
+    scrollbar-color: var(--scroll-thumb) var(--scroll-track);
+
+    &:has(> head > meta[name="color-scheme"][content="dark"]) {
+      color-scheme: dark;
+    }
+
+    &:has(> head > meta[name="color-scheme"][content="light"]) {
+      color-scheme: light;
+    }
+  }
+
+  @supports not (color: light-dark(white, black)) {
+    :root:has(> head > meta[name="color-scheme"][content="dark"]) {
+      --bg: var(--raw-bg-dark);
+      --surface: var(--raw-surface-dark);
+      --slab: var(--raw-slab-dark);
+      --glass: var(--raw-glass-dark);
+      --ink: var(--raw-ink-dark);
+      --ink-secondary: var(--raw-ink-secondary-dark);
+      --ink-muted: var(--raw-ink-muted-dark);
+      --border: var(--raw-border-dark);
+      --border-strong: var(--raw-border-strong-dark);
+      --accent: var(--raw-accent-dark);
+      --accent-solid: var(--raw-accent-solid-dark);
+      --accent-tint: var(--raw-accent-tint-dark);
+      --ok-ink: var(--raw-ok-ink-dark);
+      --ok-bg: var(--raw-ok-bg-dark);
+      --info-ink: var(--raw-info-ink-dark);
+      --info-bg: var(--raw-info-bg-dark);
+      --warn-ink: var(--raw-warn-ink-dark);
+      --warn-bg: var(--raw-warn-bg-dark);
+      --scroll-track: var(--raw-scroll-track-dark);
+      --scroll-thumb: var(--raw-scroll-thumb-dark);
+    }
+
+    :root:has(> head > meta[name="color-scheme"][content="light"]) {
+      --bg: var(--raw-bg-light);
+      --surface: var(--raw-surface-light);
+      --slab: var(--raw-slab-light);
+      --glass: var(--raw-glass-light);
+      --ink: var(--raw-ink-light);
+      --ink-secondary: var(--raw-ink-secondary-light);
+      --ink-muted: var(--raw-ink-muted-light);
+      --border: var(--raw-border-light);
+      --border-strong: var(--raw-border-strong-light);
+      --accent: var(--raw-accent-light);
+      --accent-solid: var(--raw-accent-solid-light);
+      --accent-tint: var(--raw-accent-tint-light);
+      --ok-ink: var(--raw-ok-ink-light);
+      --ok-bg: var(--raw-ok-bg-light);
+      --info-ink: var(--raw-info-ink-light);
+      --info-bg: var(--raw-info-bg-light);
+      --warn-ink: var(--raw-warn-ink-light);
+      --warn-bg: var(--raw-warn-bg-light);
+      --scroll-track: var(--raw-scroll-track-light);
+      --scroll-thumb: var(--raw-scroll-thumb-light);
+    }
+  }
+}
