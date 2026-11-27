@@ -754,6 +754,7 @@ def parse_raw_article(result, tdata=None, *, canonical_url=None):
 
     avatar_url = author_obj.get('profile_image') if isinstance(author_obj.get('profile_image'), str) else None
     banner_url = author_obj.get('profile_banner') if isinstance(author_obj.get('profile_banner'), str) else None
+    affiliation = author_obj.get('affiliation')
     author_detail = {
         'name': author_nick,
         'handle': author_handle,
@@ -766,6 +767,7 @@ def parse_raw_article(result, tdata=None, *, canonical_url=None):
         'followers_count': author_obj.get('followers_count'),
         'following_count': author_obj.get('following_count'),
         'verified': author_obj.get('verified'),
+        'affiliation': affiliation if isinstance(affiliation, dict) and affiliation.get('name') else None,
         'joined_at': _format_gallery_dl_date(author_obj.get('date')),
     }
     author_detail = {k: v for k, v in author_detail.items() if v is not None}
@@ -818,6 +820,15 @@ def parse_raw_article(result, tdata=None, *, canonical_url=None):
             'alt': f'{author_nick or author_handle or "Author"} avatar',
         })
         seen_urls.add(avatar_url)
+    affiliation = author_detail.get('affiliation')
+    if isinstance(affiliation, dict) and affiliation.get('badge_url') and affiliation['badge_url'] not in seen_urls:
+        media_items.append({
+            'role': 'affiliation',
+            'media_type': 'image',
+            'original_url': affiliation['badge_url'],
+            'alt': affiliation.get('name'),
+        })
+        seen_urls.add(affiliation['badge_url'])
 
     status_url = canonical_url
     if not status_url:
@@ -905,6 +916,62 @@ def parse_raw_article(result, tdata=None, *, canonical_url=None):
     }
 
 
+def _post_id(post):
+    legacy = post.get('legacy') or post
+    return str(post.get('tweet_id') or post.get('rest_id') or legacy.get('id_str') or '')
+
+
+def _article_post_metadata(post):
+    """Keep only the fields needed by the article parser from an untransformed post."""
+    if post.get('tweet_id'):
+        return post
+    legacy = post.get('legacy') or post
+    user = post.get('author') or ((post.get('core') or {}).get('user_results') or {}).get('result') or post.get('user') or {}
+    core = user.get('core') or user.get('legacy') or user
+    profile = user.get('legacy') or user
+    avatar = (user.get('avatar') or {}).get('image_url') or profile.get('profile_image_url_https')
+    label = (user.get('affiliates_highlighted_label') or {}).get('label') or {}
+    affiliation = None
+    affiliation_name = label.get('description')
+    if isinstance(affiliation_name, str) and 0 < len(affiliation_name.strip()) <= 100:
+        affiliation = {'name': affiliation_name.strip()}
+        badge_url = (label.get('badge') or {}).get('url')
+        if isinstance(badge_url, str) and badge_url.startswith('https://pbs.twimg.com/'):
+            affiliation['badge_url'] = badge_url
+    count = (post.get('views') or {}).get('count')
+    return {
+        **{key: legacy.get(key) for key in (
+            'lang', 'favorite_count', 'retweet_count',
+            'reply_count', 'bookmark_count', 'quote_count',
+        )},
+        'tweet_id': _post_id(post),
+        'conversation_id': legacy.get('conversation_id_str'),
+        'quote_id': legacy.get('quoted_by_id_str'),
+        'quoted_id': legacy.get('quoted_status_id_str'),
+        'sensitive': legacy.get('possibly_sensitive'),
+        'birdwatch': ((post.get('birdwatch_pivot') or {}).get('subtitle') or {}).get('text'),
+        'date': legacy.get('created_at'),
+        'view_count': int(count) if isinstance(count, str) and count.isascii() and count.isdecimal() and len(count) <= 18 else count,
+        'author': {
+            'id': user.get('rest_id') or profile.get('id_str'),
+            'name': core.get('screen_name'),
+            'nick': core.get('name'),
+            'profile_image': avatar.replace('_normal.', '.') if isinstance(avatar, str) else None,
+            'date': core.get('created_at'),
+            'description': (user.get('profile_bio') or {}).get('description') or profile.get('description'),
+            'location': profile.get('location'),
+            'profile_banner': (user.get('banner') or {}).get('image_url') or profile.get('profile_banner_url'),
+            'followers_count': (user.get('relationship_counts') or {}).get('followers', profile.get('followers_count')),
+            'following_count': (user.get('relationship_counts') or {}).get('following', profile.get('friends_count')),
+            'verified': any(flag is True for flag in (
+                user.get('is_blue_verified'), user.get('is_verified'),
+                (user.get('verification') or {}).get('verified'), profile.get('verified'),
+            )),
+            'affiliation': affiliation,
+        },
+    }
+
+
 def fetch_via_gallery_dl(url, gallery_dl_bin, *, cookie_path=None, timeout=45):
     """Fetch one X status/article URL via gallery-dl -j without downloading files.
 
@@ -924,6 +991,7 @@ def fetch_via_gallery_dl(url, gallery_dl_bin, *, cookie_path=None, timeout=45):
         '--config-ignore',
         '-j',
         '-o', 'extractor.twitter.text-tweets=true',
+        '-o', 'extractor.twitter.transform=false',
     ]
     if cookie_path is not None:
         command.extend(['-o', 'extractor.twitter.articles=cover,media', '--cookies', str(cookie_path)])
@@ -952,7 +1020,7 @@ def fetch_via_gallery_dl(url, gallery_dl_bin, *, cookie_path=None, timeout=45):
     tdata = None
     if target_tweet_id:
         for entry in dir_entries:
-            if str(entry.get('tweet_id') or '') == target_tweet_id:
+            if _post_id(entry) == target_tweet_id:
                 tdata = entry
                 break
     if tdata is None and dir_entries:
@@ -973,4 +1041,4 @@ def fetch_via_gallery_dl(url, gallery_dl_bin, *, cookie_path=None, timeout=45):
     else:
         result = art_wrapper
 
-    return parse_raw_article(result, tdata, canonical_url=canonical)
+    return parse_raw_article(result, _article_post_metadata(tdata), canonical_url=canonical)

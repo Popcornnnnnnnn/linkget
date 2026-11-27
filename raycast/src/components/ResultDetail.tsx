@@ -19,20 +19,23 @@ import {
   detectArticleArchive,
   formatBytes,
   readArticleLocalMeta,
+  readArticleMarkdown,
 } from "../lib/articles";
 import { normalizeLinkgetError, retryTask } from "../lib/cli";
 import { shortenHomePath, summarizeMediaFiles } from "../lib/task-format";
 import type {
   ArticleLocalMeta,
+  BatchDownloadResponse,
   DownloadResponse,
   ReadSubmitResponse,
 } from "../lib/types";
 import { ArticleReaderDetail } from "./ArticleReaderDetail";
 
 export interface ResultDetailProps {
-  kind: "download" | "read" | "error";
+  kind: "download" | "read" | "batch" | "error";
   downloadResult?: DownloadResponse;
   readResult?: ReadSubmitResponse;
+  batchResult?: BatchDownloadResponse;
   errorResult?: {
     title: string;
     message: string;
@@ -55,8 +58,12 @@ function isMediaOrFileExisting(filePath: string): boolean {
 export function ResultDetail(props: ResultDetailProps) {
   const { push } = useNavigation();
   const [articleMeta, setArticleMeta] = useState<ArticleLocalMeta | null>(null);
+  const [articleMdContent, setArticleMdContent] = useState<string | null>(null);
   const [downloadRes, setDownloadRes] = useState<DownloadResponse | undefined>(
     props.downloadResult,
+  );
+  const [batchRes, setBatchRes] = useState<BatchDownloadResponse | undefined>(
+    props.batchResult,
   );
   const [errorRes, setErrorRes] = useState(props.errorResult);
   const [kind, setKind] = useState(props.kind);
@@ -67,6 +74,7 @@ export function ResultDetail(props: ResultDetailProps) {
     async function loadArticle() {
       if (kind !== "download" || !downloadRes) {
         setArticleMeta(null);
+        setArticleMdContent(null);
         return;
       }
       const archive = detectArticleArchive(
@@ -75,11 +83,23 @@ export function ResultDetail(props: ResultDetailProps) {
       );
       if (!archive) {
         setArticleMeta(null);
+        setArticleMdContent(null);
         return;
       }
       const meta = await readArticleLocalMeta(archive);
       if (!cancelled) {
         setArticleMeta(meta);
+        setArticleMdContent(null);
+      }
+      if (meta.exists && meta.mdPath) {
+        try {
+          const mdRes = await readArticleMarkdown(meta.mdPath, 512 * 1024);
+          if (!cancelled && !mdRes.truncated) {
+            setArticleMdContent(mdRes.markdown);
+          }
+        } catch {
+          // ignore unreadable markdown
+        }
       }
     }
     void loadArticle();
@@ -87,6 +107,64 @@ export function ResultDetail(props: ResultDetailProps) {
       cancelled = true;
     };
   }, [kind, downloadRes]);
+
+  const handleRetryBatch = async (taskId: string) => {
+    setIsRetrying(true);
+    const toast = await showToast({
+      style: Toast.Style.Animated,
+      title: `Retrying failed items in ${taskId}…`,
+    });
+    try {
+      const res = await retryTask(taskId, { binaryPath: props.binaryPath });
+      const retriedMap = new Map<number, DownloadResponse>();
+      for (const item of res.items || []) {
+        if (typeof item.item === "number") {
+          retriedMap.set(item.item, item);
+        }
+      }
+      const prevItems = batchRes?.items || [];
+      const mergedItems =
+        prevItems.length > 0
+          ? prevItems.map((item) =>
+              typeof item.item === "number" && retriedMap.has(item.item)
+                ? { ...item, ...retriedMap.get(item.item) }
+                : item,
+            )
+          : res.items || [];
+      const completedCount = mergedItems.filter(
+        (item) => item.status === "completed",
+      ).length;
+      const failedCount = mergedItems.length - completedCount;
+      setBatchRes({
+        ...(batchRes || {}),
+        ok: failedCount === 0 && Boolean(res.ok),
+        task_id: res.task_id ?? taskId,
+        completed_count: completedCount,
+        failed_count: failedCount,
+        items: mergedItems,
+        error: res.error,
+      });
+      if (res.ok && failedCount === 0) {
+        toast.style = Toast.Style.Success;
+        toast.title = "All Batch Items Completed";
+      } else {
+        const errInfo = normalizeLinkgetError(
+          res.error ||
+            mergedItems.find((item) => item.status !== "completed")?.error,
+          "Some Items Still Failed",
+        );
+        toast.style = Toast.Style.Failure;
+        toast.title = errInfo.title;
+        toast.message = errInfo.message;
+      }
+    } catch (error) {
+      toast.style = Toast.Style.Failure;
+      toast.title = "Retry Failed";
+      toast.message = error instanceof Error ? error.message : String(error);
+    } finally {
+      setIsRetrying(false);
+    }
+  };
 
   const handleRetryTask = async (taskId: string) => {
     setIsRetrying(true);
@@ -241,6 +319,103 @@ export function ResultDetail(props: ResultDetailProps) {
     );
   }
 
+  if (kind === "batch" && batchRes) {
+    const items = batchRes.items || [];
+    const completedCount =
+      batchRes.completed_count ??
+      items.filter((item) => item.status === "completed").length;
+    const failedCount = batchRes.failed_count ?? items.length - completedCount;
+    const itemLines = items.map((item, idx) => {
+      const num = item.item ?? idx + 1;
+      const siteLabel = item.site || "Unknown";
+      if (item.status === "completed") {
+        const targetText = item.article_folder
+          ? `Archived to \`${shortenHomePath(item.article_folder)}\``
+          : item.article_photo
+            ? `${item.article_photo === "duplicate" ? "Already in Apple Photos" : "Imported to Apple Photos"}${item.title ? ` (${item.title})` : ""}`
+            : item.destination === "Photos"
+              ? `Saved ${item.saved_count ?? 1} item(s) to Apple Photos`
+              : `Saved ${item.saved_count ?? item.saved_files?.length ?? 0} file(s) to \`${shortenHomePath(item.destination || "folder")}\``;
+        return `- **#${num} · Completed** · ${siteLabel} — ${targetText}`;
+      }
+      const err = normalizeLinkgetError(item.error, "Failed");
+      return `- **#${num} · ${err.title}** · ${siteLabel} — ${err.message}`;
+    });
+    const firstDestFolder = items
+      .map((item) => item.article_folder || item.destination)
+      .find(
+        (destPath) =>
+          destPath && destPath !== "Photos" && fs.existsSync(destPath),
+      );
+    const md = [
+      `# Batch ${failedCount === 0 ? "Completed" : "Finished with Errors"}`,
+      "",
+      `**Completed:** ${completedCount}/${items.length} · **Failed:** ${failedCount}`,
+      "",
+      ...itemLines,
+    ].join("\n");
+    return (
+      <Detail
+        isLoading={isRetrying}
+        navigationTitle={`Batch (${completedCount}/${items.length})`}
+        markdown={md}
+        metadata={
+          <Detail.Metadata>
+            <Detail.Metadata.TagList title="Status">
+              <Detail.Metadata.TagList.Item
+                text={failedCount === 0 ? "Completed" : `${failedCount} Failed`}
+                color={failedCount === 0 ? Color.Green : Color.Orange}
+              />
+              <Detail.Metadata.TagList.Item
+                text={`${completedCount}/${items.length} OK`}
+                color={Color.Blue}
+              />
+            </Detail.Metadata.TagList>
+            {batchRes.task_id && (
+              <Detail.Metadata.Label title="Task ID" text={batchRes.task_id} />
+            )}
+          </Detail.Metadata>
+        }
+        actions={
+          <ActionPanel>
+            {failedCount > 0 && batchRes.task_id && (
+              <Action
+                title="Retry Failed Items"
+                icon={Icon.ArrowClockwise}
+                onAction={() =>
+                  void handleRetryBatch(batchRes.task_id as string)
+                }
+              />
+            )}
+            <Action
+              title="Open Status Board"
+              icon={Icon.List}
+              onAction={() =>
+                void launchCommand({
+                  name: "status-board",
+                  type: LaunchType.UserInitiated,
+                })
+              }
+            />
+            {firstDestFolder && (
+              <Action.ShowInFinder
+                title="Show Destination in Finder"
+                path={firstDestFolder}
+                shortcut={Keyboard.Shortcut.Common.Open}
+              />
+            )}
+            {batchRes.task_id && (
+              <Action.CopyToClipboard
+                title="Copy Task ID"
+                content={batchRes.task_id}
+              />
+            )}
+          </ActionPanel>
+        }
+      />
+    );
+  }
+
   const dl = downloadRes;
   const savedFiles = dl?.saved_files || [];
   const dest = dl?.article_folder || dl?.destination || "Photos";
@@ -333,6 +508,13 @@ export function ResultDetail(props: ResultDetailProps) {
               )}
             </ActionPanel.Section>
             <ActionPanel.Section title="Other">
+              {articleMdContent && (
+                <Action.CopyToClipboard
+                  title="Copy Article Markdown"
+                  content={articleMdContent}
+                  shortcut={Keyboard.Shortcut.Common.Copy}
+                />
+              )}
               <Action.CopyToClipboard
                 title="Copy Archive Folder Path"
                 content={articleMeta.folderPath}
@@ -368,28 +550,40 @@ export function ResultDetail(props: ResultDetailProps) {
         })
       : savedFiles.map((f) => `- \`${path.basename(f)}\``);
 
-  const summaryMd = isPhotos
+  const summaryMd = dl?.article_photo
     ? [
-        `# ${photosSummary?.label || "Saved to Apple Photos"}`,
+        `# ${dl.title || "X Article Saved to Apple Photos"}`,
         "",
-        dl?.site ? `**Source:** ${dl.site}` : "",
-        photosSummary && photosSummary.extensions.length > 0
-          ? `Imported **${photosSummary.label.toLowerCase()}** (${photosSummary.extensions.map((ext) => `\`${ext}\``).join(", ")}) into **Apple Photos**.`
-          : "Imported into **Apple Photos**.",
-      ]
-        .filter(Boolean)
-        .join("\n")
-    : [
-        `# ${dl?.audio_mode ? "Audio Saved" : "Download Completed"}`,
-        "",
-        dl?.site ? `**Site:** ${dl.site}` : "",
-        `**Destination:** \`${shortenHomePath(dest)}\``,
-        fileRows.length > 0
-          ? `\n## Saved Files (${fileRows.length})\n\n${fileRows.join("\n")}`
+        dl.author ? `**Author:** ${dl.author}` : "",
+        `**Status:** ${dl.article_photo === "duplicate" ? "Already in Apple Photos" : "Imported to Apple Photos"}`,
+        typeof dl.assets_downloaded === "number"
+          ? `**Assets:** ${dl.assets_downloaded} downloaded${dl.assets_failed ? `, ${dl.assets_failed} failed` : ""}`
           : "",
       ]
         .filter(Boolean)
-        .join("\n");
+        .join("\n")
+    : isPhotos
+      ? [
+          `# ${photosSummary?.label || "Saved to Apple Photos"}`,
+          "",
+          dl?.site ? `**Source:** ${dl.site}` : "",
+          photosSummary && photosSummary.extensions.length > 0
+            ? `Imported **${photosSummary.label.toLowerCase()}** (${photosSummary.extensions.map((ext) => `\`${ext}\``).join(", ")}) into **Apple Photos**.`
+            : "Imported into **Apple Photos**.",
+        ]
+          .filter(Boolean)
+          .join("\n")
+      : [
+          `# ${dl?.audio_mode ? "Audio Saved" : "Download Completed"}`,
+          "",
+          dl?.site ? `**Site:** ${dl.site}` : "",
+          `**Destination:** \`${shortenHomePath(dest)}\``,
+          fileRows.length > 0
+            ? `\n## Saved Files (${fileRows.length})\n\n${fileRows.join("\n")}`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n");
 
   const folderExists = !isPhotos && fs.existsSync(dest);
 

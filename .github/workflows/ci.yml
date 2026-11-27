@@ -34,3 +34,20 @@ jobs:
       - name: Check AppleScript syntax in the isolated runner
         if: runner.os == 'macOS'
         run: osacompile -o /tmp/linkget-import.scpt src/linkget/import.applescript
+
+  raycast:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: raycast
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: raycast/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run lint
+      - run: npm run build

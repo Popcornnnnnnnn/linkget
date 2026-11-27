@@ -715,6 +715,25 @@ def _format_metrics_html(metrics):
     return '<div class="metrics">' + ''.join(chips) + '</div>'
 
 
+def _x_byline(author, author_detail, author_url, avatar_src, asset_map):
+    name = author_detail.get('name') or author
+    handle = author_detail.get('handle')
+    avatar = f'<img class="avatar" src="{html.escape(avatar_src, quote=True)}" alt="">' if avatar_src else ''
+    affiliation = author_detail.get('affiliation')
+    badge = ''
+    if isinstance(affiliation, dict) and isinstance(affiliation.get('name'), str):
+        badge_url = asset_map.get(affiliation.get('badge_url'))
+        icon = f'<img src="{html.escape(badge_url, quote=True)}" alt="">' if badge_url else ''
+        badge = f'<span class="affiliation">{icon}{html.escape(affiliation["name"])}</span>'
+    verified = '<span class="verified" title="Verified on X" aria-label="Verified on X">✓</span>' if author_detail.get('verified') is True else ''
+    name_html = html.escape(name)
+    if author_url and author_url.startswith(('http://', 'https://')):
+        name_html = f'<a href="{html.escape(author_url, quote=True)}" rel="noopener noreferrer">{name_html}</a>'
+    handle_html = f'<span class="author-handle">@{html.escape(handle)}</span>' if handle else ''
+    return (f'<span class="author x-byline">{avatar}<span class="author-identity">'
+            f'<span class="author-name">{name_html}{verified}{badge}</span>{handle_html}</span></span>')
+
+
 def _build_article_html(article, asset_map):
     title = article.get('title') or article.get('site') or 'Article'
     escaped_title = html.escape(title)
@@ -734,13 +753,30 @@ def _build_article_html(article, asset_map):
         author_html = html.escape(author_text)
 
     meta_items = []
-    if author_html:
+    is_x = article.get('site') == 'X'
+    if author_html and is_x:
+        meta_items.append(_x_byline(author_text, author_detail, author_url, avatar_src, asset_map))
+    elif author_html:
         avatar_tag = f'<img class="avatar" src="{html.escape(avatar_src, quote=True)}" alt="">' if avatar_src else ''
         meta_items.append(f'<span class="author">{avatar_tag}{author_html}</span>')
+    publication = []
     if article.get('published_at'):
-        meta_items.append(f'<time datetime="{html.escape(str(article["published_at"]), quote=True)}">{html.escape(str(article["published_at"]))}</time>')
-    if article.get('site'):
-        meta_items.append(f'<span class="site">{html.escape(str(article["site"]))}</span>')
+        timestamp = str(article['published_at'])
+        display = timestamp
+        if is_x:
+            try:
+                date = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                display = f'{date:%b} {date.day}, {date.year}'
+            except ValueError:
+                pass
+        publication.append(f'<time datetime="{html.escape(timestamp, quote=True)}">{html.escape(display)}</time>')
+    if is_x:
+        publication.insert(0, '<span class="site">X Article</span>')
+        meta_items.append('<span class="publication">' + ''.join(publication) + '</span>')
+    else:
+        meta_items.extend(publication)
+        if article.get('site'):
+            meta_items.append(f'<span class="site">{html.escape(str(article["site"]))}</span>')
 
     source_url = article.get('url') or article.get('canonical_url') or ''
     source_html = (
@@ -807,6 +843,14 @@ def _build_article_html(article, asset_map):
     .meta {{ display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem 1.1rem; color: var(--muted); font-size: 0.92rem; }}
     .author {{ display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 600; color: var(--fg); }}
     .avatar {{ width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }}
+    .author-identity {{ display: grid; min-width: 0; }}
+    .author-name {{ display: flex; flex-wrap: wrap; align-items: center; gap: 0.45em; }}
+    .author-handle {{ color: var(--muted); font-weight: 400; }}
+    .verified {{ display: inline-grid; place-items: center; border-radius: 50%; width: 1.25em; height: 1.25em; background: var(--accent); color: white; line-height: 1; }}
+    .affiliation {{ display: inline-flex; align-items: center; gap: 0.35em; border: 1px solid var(--border); border-radius: 0.4em; padding: 0.1em 0.45em; font-size: 0.76em; }}
+    .affiliation img {{ width: 1em; height: 1em; object-fit: contain; border-radius: 0.18em; }}
+    .publication {{ display: inline-flex; flex-wrap: wrap; gap: 0.6em; align-items: center; }}
+    .publication time:not(:first-child)::before {{ content: "·"; margin-right: 0.6em; }}
     .metrics {{ display: flex; flex-wrap: wrap; gap: 0.9rem; margin-top: 0.75rem; font-size: 0.88rem; color: var(--muted); }}
     .cover {{ margin: 0 0 1.5rem; }}
     .cover img {{ width: 100%; height: auto; border-radius: 10px; display: block; }}

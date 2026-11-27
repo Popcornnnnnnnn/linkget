@@ -19,9 +19,11 @@ import { ResultDetail } from "./components/ResultDetail";
 import { formatBytes, formatDuration } from "./lib/articles";
 import { getFrontmostBrowserUrl } from "./lib/browser";
 import {
+  downloadBatch,
   downloadLink,
   effectiveSaveMode,
   ensureFolderExists,
+  extractUrlInputs,
   getConfig,
   inspectUrl,
   isArticleFolderRequiredError,
@@ -31,12 +33,22 @@ import {
   resolveEffectiveArticleFolder,
   resolveInputTarget,
   resolveReadOutputFolder,
+  startBackgroundBatchDownload,
   startBackgroundDownload,
   submitReadTask,
 } from "./lib/cli";
+import {
+  allowsPhotosDestination,
+  BATCH_ALLOWED_MODES,
+  buildSavePreviewText,
+  isXArticlePhotoCapable,
+  isXUrl,
+  resolveBatchDefaultTarget,
+} from "./lib/save-helpers";
 import { shortenHomePath } from "./lib/task-format";
 import type {
   AudioFormat,
+  BatchDownloadResponse,
   BrowserOption,
   ConfigResponse,
   DestinationChoice,
@@ -159,17 +171,34 @@ export default function SaveLinkCommand(
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const activeRunAbortRef = useRef<AbortController | null>(null);
   const inspectReqIdRef = useRef<number>(0);
-  const target = resolveInputTarget(urlInput);
+  const batchUrls = extractUrlInputs(urlInput);
+  const isBatchMode = batchUrls.length > 1;
+  const target = isBatchMode ? null : resolveInputTarget(urlInput);
+  const hasTarget = isBatchMode || Boolean(target);
   const isLocalPath = Boolean(target && !/^https?:\/\//.test(target));
-  const inspectionKey = JSON.stringify([target, mode, browser]);
+  const effectiveFormMode: SaveMode = isLocalPath
+    ? "read"
+    : isBatchMode && mode === "read"
+      ? "auto"
+      : mode;
+  const inspectionKey = JSON.stringify([target, effectiveFormMode, browser]);
   const inspectResult =
-    inspection?.key === inspectionKey ? inspection.result : null;
+    !isBatchMode && inspection?.key === inspectionKey
+      ? inspection.result
+      : null;
   const previewMode = isLocalPath
     ? "read"
-    : effectiveSaveMode(mode, inspectResult);
-  const allowsPhotos = ["auto", "media", "photo", "video"].includes(
-    previewMode,
-  );
+    : isBatchMode
+      ? effectiveFormMode
+      : effectiveSaveMode(effectiveFormMode, inspectResult);
+  const allowArticlePhotos = isBatchMode
+    ? batchUrls.every((url) => isXUrl(url))
+    : isXArticlePhotoCapable(target, inspectResult);
+  const allowsPhotos = allowsPhotosDestination(previewMode, {
+    target,
+    inspect: inspectResult,
+    batchUrls,
+  });
   const showClipOptions = ["auto", "media", "video", "audio"].includes(
     previewMode,
   );
@@ -178,7 +207,24 @@ export default function SaveLinkCommand(
   const defaultTarget =
     previewMode === "read"
       ? null
-      : resolveDefaultDownloadTarget(previewMode, prefs, config, inspectResult);
+      : isBatchMode
+        ? resolveBatchDefaultTarget({
+            effectiveMode: previewMode,
+            batchUrls,
+            allowArticlePhotos,
+            noAssets: !downloadAssets,
+            prefs,
+            config,
+            resolveDefaultTargetFn: resolveDefaultDownloadTarget,
+            resolveArticleFolderFn: resolveEffectiveArticleFolder,
+          })
+        : resolveDefaultDownloadTarget(
+            previewMode,
+            prefs,
+            config,
+            inspectResult,
+            { noAssets: !downloadAssets },
+          );
   const destinationName =
     visibleDestination === "folder"
       ? folderPaths[0]
@@ -186,11 +232,15 @@ export default function SaveLinkCommand(
         : "a folder"
       : visibleDestination === "photos"
         ? "Apple Photos"
-        : defaultTarget?.folder
-          ? shortenHomePath(defaultTarget.folder)
-          : defaultTarget
-            ? "Apple Photos"
-            : "the default read folder";
+        : defaultTarget?.destination === "photos"
+          ? "Apple Photos"
+          : defaultTarget?.folder
+            ? shortenHomePath(defaultTarget.folder)
+            : isBatchMode && defaultTarget?.destination === "default"
+              ? "default destinations"
+              : defaultTarget
+                ? "Apple Photos"
+                : "the default read folder";
   const mediaType =
     previewMode === "photo" ||
     (previewMode === "auto" && inspectResult?.engine === "pixiv")
@@ -202,17 +252,18 @@ export default function SaveLinkCommand(
         : previewMode === "auto" || previewMode === "media"
           ? "photos and videos"
           : previewMode;
-  let previewText = `Save ${mediaType === "read" ? "extracted text" : mediaType} to ${destinationName}`;
-  if (previewMode === "auto" && !inspectResult) {
-    previewText = "Detecting what to save…";
-  } else if (
-    previewMode === "auto" &&
-    visibleDestination === "default" &&
-    defaultTarget?.destination === "default" &&
-    !defaultTarget.folder
-  ) {
-    previewText = `Save media to Apple Photos or archive the article in ${shortenHomePath(resolveEffectiveArticleFolder(prefs, config))}`;
-  }
+  const previewText = buildSavePreviewText({
+    isBatchMode,
+    batchUrls,
+    previewMode,
+    visibleDestination,
+    destinationName,
+    mediaType,
+    inspectResult,
+    defaultTarget,
+    effectiveArticleFolder: resolveEffectiveArticleFolder(prefs, config),
+    xArticlePhotosEnabled: Boolean(config?.x_article_photos),
+  });
 
   useEffect(() => {
     const controller = new AbortController();
@@ -232,13 +283,10 @@ export default function SaveLinkCommand(
     async function loadClipboard() {
       try {
         const text = await Clipboard.readText();
-        const extracted = resolveInputTarget(text);
-        if (
-          !cancelled &&
-          extracted &&
-          (extracted.startsWith("http://") || extracted.startsWith("https://"))
-        ) {
-          setUrlInput((prev) => (prev ? prev : extracted));
+        const urls = extractUrlInputs(text);
+        if (!cancelled && urls.length > 0) {
+          const formatted = urls.length > 1 ? urls.join("\n") : urls[0];
+          setUrlInput((prev) => (prev ? prev : formatted));
         }
       } catch {
         // clipboard unavailable
@@ -251,7 +299,7 @@ export default function SaveLinkCommand(
   }, [props.launchContext?.url, prefs.autoDetectClipboard]);
 
   useEffect(() => {
-    if (!target) {
+    if (isBatchMode || !target) {
       inspectReqIdRef.current += 1;
       setIsInspecting(false);
       return;
@@ -322,8 +370,16 @@ export default function SaveLinkCommand(
   };
 
   const handleProbeRemote = async () => {
-    const target = resolveInputTarget(urlInput);
-    if (!target) {
+    if (isBatchMode) {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "Single URL Required",
+        message: "Remote metadata probe applies to a single URL.",
+      });
+      return;
+    }
+    const probeTarget = resolveInputTarget(urlInput);
+    if (!probeTarget) {
       setUrlError("Enter a valid http(s) URL or local file path first.");
       return;
     }
@@ -335,7 +391,7 @@ export default function SaveLinkCommand(
     setIsInspecting(true);
     try {
       const res = await inspectUrl(
-        target,
+        probeTarget,
         {
           noNetwork: false,
           article: mode === "article" ? true : undefined,
@@ -382,8 +438,20 @@ export default function SaveLinkCommand(
         downloadDest: DestinationChoice;
         chosenFolder?: string;
         articleFolder?: string;
+        allowArticlePhotos: boolean;
         pairLivePhotos: boolean;
         cachedConfig: ConfigResponse | null;
+      }
+    | {
+        kind: "batch";
+        urls: string[];
+        effectiveMode: Exclude<SaveMode, "read">;
+        effectiveDest: DestinationChoice;
+        downloadDest: DestinationChoice;
+        chosenFolder?: string;
+        articleFolder?: string;
+        allowArticlePhotos: boolean;
+        pairLivePhotos: boolean;
       };
 
   const prepareSaveTarget = async (
@@ -397,20 +465,120 @@ export default function SaveLinkCommand(
       return null;
     };
 
-    const target = resolveInputTarget(urlInput);
-    if (!target) {
+    const currentBatchUrls = extractUrlInputs(urlInput);
+    if (currentBatchUrls.length > 1) {
+      const effectiveMode: Exclude<SaveMode, "read"> =
+        mode === "read" ? "auto" : mode;
+      const allowBatchArticlePhotos = currentBatchUrls.every((url) =>
+        isXUrl(url),
+      );
+      const effectiveDest: DestinationChoice =
+        ((effectiveMode === "article" && !allowBatchArticlePhotos) ||
+          effectiveMode === "audio") &&
+        destination === "photos"
+          ? "default"
+          : destination;
+
+      if (effectiveDest === "folder" && !folderPaths[0]) {
+        const msg = "Choose a destination folder.";
+        setFolderError(msg);
+        return failValidation(msg, "Choose a Destination Folder");
+      }
+
+      const pairLivePhotos =
+        livePhotos &&
+        (effectiveMode === "auto" || effectiveMode === "media") &&
+        effectiveDest !== "folder" &&
+        (effectiveDest === "photos" || !prefs.defaultMediaFolder?.trim());
+      if (pairLivePhotos && clipRange.trim()) {
+        return failValidation(
+          "Clip Range cannot be combined with Live Photos.",
+          "Incompatible Options",
+        );
+      }
+
+      let chosenFolder: string | undefined;
+      let articleFolder: string | undefined;
+      let downloadDest: DestinationChoice = effectiveDest;
+
+      if (effectiveDest === "folder") {
+        chosenFolder = ensureFolderExists(folderPaths[0]);
+      } else if (effectiveDest === "default") {
+        const cachedConfig =
+          config ??
+          (await getConfig({
+            binaryPath: prefs.linkgetPath,
+            signal,
+          }).catch((err) => {
+            if (err instanceof Error && err.name === "AbortError") {
+              throw err;
+            }
+            return null;
+          }));
+        if (signal?.aborted) {
+          const abortErr = new Error("Aborted");
+          abortErr.name = "AbortError";
+          throw abortErr;
+        }
+        const resolved = resolveBatchDefaultTarget({
+          effectiveMode,
+          batchUrls: currentBatchUrls,
+          allowArticlePhotos: allowBatchArticlePhotos,
+          noAssets: !downloadAssets,
+          prefs,
+          config: cachedConfig,
+          resolveDefaultTargetFn: resolveDefaultDownloadTarget,
+          resolveArticleFolderFn: resolveEffectiveArticleFolder,
+        });
+        downloadDest = resolved.destination;
+        if (resolved.folder) {
+          chosenFolder = ensureFolderExists(resolved.folder);
+        }
+        if (resolved.articleFolder) {
+          articleFolder = ensureFolderExists(resolved.articleFolder);
+        }
+      }
+
+      if (
+        effectiveMode === "article" &&
+        allowBatchArticlePhotos &&
+        downloadDest === "photos" &&
+        !downloadAssets
+      ) {
+        return failValidation(
+          "Rendering X Articles for Apple Photos requires their assets. Enable Article Assets or pick a folder.",
+          "Incompatible Options",
+        );
+      }
+
+      return {
+        kind: "batch",
+        urls: currentBatchUrls,
+        effectiveMode,
+        effectiveDest,
+        downloadDest,
+        chosenFolder,
+        articleFolder,
+        allowArticlePhotos: allowBatchArticlePhotos,
+        pairLivePhotos,
+      };
+    }
+
+    const singleTarget = resolveInputTarget(urlInput);
+    if (!singleTarget) {
       const msg =
-        "Paste a valid post/article URL, share text, or local file path.";
+        "Paste one or more valid URLs, share text, or a local file path.";
       setUrlError(msg);
       return failValidation(msg, "Invalid Link or Path");
     }
 
-    const isLocalPath =
-      !target.startsWith("http://") && !target.startsWith("https://");
+    const singleLocalPath =
+      !singleTarget.startsWith("http://") &&
+      !singleTarget.startsWith("https://");
     let currentInspect = inspectResult;
-    if (!currentInspect && !isLocalPath && mode === "auto") {
+    if (!currentInspect && !singleLocalPath && mode === "auto") {
       currentInspect = await inspectUrl(
-        target,
+        singleTarget,
         { noNetwork: true, browser },
         { binaryPath: prefs.linkgetPath, signal },
       ).catch((err) => {
@@ -418,11 +586,15 @@ export default function SaveLinkCommand(
         return null;
       });
     }
-    const effectiveMode = isLocalPath
+    const effectiveMode = singleLocalPath
       ? "read"
       : effectiveSaveMode(mode, currentInspect);
+    const singleAllowArticlePhotos = isXArticlePhotoCapable(
+      singleTarget,
+      currentInspect,
+    );
     const effectiveDest: DestinationChoice =
-      (effectiveMode === "article" ||
+      ((effectiveMode === "article" && !singleAllowArticlePhotos) ||
         effectiveMode === "audio" ||
         effectiveMode === "read") &&
       destination === "photos"
@@ -463,7 +635,7 @@ export default function SaveLinkCommand(
       if (effectiveDest === "folder") {
         chosenFolder = resolveReadOutputFolder(folderPaths[0]);
       }
-      return { kind: "read", target, chosenFolder };
+      return { kind: "read", target: singleTarget, chosenFolder };
     }
 
     if (effectiveDest === "folder") {
@@ -490,6 +662,7 @@ export default function SaveLinkCommand(
         prefs,
         cachedConfig,
         currentInspect,
+        { noAssets: !downloadAssets },
       );
       downloadDest = resolved.destination;
       articleFolder = resolved.articleFolder;
@@ -498,14 +671,27 @@ export default function SaveLinkCommand(
       }
     }
 
+    if (
+      effectiveMode === "article" &&
+      singleAllowArticlePhotos &&
+      downloadDest === "photos" &&
+      !downloadAssets
+    ) {
+      return failValidation(
+        "Rendering an X Article for Apple Photos requires its assets. Enable Article Assets or pick a folder.",
+        "Incompatible Options",
+      );
+    }
+
     return {
       kind: "download",
-      target,
+      target: singleTarget,
       effectiveMode,
       effectiveDest,
       downloadDest,
       chosenFolder,
       articleFolder,
+      allowArticlePhotos: singleAllowArticlePhotos,
       pairLivePhotos,
       cachedConfig,
     };
@@ -573,6 +759,37 @@ export default function SaveLinkCommand(
         return;
       }
 
+      if (prepared.kind === "batch") {
+        await startBackgroundBatchDownload(
+          prepared.urls,
+          {
+            mode: prepared.effectiveMode,
+            destination: prepared.downloadDest,
+            folder: prepared.chosenFolder,
+            articleFolder: prepared.articleFolder,
+            allowArticlePhotos: prepared.allowArticlePhotos,
+            noAssets: !downloadAssets,
+            audioFormat,
+            clip: clipRange,
+            maxDuration,
+            maxSize,
+            livePhotos: prepared.pairLivePhotos,
+            browser,
+          },
+          { binaryPath: prefs.linkgetPath },
+        );
+
+        toast.style = Toast.Style.Success;
+        toast.title = "Batch Download Started in Background";
+        toast.message = `${prepared.urls.length} links queued — check Status Board`;
+        toast.primaryAction = {
+          title: "Open Status Board",
+          onAction: openStatusBoardCommand,
+        };
+        resetUrlForNextEntry();
+        return;
+      }
+
       await startBackgroundDownload(
         prepared.target,
         {
@@ -580,6 +797,7 @@ export default function SaveLinkCommand(
           destination: prepared.downloadDest,
           folder: prepared.chosenFolder,
           articleFolder: prepared.articleFolder,
+          allowArticlePhotos: prepared.allowArticlePhotos,
           noAssets: !downloadAssets,
           audioFormat,
           clip: clipRange,
@@ -671,6 +889,73 @@ export default function SaveLinkCommand(
         return;
       }
 
+      if (prepared.kind === "batch") {
+        toast.title = `Downloading ${prepared.urls.length} Links…`;
+        toast.message = "Safe to close Raycast — batch continues in background";
+
+        const batchRes: BatchDownloadResponse = await downloadBatch(
+          prepared.urls,
+          {
+            mode: prepared.effectiveMode,
+            destination: prepared.downloadDest,
+            folder: prepared.chosenFolder,
+            articleFolder: prepared.articleFolder,
+            allowArticlePhotos: prepared.allowArticlePhotos,
+            noAssets: !downloadAssets,
+            audioFormat,
+            clip: clipRange,
+            maxDuration,
+            maxSize,
+            livePhotos: prepared.pairLivePhotos,
+            browser,
+          },
+          {
+            binaryPath: prefs.linkgetPath,
+            signal: runController.signal,
+            detachOnAbort: true,
+          },
+        );
+
+        if (!batchRes.ok && (!batchRes.items || batchRes.items.length === 0)) {
+          const err = normalizeLinkgetError(
+            batchRes.error,
+            "Batch Download Failed",
+          );
+          toast.style = Toast.Style.Failure;
+          toast.title = err.title;
+          toast.message = err.message;
+          push(
+            <ResultDetail
+              kind="error"
+              errorResult={{ ...err, taskId: batchRes.task_id }}
+              binaryPath={prefs.linkgetPath}
+            />,
+          );
+          return;
+        }
+
+        const total = batchRes.items?.length ?? prepared.urls.length;
+        const completed = batchRes.completed_count ?? 0;
+        const failed = batchRes.failed_count ?? 0;
+        toast.style =
+          batchRes.ok && failed === 0
+            ? Toast.Style.Success
+            : Toast.Style.Failure;
+        toast.title =
+          batchRes.ok && failed === 0
+            ? `Batch Saved (${completed}/${total})`
+            : `Batch Finished (${completed}/${total} succeeded)`;
+        toast.message = failed > 0 ? `${failed} item(s) failed` : undefined;
+        push(
+          <ResultDetail
+            kind="batch"
+            batchResult={batchRes}
+            binaryPath={prefs.linkgetPath}
+          />,
+        );
+        return;
+      }
+
       toast.title =
         prepared.effectiveMode === "article"
           ? "Archiving Article Offline…"
@@ -685,6 +970,7 @@ export default function SaveLinkCommand(
           destination: prepared.downloadDest,
           folder: prepared.chosenFolder,
           articleFolder: prepared.articleFolder,
+          allowArticlePhotos: prepared.allowArticlePhotos,
           noAssets: !downloadAssets,
           audioFormat,
           clip: clipRange,
@@ -818,10 +1104,10 @@ export default function SaveLinkCommand(
         </ActionPanel>
       }
     >
-      <Form.TextField
+      <Form.TextArea
         id="url"
-        title="URL or Share Text"
-        placeholder="https://x.com/... or share text / local file path"
+        title="URLs or Share Text"
+        placeholder="Paste one or more URLs, share text, or a local file path"
         value={urlInput}
         error={urlError}
         onChange={(value) => {
@@ -835,15 +1121,21 @@ export default function SaveLinkCommand(
       <Form.Dropdown
         id="mode"
         title="Save as"
-        value={isLocalPath ? "read" : mode}
+        value={effectiveFormMode}
         onChange={(next) => setMode(next as SaveMode)}
       >
-        {MODE_LABELS.filter(({ value }) =>
-          isLocalPath
-            ? value === "read"
-            : (value !== "photo" && value !== "video") ||
-              config?.save_types?.includes(value),
-        ).map((item) => (
+        {MODE_LABELS.filter(({ value }) => {
+          if (isLocalPath) {
+            return value === "read";
+          }
+          if (isBatchMode && !BATCH_ALLOWED_MODES.includes(value)) {
+            return false;
+          }
+          return (
+            (value !== "photo" && value !== "video") ||
+            config?.save_types?.includes(value)
+          );
+        }).map((item) => (
           <Form.Dropdown.Item
             key={item.value}
             value={item.value}
@@ -884,15 +1176,17 @@ export default function SaveLinkCommand(
         />
       )}
 
-      {target && (
+      {hasTarget && (
         <Form.Description
           title="Preview"
           text={
-            inspectResult && !inspectResult.ok
+            !isBatchMode && inspectResult && !inspectResult.ok
               ? summarizeInspect(inspectResult)
               : [
                   previewText,
-                  inspectResult?.metadata?.title || inspectResult?.site,
+                  !isBatchMode
+                    ? inspectResult?.metadata?.title || inspectResult?.site
+                    : undefined,
                 ]
                   .filter(Boolean)
                   .join("\n")
@@ -918,7 +1212,7 @@ export default function SaveLinkCommand(
 
       {(previewMode === "article" ||
         previewMode === "read" ||
-        (mode === "auto" && showAdvanced)) && (
+        (effectiveFormMode === "auto" && showAdvanced)) && (
         <Form.Checkbox
           id="downloadAssets"
           title="Article Assets"

@@ -65,6 +65,32 @@ TOOLS = [
         },
     },
     {
+        'name': 'batch_download',
+        'description': 'Download multiple posts, videos, audio tracks, or offline article archives concurrently into an explicit destination folder.',
+        'annotations': {'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': False, 'openWorldHint': True},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'urls': {
+                    'type': 'array',
+                    'items': {'type': 'string'},
+                    'minItems': 1,
+                    'maxItems': 50,
+                    'description': 'List of supported HTTP/HTTPS post, article, video, or music URLs (1 to 50)',
+                },
+                'folder': {'type': 'string', 'description': 'Explicit destination directory path (required in MCP mode)'},
+                'save_as': {'type': 'string', 'enum': list(engines.SAVE_TYPES), 'description': 'Choose the output type. Video mode in MCP uses dedicated LinkGet video routes.'},
+                'audio': {'type': 'boolean', 'default': False, 'description': 'Extract/download audio only'},
+                'audio_format': {'type': 'string', 'enum': ['mp3', 'm4a', 'flac', 'wav', 'opus'], 'description': 'Optional audio output format (implies audio)'},
+                'article': {'type': 'boolean', 'default': False, 'description': 'Treat X post URLs as offline article archives'},
+                'no_assets': {'type': 'boolean', 'default': False, 'description': 'Article downloads only: skip downloading embedded images and videos'},
+                'jobs': {'type': 'integer', 'minimum': 1, 'maximum': 8, 'description': 'Maximum concurrent downloads (1 to 8)'},
+                'browser': {'type': 'string', 'enum': ['auto', 'none', 'chrome', 'firefox', 'safari', 'edge', 'brave'], 'default': 'auto'},
+            },
+            'required': ['urls', 'folder'],
+        },
+    },
+    {
         'name': 'read_content',
         'description': 'Extract transcripts, subtitles, OCR, video keyframes, or X/web/WeChat/Toutiao articles.',
         'annotations': {'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': False, 'openWorldHint': True},
@@ -96,6 +122,31 @@ TOOLS = [
                 'kind': {'type': 'string', 'enum': ['all', 'download', 'read'], 'default': 'all'},
                 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'default': 20},
                 'include_content': {'type': 'boolean', 'default': False, 'description': 'When task_id is a completed read task, include content.json'},
+            },
+        },
+    },
+    {
+        'name': 'retry_task',
+        'description': 'Retry unfinished download items from the latest or specified download task.',
+        'annotations': {'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': False, 'openWorldHint': True},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'task_id': {'type': 'string', 'description': 'Optional download task ID; omit to retry the latest unfinished task'},
+                'redownload': {'type': 'boolean', 'default': False, 'description': 'Download unfinished items again instead of reusing complete staged media'},
+                'jobs': {'type': 'integer', 'minimum': 1, 'maximum': 8, 'description': 'Maximum concurrent retry downloads (1 to 8)'},
+            },
+        },
+    },
+    {
+        'name': 'clean_stages',
+        'description': 'Preview or remove old completed temporary staging folders while preserving active, incomplete, and user folders.',
+        'annotations': {'readOnlyHint': False, 'destructiveHint': True, 'idempotentHint': True, 'openWorldHint': False},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'older_than': {'type': 'string', 'default': '7d', 'description': 'Minimum age of completed temporary stages (e.g. 7d, 24h, 0s)'},
+                'apply': {'type': 'boolean', 'default': False, 'description': 'Delete eligible completed stages (false runs a read-only dry-run preview)'},
             },
         },
     },
@@ -294,6 +345,43 @@ def _call_tool(name, arguments):
             argv.append(f'--browser={browser}')
         return _run_cli_json(argv, command='download')
 
+    if name == 'batch_download':
+        raw_urls = arguments.get('urls')
+        if not isinstance(raw_urls, list) or not 1 <= len(raw_urls) <= 50:
+            raise _RPCError(-32602, 'Argument "urls" must be a non-empty array of 1 to 50 URLs.')
+        urls = []
+        for idx, raw_url in enumerate(raw_urls, 1):
+            if not isinstance(raw_url, str) or not raw_url.strip() or '\x00' in raw_url:
+                raise _RPCError(-32602, f'Argument "urls[{idx}]" must be a non-empty URL string.')
+            cleaned = raw_url.strip()
+            if not cleaned.startswith(('http://', 'https://')):
+                raise _RPCError(-32602, f'Argument "urls[{idx}]" must start with http:// or https://.')
+            urls.append(cleaned)
+        folder = _require_str(arguments, 'folder')
+        jobs = arguments.get('jobs')
+        if jobs is not None and (type(jobs) is not int or not 1 <= jobs <= 8):
+            raise _RPCError(-32602, 'Argument "jobs" must be an integer between 1 and 8.')
+        save_type_flags = []
+        for target_url in urls:
+            save_type_flags = _save_type_args(arguments, target_url)
+        argv = ['batch', *urls, f'--folder={folder}', '--non-interactive', '--json']
+        argv.extend(save_type_flags)
+        if _require_bool(arguments, 'audio'):
+            argv.append('--audio')
+        audio_format = _optional_enum(arguments, 'audio_format', AUDIO_FORMATS)
+        if audio_format:
+            argv.append(f'--audio-format={audio_format}')
+        if _require_bool(arguments, 'article'):
+            argv.append('--article')
+        if _require_bool(arguments, 'no_assets'):
+            argv.append('--no-assets')
+        if jobs is not None:
+            argv.append(f'--jobs={jobs}')
+        browser = _optional_enum(arguments, 'browser', BROWSERS)
+        if browser:
+            argv.append(f'--browser={browser}')
+        return _run_cli_json(argv, command='batch')
+
     if name == 'read_content':
         target = _safe_target(_require_str(arguments, 'url_or_path'), reject_read_reserved=True)
         argv = ['read', target, '--non-interactive', '--json']
@@ -354,6 +442,42 @@ def _call_tool(name, arguments):
                             except (OSError, ValueError):
                                 row['content_error'] = 'Could not read saved content.json.'
         return payload
+
+    if name == 'retry_task':
+        task_id = _optional_str(arguments, 'task_id')
+        if task_id and not TASK_ID_RE.fullmatch(task_id):
+            raise _RPCError(-32602, 'Argument "task_id" contains unsupported characters.')
+        jobs = arguments.get('jobs')
+        if jobs is not None and (type(jobs) is not int or not 1 <= jobs <= 8):
+            raise _RPCError(-32602, 'Argument "jobs" must be an integer between 1 and 8.')
+        argv = ['retry']
+        if task_id:
+            argv.append(task_id)
+        if _require_bool(arguments, 'redownload'):
+            argv.append('--redownload')
+        if jobs is not None:
+            argv.append(f'--jobs={jobs}')
+        argv.extend(['--non-interactive', '--json'])
+        return _run_cli_json(argv, command='retry')
+
+    if name == 'clean_stages':
+        older_than = _optional_str(arguments, 'older_than')
+        if older_than is not None:
+            if older_than.startswith('-'):
+                raise _RPCError(-32602, 'Argument "older_than" must not start with "-".')
+            try:
+                media_limits.parse_age(older_than)
+            except ValueError as error:
+                raise _RPCError(-32602, str(error)) from error
+        apply_clean = _require_bool(arguments, 'apply', default=False)
+        argv = [
+            'clean',
+            f"--older-than={older_than or '7d'}",
+            '--apply' if apply_clean else '--dry-run',
+            '--non-interactive',
+            '--json',
+        ]
+        return _run_cli_json(argv, command='clean')
 
     if name == 'doctor':
         argv = ['doctor', '--non-interactive', '--json']

@@ -18,8 +18,10 @@ Control your local [`linkget`](https://github.com/Popcornnnnnnnn/linkget) CLI di
 
 | Command | Mode | Description |
 | --- | --- | --- |
-| **Save Link** (`lg`) | Form | Paste a URL or share text, then review what will be saved and where. **Auto** keeps mixed posts together. Choose **Photos**, **Video**, or **Article** to override, and use **Destination** to choose where to save it. Press `⌘B` to save in the background. |
-| **Status Board** (`lgs`) | List + Detail | Unified board showing recent downloads & saved articles (readable titles, clean dates, Apple Photos & article previews, toggle detail pane `⌘⇧D`, in-Raycast reader, open `article.html`, reveal in Finder, retry/cancel tasks) alongside a pinned CLI health & staging overview and expandable download engines, site sessions, update checks, and confirmed `linkget clean`. |
+| **Save Link** (`lg`) | Form | Paste one or more URLs or share text, review what will be saved and where, and override **Auto** with **Photos**, **Video**, **Article**, **Audio**, or **Transcript or Text**. Supports multi-link batch paste, **X Article → Apple Photos** PNG import, and background saves (`⌘B`). |
+| **Status Board** (`lgs`) | List + Detail | Unified board showing recent downloads & saved articles (readable titles, clean dates, Apple Photos & article previews, toggle detail pane `⌘⇧D`, in-Raycast reader, copy Markdown, open `article.html`, reveal in Finder, retry/cancel tasks) alongside a pinned CLI health & staging overview and expandable download engines, site sessions, update checks, and confirmed `linkget clean`. |
+
+> **Obsidian / Notion tip:** Set `linkget config --article-folder ~/path/to/Vault/Clippings` (or **Default Article Archive Folder** in Raycast Preferences) to archive articles straight into your notes folder, or use **Copy Article Markdown** (`⌘C`) from the result detail or inline reader.
 
 ## Preferences
 

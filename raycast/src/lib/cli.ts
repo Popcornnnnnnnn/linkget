@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type {
   AudioFormat,
+  BatchDownloadResponse,
   BrowserOption,
   CleanResponse,
   ConfigResponse,
@@ -103,25 +104,37 @@ function stripTrailingUrlPunctuation(rawUrl: string): string {
   return result;
 }
 
-export function extractUrlInput(raw?: string | null): string | null {
+export function extractUrlInputs(raw?: string | null): string[] {
   const text = (raw || "").trim();
   if (!text) {
-    return null;
+    return [];
   }
   const matches = text.match(/https?:\/\/[^\s<>"'`，。！？、】【「」]+/gi);
   if (!matches || matches.length === 0) {
-    return null;
+    return [];
   }
-  const candidate = stripTrailingUrlPunctuation(matches[0]);
-  try {
-    const parsed = new URL(candidate);
-    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-      return candidate;
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  for (const rawMatch of matches) {
+    const candidate = stripTrailingUrlPunctuation(rawMatch);
+    try {
+      const parsed = new URL(candidate);
+      if (
+        (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+        !seen.has(candidate)
+      ) {
+        seen.add(candidate);
+        urls.push(candidate);
+      }
+    } catch {
+      // ignore invalid URL token
     }
-  } catch {
-    return null;
   }
-  return null;
+  return urls;
+}
+
+export function extractUrlInput(raw?: string | null): string | null {
+  return extractUrlInputs(raw)[0] ?? null;
 }
 
 export function resolveInputTarget(raw?: string | null): string | null {
@@ -224,11 +237,19 @@ export function resolveDefaultDownloadTarget(
   prefs: ExtensionPreferences,
   config?: ConfigResponse | null,
   inspect?: InspectResponse | null,
+  options?: { noAssets?: boolean },
 ): { destination: DestinationChoice; folder?: string; articleFolder?: string } {
   if (
     effectiveMode === "article" ||
     (effectiveMode === "auto" && isArticleInspectTarget(inspect))
   ) {
+    if (
+      !options?.noAssets &&
+      config?.x_article_photos &&
+      (inspect?.supports_article_photos || inspect?.engine === "x_article")
+    ) {
+      return { destination: "photos" };
+    }
     return {
       destination: "default",
       folder: resolveEffectiveArticleFolder(prefs, config),
@@ -256,6 +277,9 @@ export function resolveDefaultDownloadTarget(
     config?.destination?.mode === "photos" &&
     config.save_types
   ) {
+    if (config.x_article_photos && !options?.noAssets) {
+      return { destination: "default" };
+    }
     return {
       destination: "default",
       articleFolder: resolveEffectiveArticleFolder(prefs, config),
@@ -320,6 +344,7 @@ export interface DownloadOptions {
   destination?: DestinationChoice;
   folder?: string;
   articleFolder?: string;
+  allowArticlePhotos?: boolean;
   noAssets?: boolean;
   audioFormat?: AudioFormat;
   clip?: string;
@@ -327,6 +352,10 @@ export interface DownloadOptions {
   maxSize?: string;
   livePhotos?: boolean;
   browser?: BrowserOption;
+}
+
+export interface BatchDownloadOptions extends DownloadOptions {
+  jobs?: number;
 }
 
 export function buildDownloadArgs(
@@ -348,11 +377,10 @@ export function buildDownloadArgs(
   if (opts.noAssets && (opts.mode === "article" || opts.mode === "auto")) {
     args.push("--no-assets");
   }
-  if (
-    opts.destination === "photos" &&
-    opts.mode !== "article" &&
-    opts.mode !== "audio"
-  ) {
+  const allowPhotos =
+    opts.mode !== "audio" &&
+    (opts.mode !== "article" || Boolean(opts.allowArticlePhotos));
+  if (opts.destination === "photos" && allowPhotos) {
     args.push("--photos");
   } else if (opts.folder && opts.folder.trim()) {
     args.push("--folder", expandHome(opts.folder));
@@ -384,6 +412,26 @@ export function buildDownloadArgs(
     args.push("--browser", opts.browser);
   }
   args.push("--non-interactive", "--json");
+  return args;
+}
+
+export function buildBatchDownloadArgs(
+  urls: string[],
+  opts: BatchDownloadOptions,
+): string[] {
+  if (urls.length === 0) {
+    throw new Error("At least one URL is required for batch download.");
+  }
+  const tail = buildDownloadArgs(urls[0], opts).slice(1);
+  const args = ["batch", ...urls];
+  if (
+    typeof opts.jobs === "number" &&
+    Number.isFinite(opts.jobs) &&
+    opts.jobs >= 1
+  ) {
+    args.push("--jobs", String(Math.floor(opts.jobs)));
+  }
+  args.push(...tail);
   return args;
 }
 
@@ -1042,15 +1090,13 @@ export async function runLinkgetJsonDetached<T>(
   });
 }
 
-export function startBackgroundDownload(
-  url: string,
-  opts: DownloadOptions,
+function spawnBackgroundCommand(
+  args: string[],
   runOpts: RunCommandOptions = {},
 ): Promise<{ pid?: number }> {
   const binary = resolveLinkgetBinary(runOpts.binaryPath);
   const cwd = runOpts.cwd || os.homedir();
   const env = augmentedEnv(runOpts.env ?? process.env);
-  const args = buildDownloadArgs(url, opts);
 
   return new Promise<{ pid?: number }>((resolve, reject) => {
     let settled = false;
@@ -1088,6 +1134,22 @@ export function startBackgroundDownload(
   });
 }
 
+export function startBackgroundDownload(
+  url: string,
+  opts: DownloadOptions,
+  runOpts: RunCommandOptions = {},
+): Promise<{ pid?: number }> {
+  return spawnBackgroundCommand(buildDownloadArgs(url, opts), runOpts);
+}
+
+export function startBackgroundBatchDownload(
+  urls: string[],
+  opts: BatchDownloadOptions,
+  runOpts: RunCommandOptions = {},
+): Promise<{ pid?: number }> {
+  return spawnBackgroundCommand(buildBatchDownloadArgs(urls, opts), runOpts);
+}
+
 export function downloadLink(
   url: string,
   opts: DownloadOptions,
@@ -1095,6 +1157,21 @@ export function downloadLink(
 ): Promise<DownloadResponse> {
   return runLinkgetJsonDetached<DownloadResponse>(
     buildDownloadArgs(url, opts),
+    {
+      detachOnAbort: true,
+      ...runOpts,
+      timeoutMs: runOpts.timeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS,
+    },
+  );
+}
+
+export function downloadBatch(
+  urls: string[],
+  opts: BatchDownloadOptions,
+  runOpts: RunCommandOptions & { detachOnAbort?: boolean } = {},
+): Promise<BatchDownloadResponse> {
+  return runLinkgetJsonDetached<BatchDownloadResponse>(
+    buildBatchDownloadArgs(urls, opts),
     {
       detachOnAbort: true,
       ...runOpts,
