@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://linkget.popcornnn.xyz/sitemap.xml
