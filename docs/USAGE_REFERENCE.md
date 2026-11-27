@@ -2,11 +2,15 @@
 
 Detailed command behavior, recovery rules, media heuristics, and historical notes moved out of `README.md`.
 
-## Destination, Audio & Date Options
+## Save type and destination
 
 - `--folder [PATH]` saves to `PATH` (or the current working directory if omitted).
 - `--photos` imports to macOS Photos; `--date-now` sets the date of new Photos items (use `--photos --date-now` when your saved default is a folder).
-- `--video` sends a single public video URL to yt-dlp and uses the usual Photos or folder destination. It works with `batch`, `inspect`, and download limits. Retry keeps the original mode. Videos need a usable MP4 format. Playlists and live streams remain out of scope. URLs outside LinkGet's dedicated video routes use yt-dlp without saved LinkGet sessions.
+- `--as auto` detects the output from the link and preserves mixed photo and video posts. This is the default.
+- `--as photo` saves still images from a supported post. Use Auto with `--live-photos` to preserve motion in paired Live Photos.
+- `--as video` (or `--video`) uses yt-dlp for a single video that has a usable MP4 format. Use a processed replay for live streams. Links outside dedicated video routes use public access.
+- `--as article` (or `--article`) saves an offline archive to a folder. Use `--no-assets` to skip embedded media.
+- Downloads, `batch`, and `inspect` accept `--as`. Retry uses the original task type.
 - `--audio` extracts audio-only from any supported video link to a folder; `--audio-format {mp3,m4a,flac,wav,opus}` converts when needed (implies `--audio`).
 - Music-only links (`music.youtube.com/watch`, `bilibili.com/audio/au...`, SoundCloud single tracks, Bandcamp `/track/...`) automatically run in audio mode.
 - **Audio default folder precedence:** explicit `--folder` → `linkget config --audio-folder [PATH]` → saved global `--folder` default → error (audio cannot be imported into macOS Photos; use `linkget config --clear-audio-folder` to clear).
@@ -14,7 +18,7 @@ Detailed command behavior, recovery rules, media heuristics, and historical note
 - Existing files are never overwritten. Download options override `linkget config` for that run only.
 - Relative paths given to `linkget config --folder PATH`, `--audio-folder PATH`, or `--article-folder PATH` are resolved when saved; bare `--folder` / `--audio-folder` / `--article-folder` follows your working directory on each run.
 - `--article` forces an X `/status/ID` post into offline article archive mode (or explicitly requests article mode on a public web page); `--no-assets` skips downloading embedded images and videos. X Articles (`/article/ID` or auto-detected `/status/ID`), WeChat (`mp.weixin.qq.com`), Toutiao `/article/`, Zhihu `zhuanlan.zhihu.com`, Raspberry Pi, and public HTTP(S) web articles enter article mode automatically without `--article`.
-- **Article default folder precedence:** explicit `--folder` → `linkget config --article-folder [PATH]` → saved global `--folder` default → error (articles cannot be imported into macOS Photos; use `linkget config --clear-article-folder` to clear).
+- For Auto downloads, `--article-folder PATH` picks a folder just for articles in this run. Other media use the usual destination. Folder precedence for articles is explicit `--folder`, then the one-time article folder, then the saved article or global folder.
 - **Article archive layout:** each download creates a non-overwriting `YYYY-MM-DD-<site-or-handle>-<title-slug>/` folder containing `article.md` (with YAML frontmatter and local asset links), standalone responsive light/dark `article.html`, `content.txt`, `content.json`, `assets/` (cover, inline images/videos, posters, avatar), and `source/x-article.json` or `source/original.html`.
 
 ## Batch Execution & Panel
@@ -52,7 +56,7 @@ linkget recover TASK --verify         # verify Photos managed originals without 
 
 - `--non-interactive` (or `LINKGET_NON_INTERACTIVE=1`) disables all interactive prompts and progress spinners even on a PTY, failing fast if input is missing.
 - `--json` emits one structured JSON object (`schema_version: 1`) on stdout, implies `--non-interactive`, and suppresses aligned status text on stdout/stderr (`sites`, `config`, `doctor`, `inspect`, `tasks`, `download`, `batch`, `retry`, `recover`, `clean`, `compare`, `logout`, `read`).
-- `linkget inspect URL_OR_PATH [--audio] [--article] [--no-network] [--json]` checks routing, required/missing tools, saved-session existence, destination preview (`supports_article_download`), and (for `yt-dlp` sites without `--no-network`) remote metadata without writing journals or downloading media. See [AGENT_SKILL.md](AGENT_SKILL.md).
+- `linkget inspect URL_OR_PATH [--as TYPE] [--no-network] [--json]` checks routing, tools, saved sessions, destination and optional remote metadata without downloading media. See [AGENT_SKILL.md](AGENT_SKILL.md).
 - Download clipping & safety caps: `--clip START-END` (e.g. `0:30-2:00`), `--max-duration DURATION` (e.g. `10m`, `90s`), and `--max-size SIZE` (e.g. `100MB`, `1.5GB`). `yt-dlp` sites enforce caps before downloading when metadata provides duration/size and download clipped ranges via `--download-sections`; all sites enforce post-download caps and `ffmpeg` clipping before saving.
 - Safe stage cleanup & MCP server: `linkget clean [--dry-run | --apply] [--older-than AGE] [--json]` previews (`--dry-run` default) or deletes only completed, unlocked, verified temporary `linkget-*` staging folders older than `AGE` (default `7d`), preserving Photos unverified receipts, incomplete tasks, symlinks, and destination folders. `linkget mcp` starts a stdlib JSON-RPC 2.0 stdio MCP server exposing `inspect_url` (`article`), `download_media` (`article`, `no_assets`), `read_content` (`no_assets`), `get_task`, and `doctor`.
 - `linkget read` also extracts timestamped video keyframes (`--frames`, `--max-frames N`, `--frame-ocr`) into `frames/`, reads general public web articles via stdlib HTML extraction, and reads WeChat Official Account articles (`mp.weixin.qq.com/s/...`) via direct HTTP with optional `/s/<id>` browser fallback. See [READ.md](READ.md).

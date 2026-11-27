@@ -224,7 +224,7 @@ export function resolveDefaultDownloadTarget(
   prefs: ExtensionPreferences,
   config?: ConfigResponse | null,
   inspect?: InspectResponse | null,
-): { destination: DestinationChoice; folder?: string } {
+): { destination: DestinationChoice; folder?: string; articleFolder?: string } {
   if (
     effectiveMode === "article" ||
     (effectiveMode === "auto" && isArticleInspectTarget(inspect))
@@ -254,6 +254,17 @@ export function resolveDefaultDownloadTarget(
     effectiveMode === "auto" &&
     inspect?.domain === "x.com" &&
     config?.destination?.mode === "photos" &&
+    config.save_types
+  ) {
+    return {
+      destination: "default",
+      articleFolder: resolveEffectiveArticleFolder(prefs, config),
+    };
+  }
+  if (
+    effectiveMode === "auto" &&
+    inspect?.domain === "x.com" &&
+    config?.destination?.mode === "photos" &&
     config?.article_destination?.mode === "folder" &&
     Boolean(config.article_destination.path)
   ) {
@@ -262,9 +273,20 @@ export function resolveDefaultDownloadTarget(
   return { destination: "photos" };
 }
 
+export function effectiveSaveMode(
+  mode: SaveMode,
+  inspect?: InspectResponse | null,
+): SaveMode {
+  if (mode !== "auto" || !inspect?.ok) return mode;
+  if (isArticleInspectTarget(inspect)) return "article";
+  if (inspect.effective_audio_mode || inspect.audio_only) return "audio";
+  return "auto";
+}
+
 export interface InspectOptions {
   audio?: boolean;
   article?: boolean;
+  saveAs?: "photo" | "video";
   noNetwork?: boolean;
   browser?: BrowserOption;
 }
@@ -280,6 +302,9 @@ export function buildInspectArgs(
   if (opts.article) {
     args.push("--article");
   }
+  if (opts.saveAs) {
+    args.push("--as", opts.saveAs);
+  }
   if (opts.noNetwork) {
     args.push("--no-network");
   }
@@ -294,6 +319,7 @@ export interface DownloadOptions {
   mode: Exclude<SaveMode, "read">;
   destination?: DestinationChoice;
   folder?: string;
+  articleFolder?: string;
   noAssets?: boolean;
   audioFormat?: AudioFormat;
   clip?: string;
@@ -310,6 +336,8 @@ export function buildDownloadArgs(
   const args = [url];
   if (opts.mode === "article") {
     args.push("--article");
+  } else if (opts.mode === "photo" || opts.mode === "video") {
+    args.push("--as", opts.mode);
   } else if (opts.mode === "audio") {
     if (opts.audioFormat && opts.audioFormat !== "original") {
       args.push("--audio-format", opts.audioFormat);
@@ -329,21 +357,23 @@ export function buildDownloadArgs(
   } else if (opts.folder && opts.folder.trim()) {
     args.push("--folder", expandHome(opts.folder));
   }
-  if (opts.mode !== "article") {
+  if (opts.mode === "auto" && opts.articleFolder) {
+    args.push("--article-folder", expandHome(opts.articleFolder));
+  }
+  if (opts.mode !== "article" && opts.mode !== "photo") {
     if (opts.clip && opts.clip.trim()) {
       args.push("--clip", opts.clip.trim());
     }
     if (opts.maxDuration && opts.maxDuration.trim()) {
       args.push("--max-duration", opts.maxDuration.trim());
     }
-    if (opts.maxSize && opts.maxSize.trim()) {
-      args.push("--max-size", opts.maxSize.trim());
-    }
+  }
+  if (opts.mode !== "article" && opts.maxSize?.trim()) {
+    args.push("--max-size", opts.maxSize.trim());
   }
   if (
     opts.livePhotos &&
-    opts.mode !== "article" &&
-    opts.mode !== "audio" &&
+    (opts.mode === "auto" || opts.mode === "media") &&
     !opts.clip?.trim() &&
     (opts.destination === "photos" ||
       (opts.destination === "default" && !opts.folder?.trim()))

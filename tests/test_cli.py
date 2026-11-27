@@ -87,6 +87,40 @@ class CommandTests(unittest.TestCase):
             download.assert_not_called()
             importer.assert_not_called()
 
+    def test_photo_mode_saves_stills_from_a_mixed_post_and_keeps_auto_mixed(self):
+        from linkget.media import DownloadResult
+
+        def download(url, folder, cookies):
+            (folder / "still.jpg").write_bytes(b"still")
+            (folder / "motion.mp4").write_bytes(b"motion")
+            return DownloadResult(expected_count=2, live_pairs=[("still.jpg", "motion.mp4")])
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            url = "https://www.douyin.com/note/123"
+            with (
+                patch.object(cli, "download_douyin", side_effect=download),
+                patch.object(tempfile, "tempdir", str(root)),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                for mode, expected in (("photo", ["still.jpg"]), ("auto", ["motion.mp4", "still.jpg"])):
+                    destination = root / mode
+                    self.assertEqual(cli.main([url, "--as", mode, "--folder", str(destination), "--browser", "none"]), 0)
+                    self.assertEqual(sorted(item.name for item in destination.iterdir()), expected)
+
+    def test_public_save_type_inspection_selects_the_requested_route(self):
+        cases = (
+            ("https://vimeo.com/1084537", "photo", False, None),
+            ("https://example.com/clip", "video", True, "yt-dlp"),
+            ("https://example.com/article", "article", True, "web_article"),
+        )
+        for url, mode, ok, engine in cases:
+            with self.subTest(mode=mode), contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(cli.main(["inspect", url, "--as", mode, "--no-network", "--json"]), 0 if ok else 1)
+                result = json.loads(out.getvalue())
+                self.assertEqual(result["ok"], ok)
+                self.assertEqual(result.get("engine"), engine)
+
     def test_page_data_rejects_batch_and_implicit_browser(self):
         for args in (['https://www.douyin.com/note/123'],
                      ['batch', 'https://www.douyin.com/note/123', '--browser', 'none']):

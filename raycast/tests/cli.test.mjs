@@ -20,6 +20,7 @@ import {
   buildInspectArgs,
   buildReadArgs,
   buildTasksArgs,
+  effectiveSaveMode,
   extractUrlInput,
   isArticleFolderRequiredError,
   isArticleInspectTarget,
@@ -498,6 +499,35 @@ test("resolveReadOutputFolder returns a non-existent leaf under an existing pare
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test("unified save types preserve Auto detection and map explicit overrides to CLI flags", () => {
+  const article = { ok: true, engine: "web_article" };
+  assert.equal(effectiveSaveMode("auto", article), "article");
+  assert.equal(effectiveSaveMode("video", article), "video");
+  assert.equal(effectiveSaveMode("auto", { ok: true, engine: "gallery-dl" }), "auto");
+  for (const mode of ["photo", "video"]) {
+    const url = "https://example.com/post";
+    assert.deepEqual(buildInspectArgs(url, { saveAs: mode, noNetwork: true }), [
+      "inspect", url, "--as", mode, "--no-network", "--json",
+    ]);
+    assert.deepEqual(buildDownloadArgs(url, { mode, destination: "photos", livePhotos: true }), [
+      url, "--as", mode, "--photos", "--non-interactive", "--json",
+    ]);
+  }
+  const routed = resolveDefaultDownloadTarget(
+    "auto",
+    { defaultBrowser: "auto" },
+    { ok: true, destination: { mode: "photos" }, save_types: ["auto", "photo", "video", "article"] },
+    { ok: true, domain: "x.com", engine: "gallery-dl" },
+  );
+  assert.deepEqual(routed, {
+    destination: "default", articleFolder: path.join(os.homedir(), "Downloads"),
+  });
+  assert.deepEqual(buildDownloadArgs("https://x.com/user/status/1", { mode: "auto", ...routed }), [
+    "https://x.com/user/status/1", "--article-folder", path.join(os.homedir(), "Downloads"),
+    "--non-interactive", "--json",
+  ]);
 });
 
 test("buildDownloadArgs forwards --live-photos for Photos and default destinations, never for article/audio/folder", () => {

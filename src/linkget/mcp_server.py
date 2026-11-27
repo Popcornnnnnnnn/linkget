@@ -7,10 +7,10 @@ import re
 import sys
 
 if __package__:
-    from . import accounts, agent_output, media_limits, read_store, read_tasks, runtime
+    from . import accounts, agent_output, engines, media_limits, read_store, read_tasks, runtime
     from .version import VERSION
 else:
-    import accounts, agent_output, media_limits, read_store, read_tasks, runtime
+    import accounts, agent_output, engines, media_limits, read_store, read_tasks, runtime
     from version import VERSION
 
 DEFAULT_PROTOCOL = '2024-11-05'
@@ -33,6 +33,7 @@ TOOLS = [
             'type': 'object',
             'properties': {
                 'url_or_path': {'type': 'string', 'description': 'Supported media/article URL or existing local media file path'},
+                'save_as': {'type': 'string', 'enum': list(engines.SAVE_TYPES), 'description': 'Choose the output type. Video mode in MCP uses dedicated LinkGet video routes.'},
                 'audio': {'type': 'boolean', 'default': False, 'description': 'Check effective audio download mode'},
                 'article': {'type': 'boolean', 'default': False, 'description': 'Inspect URL as an offline article archive'},
                 'no_network': {'type': 'boolean', 'default': False, 'description': 'Skip short-link expansion and remote metadata probe'},
@@ -49,6 +50,7 @@ TOOLS = [
             'type': 'object',
             'properties': {
                 'url': {'type': 'string', 'description': 'Single supported post, article, video, or music URL'},
+                'save_as': {'type': 'string', 'enum': list(engines.SAVE_TYPES), 'description': 'Choose the output type. Video mode in MCP uses dedicated LinkGet video routes.'},
                 'folder': {'type': 'string', 'description': 'Explicit destination directory path (required in MCP mode)'},
                 'audio': {'type': 'boolean', 'default': False, 'description': 'Extract/download audio only'},
                 'audio_format': {'type': 'string', 'enum': ['mp3', 'm4a', 'flac', 'wav', 'opus'], 'description': 'Optional audio output format (implies audio)'},
@@ -214,6 +216,18 @@ def _safe_target(target, *, reject_read_reserved=False):
     return target
 
 
+def _save_type_args(arguments, url):
+    mode = _optional_enum(arguments, 'save_as', engines.SAVE_TYPES)
+    if mode == 'video':
+        try:
+            _, _, domain = engines.route_video(url, no_network=True)
+        except ValueError as error:
+            raise _RPCError(-32602, str(error)) from error
+        if domain is None:
+            raise _RPCError(-32602, 'Use the LinkGet CLI for video links outside dedicated LinkGet routes.')
+    return ['--as', mode] if mode else []
+
+
 def _call_tool(name, arguments):
     if arguments is None:
         arguments = {}
@@ -223,6 +237,7 @@ def _call_tool(name, arguments):
     if name == 'inspect_url':
         target = _safe_target(_require_str(arguments, 'url_or_path'))
         argv = ['inspect', target, '--non-interactive', '--json']
+        argv.extend(_save_type_args(arguments, target))
         if _require_bool(arguments, 'audio'):
             argv.append('--audio')
         if _require_bool(arguments, 'article'):
@@ -258,6 +273,7 @@ def _call_tool(name, arguments):
             except ValueError as error:
                 raise _RPCError(-32602, str(error)) from error
         argv = [url, f'--folder={folder}', '--non-interactive', '--json']
+        argv.extend(_save_type_args(arguments, url))
         if _require_bool(arguments, 'audio'):
             argv.append('--audio')
         audio_format = _optional_enum(arguments, 'audio_format', AUDIO_FORMATS)

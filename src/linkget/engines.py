@@ -22,6 +22,7 @@ SITES = (
     "YouTube Music, Bilibili Audio, SoundCloud and Bandcamp tracks"
 )
 AUDIO_ONLY_SITES = {"YouTube Music", "Bilibili Audio", "SoundCloud", "Bandcamp"}
+SAVE_TYPES = ("auto", "photo", "video", "article")
 MP4_FORMAT = "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]"
 GENERIC_VIDEO_OPTIONS = ("--no-plugin-dirs", "--flat-playlist", "--playlist-items", "1",
                          "-f", MP4_FORMAT + "/bv[ext=mp4]")
@@ -29,6 +30,13 @@ GENERIC_VIDEO_OPTIONS = ("--no-plugin-dirs", "--flat-playlist", "--playlist-item
 
 def is_audio_only_site(site):
     return site in AUDIO_ONLY_SITES
+
+
+def check_photo_source(engine):
+    if engine in {"yt-dlp", "kuaishou"}:
+        raise ValueError("Unsupported URL for photo mode. Use --as video or --audio for this link.")
+    if engine in {"article", "web_article", "x_article", "rendered_page"}:
+        raise ValueError("Unsupported URL for photo mode. Use --as article to archive this page with its images.")
 
 
 class PreparedCommand(list):

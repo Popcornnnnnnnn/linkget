@@ -30,11 +30,12 @@ See [docs/INSTALL.md](docs/INSTALL.md) for wheel installation, upgrades, and uni
 ```sh
 linkget                                              # interactive prompt (defaults to Photos)
 linkget 'https://www.bilibili.com/video/BV1bK411W797/' --folder ~/Downloads
-linkget 'VIDEO_URL' --video --folder ~/Downloads      # let yt-dlp handle a single video link
+linkget 'PHOTO_URL' --as photo --photos              # save still images to Apple Photos
+linkget 'VIDEO_URL' --as video --folder ~/Downloads  # save a single video with yt-dlp
 linkget 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' --audio --folder ~/Music
 linkget 'https://soundcloud.com/artist/track'        # music links download audio automatically
 linkget 'https://x.com/USER/status/ID' --folder ~/Articles   # auto-archives X Articles offline
-linkget 'https://example.com/post' --article --folder ~/Articles  # save web article + local assets
+linkget 'https://example.com/post' --as article --folder ~/Articles
 linkget --photos --live-photos                       # package picture + motion pairs
 linkget batch                                        # paste one URL per line, blank line to start
 linkget retry                                        # retry unfinished items from latest task
@@ -43,7 +44,9 @@ linkget read 'URL' --folder ./notes                  # extract subtitles, speech
 
 > Always wrap URLs in straight ASCII quotes (`'...'` or `"..."`) so the shell does not split `&` or `?`.
 
-Use `--video` on the development build to try public video links beyond the sites listed below. Availability depends on your installed yt-dlp and the MP4 formats the site offers.
+The development build detects what to save by default. Use `--as photo`, `--as video`, or `--as article` to choose the output. Set the destination separately with `--photos` for Apple Photos or `--folder PATH` for a local folder. Articles use a folder. Both `--video` and `--article` still work as shortcuts.
+
+Video mode can try sites beyond the list below. Availability depends on your installed yt-dlp and the MP4 formats the site offers.
 
 ## Demos
 
@@ -112,7 +115,7 @@ uv build
 
 Use the bundled [Raycast Extension](raycast/README.md) (`raycast/`) for a focused two-command macOS launcher UI over `linkget` (**Apple Photos** by default for pics/videos, **`~/Downloads`** for articles):
 
-- **Save Link (`lg`)** — Paste a link (or grab clipboard / active browser tab), inspect capabilities, pick mode, destination, clip/caps, audio format, or browser session, and view saved files.
+- **Save Link (`lg`)** — Paste a link, review what will be saved and where, and override the detected type or destination when needed. Save in the foreground or track a background save in Status Board.
 - **Status Board (`lgs`)** — Unified board for recent downloads & saved articles (cover & Markdown preview, inline reader, open `article.html`, retry failures) plus CLI defaults, engines, site sessions, and `linkget clean`.
 
 ## Documentation
