@@ -1,6 +1,6 @@
 \* TLA+ specification of linkget's critical media, batch, and detached read-task lifecycles.
 \*
-\* Code mapping (verified at sync_commit 30e931a3e14aa7a02ed1d00d592da15adc4ac253):
+\* Code mapping (verified at sync_commit 9f871e49f1a5e8f5c126163696e2d2472e00e2a9):
 \*   - Photos shared original staging, receipt recording, redownload preservation, and cleanup:
 \*       src/linkget/ownership.py    (copy, FileProof.remove)
 \*       src/linkget/photos.py       (originals_lock, referenced_originals, retain_originals, prune_receipt)
@@ -128,20 +128,31 @@ TaskARedownload ==
                    batchCoord, workerWait, batchCancelled,
                    readStatus, readTerminal, workerLock, cancelReq, jobStatus, jobEverDone, postCommitHit>>
 
-TaskAVerify ==
+TaskARemoveOrig2 ==
     /\ mode = "photos"
     /\ recA \in {"unverified", "verified_kept"}
     /\ orig1 = "present"
-    /\ (recAOrig2 => orig2 = "present")
-    \* Under originals_lock(), remove unreferenced originals and prune removed entries from receipt.
-    /\ orig2' = IF recAOrig2 /\ ownerA THEN "deleted" ELSE orig2
+    /\ orig2 = "present"
+    /\ recAOrig2 = TRUE
+    /\ ownerA = TRUE
+    \* Cleanup removes orig2 and immediately prunes recAOrig2 before attempting orig1 (safe under transient error).
+    /\ orig2' = "deleted"
     /\ recAOrig2' = FALSE
-    /\ IF recB = "unverified"
-       THEN /\ orig1' = "present"
-            /\ recA' = "verified_kept"
-       ELSE /\ orig1' = IF ownerA THEN "deleted" ELSE orig1
-            /\ recA' = "cleared"
-    /\ UNCHANGED <<mode, ownerA, ownerB, recAId, recB, redownloadTried,
+    /\ recA' = "verified_kept"
+    /\ UNCHANGED <<mode, orig1, ownerA, ownerB, recAId, recB, redownloadTried,
+                   batchCoord, workerWait, batchCancelled,
+                   readStatus, readTerminal, workerLock, cancelReq, jobStatus, jobEverDone, postCommitHit>>
+
+TaskARemoveOrig1 ==
+    /\ mode = "photos"
+    /\ recA \in {"unverified", "verified_kept"}
+    /\ ~recAOrig2
+    /\ recB /= "unverified"
+    /\ orig1 = "present"
+    \* Only remove shared orig1 once orig2 is pruned and no other task references orig1.
+    /\ orig1' = IF ownerA THEN "deleted" ELSE orig1
+    /\ recA' = "cleared"
+    /\ UNCHANGED <<mode, orig2, ownerA, ownerB, recAOrig2, recAId, recB, redownloadTried,
                    batchCoord, workerWait, batchCancelled,
                    readStatus, readTerminal, workerLock, cancelReq, jobStatus, jobEverDone, postCommitHit>>
 
@@ -336,7 +347,7 @@ ReadWorkerReleaseLock ==
 \* ---- Terminal stuttering so TLC NoDeadlock holds in legitimate end states ----
 
 Done ==
-    /\ ( \/ (mode = "photos" /\ recA = "cleared" /\ recB \in {"none", "cleared"})
+    /\ ( \/ (mode = "photos" /\ recA = "cleared" /\ ~recAOrig2 /\ recB \in {"none", "cleared"})
          \/ (mode = "batch" /\ batchCoord = "stopped" /\ workerWait = "exited")
          \/ (mode = "read" /\ readStatus \in TerminalRead /\ ~workerLock) )
     /\ UNCHANGED vars
@@ -347,7 +358,8 @@ Next ==
     \/ StartRead
     \/ TaskBStage
     \/ TaskARedownload
-    \/ TaskAVerify
+    \/ TaskARemoveOrig2
+    \/ TaskARemoveOrig1
     \/ TaskBVerify
     \/ WorkerBlockInteraction
     \/ CoordServeInteraction

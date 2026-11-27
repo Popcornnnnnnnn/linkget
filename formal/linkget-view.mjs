@@ -130,10 +130,10 @@ export const step = (action, from, to) => {
       return "Task B observes shared original";
     case "TaskARedownload":
       return "Task A retries with redownload";
-    case "TaskAVerify":
-      return to.recA === "verified_kept"
-        ? "Task A cleans unique and keeps shared"
-        : "Task A verifies and cleans";
+    case "TaskARemoveOrig2":
+      return "Task A unlinks orig 2 and prunes receipt";
+    case "TaskARemoveOrig1":
+      return "Task A verifies and unlinks shared orig 1";
     case "TaskBVerify":
       return "Task B verifies Photos copy";
     case "WorkerBlockInteraction":
