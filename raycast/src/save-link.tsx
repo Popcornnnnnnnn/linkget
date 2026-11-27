@@ -43,7 +43,7 @@ import {
   buildSavePreviewText,
   isXArticlePhotoCapable,
   isXUrl,
-  resolveBatchArticleFallbackFolder,
+  resolveBatchDefaultTarget,
 } from "./lib/save-helpers";
 import { shortenHomePath } from "./lib/task-format";
 import type {
@@ -204,19 +204,27 @@ export default function SaveLinkCommand(
   );
   const visibleDestination =
     destination === "photos" && !allowsPhotos ? "default" : destination;
-  const batchInspectHint: InspectResponse | null =
-    isBatchMode && previewMode === "article" && allowArticlePhotos
-      ? { ok: true, supports_article_photos: true, engine: "x_article" }
-      : null;
   const defaultTarget =
     previewMode === "read"
       ? null
-      : resolveDefaultDownloadTarget(
-          previewMode,
-          prefs,
-          config,
-          isBatchMode ? batchInspectHint : inspectResult,
-        );
+      : isBatchMode
+        ? resolveBatchDefaultTarget({
+            effectiveMode: previewMode,
+            batchUrls,
+            allowArticlePhotos,
+            noAssets: !downloadAssets,
+            prefs,
+            config,
+            resolveDefaultTargetFn: resolveDefaultDownloadTarget,
+            resolveArticleFolderFn: resolveEffectiveArticleFolder,
+          })
+        : resolveDefaultDownloadTarget(
+            previewMode,
+            prefs,
+            config,
+            inspectResult,
+            { noAssets: !downloadAssets },
+          );
   const destinationName =
     visibleDestination === "folder"
       ? folderPaths[0]
@@ -228,9 +236,11 @@ export default function SaveLinkCommand(
           ? "Apple Photos"
           : defaultTarget?.folder
             ? shortenHomePath(defaultTarget.folder)
-            : defaultTarget
-              ? "Apple Photos"
-              : "the default read folder";
+            : isBatchMode && defaultTarget?.destination === "default"
+              ? "default destinations"
+              : defaultTarget
+                ? "Apple Photos"
+                : "the default read folder";
   const mediaType =
     previewMode === "photo" ||
     (previewMode === "auto" && inspectResult?.engine === "pixiv")
@@ -475,18 +485,6 @@ export default function SaveLinkCommand(
         return failValidation(msg, "Choose a Destination Folder");
       }
 
-      if (
-        effectiveMode === "article" &&
-        allowBatchArticlePhotos &&
-        effectiveDest === "photos" &&
-        !downloadAssets
-      ) {
-        return failValidation(
-          "Rendering X Articles for Apple Photos requires their assets. Enable Article Assets or pick a folder.",
-          "Incompatible Options",
-        );
-      }
-
       const pairLivePhotos =
         livePhotos &&
         (effectiveMode === "auto" || effectiveMode === "media") &&
@@ -522,31 +520,35 @@ export default function SaveLinkCommand(
           abortErr.name = "AbortError";
           throw abortErr;
         }
-        const batchInspect: InspectResponse | null =
-          effectiveMode === "article" && allowBatchArticlePhotos
-            ? { ok: true, supports_article_photos: true, engine: "x_article" }
-            : null;
-        const resolved = resolveDefaultDownloadTarget(
+        const resolved = resolveBatchDefaultTarget({
           effectiveMode,
+          batchUrls: currentBatchUrls,
+          allowArticlePhotos: allowBatchArticlePhotos,
+          noAssets: !downloadAssets,
           prefs,
-          cachedConfig,
-          batchInspect,
-        );
+          config: cachedConfig,
+          resolveDefaultTargetFn: resolveDefaultDownloadTarget,
+          resolveArticleFolderFn: resolveEffectiveArticleFolder,
+        });
         downloadDest = resolved.destination;
         if (resolved.folder) {
           chosenFolder = ensureFolderExists(resolved.folder);
         }
-        const fallbackArticleFolder = resolveBatchArticleFallbackFolder(
-          effectiveMode,
-          effectiveDest,
-          currentBatchUrls,
-          prefs,
-          cachedConfig,
-          resolveEffectiveArticleFolder,
-        );
-        if (fallbackArticleFolder) {
-          articleFolder = ensureFolderExists(fallbackArticleFolder);
+        if (resolved.articleFolder) {
+          articleFolder = ensureFolderExists(resolved.articleFolder);
         }
+      }
+
+      if (
+        effectiveMode === "article" &&
+        allowBatchArticlePhotos &&
+        downloadDest === "photos" &&
+        !downloadAssets
+      ) {
+        return failValidation(
+          "Rendering X Articles for Apple Photos requires their assets. Enable Article Assets or pick a folder.",
+          "Incompatible Options",
+        );
       }
 
       return {
@@ -605,18 +607,6 @@ export default function SaveLinkCommand(
       return failValidation(msg, "Choose a Destination Folder");
     }
 
-    if (
-      effectiveMode === "article" &&
-      singleAllowArticlePhotos &&
-      effectiveDest === "photos" &&
-      !downloadAssets
-    ) {
-      return failValidation(
-        "Rendering an X Article for Apple Photos requires its assets. Enable Article Assets or pick a folder.",
-        "Incompatible Options",
-      );
-    }
-
     const pairLivePhotos =
       livePhotos &&
       (effectiveMode === "auto" || effectiveMode === "media") &&
@@ -672,12 +662,25 @@ export default function SaveLinkCommand(
         prefs,
         cachedConfig,
         currentInspect,
+        { noAssets: !downloadAssets },
       );
       downloadDest = resolved.destination;
       articleFolder = resolved.articleFolder;
       if (resolved.folder) {
         chosenFolder = ensureFolderExists(resolved.folder);
       }
+    }
+
+    if (
+      effectiveMode === "article" &&
+      singleAllowArticlePhotos &&
+      downloadDest === "photos" &&
+      !downloadAssets
+    ) {
+      return failValidation(
+        "Rendering an X Article for Apple Photos requires its assets. Enable Article Assets or pick a folder.",
+        "Incompatible Options",
+      );
     }
 
     return {

@@ -864,6 +864,92 @@ class CLIAndMCPArticleIntegrationTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn('Articles cannot be imported into Photos', json.loads(out)['error']['message'])
 
+    def test_x_article_photos_retry_preserves_photos_and_folder_override(self):
+        url = 'https://x.com/404jsh/article/2124506790020948428'
+        out_root = self.root / 'retry-articles'
+
+        def save_bundle(bundle, article, **kwargs):
+            archive = bundle / 'article.html'
+            archive.write_text('<article>Retried X Article</article>')
+            return {'assets': [{'role': 'cover', 'status': 'downloaded'}]}, [archive]
+
+        def render(bundle, assets, node, browser, *, filename, ffmpeg):
+            png = bundle / filename
+            png.write_bytes(_png_bytes(2, 2))
+            return cli.ownership.FileProof.observe(png)
+
+        def import_verified(files, date_now):
+            cli.transfers.verify_outputs()
+            return files, 0
+
+        # 1. Failed --as article --photos --date-now run records photos=True in journal options
+        with patch.object(cli.sys, 'platform', 'darwin'), \
+             patch.object(cli, '_acquire_article_for_download', side_effect=RuntimeError('transient network error')):
+            code, out, err = self.run_cli(
+                url, '--as', 'article', '--photos', '--date-now', '--browser', 'none', '--json',
+            )
+        self.assertEqual(code, 1, err + out)
+        task1_id = json.loads(out)['task_id']
+        self.assertTrue(cli.jobs.Journal.load(task1_id).data['options'].get('photos'))
+
+        # Retrying without flags replays Apple Photos + date_now even with x_article_photos=False and no article folder
+        with patch.object(cli.sys, 'platform', 'darwin'), \
+             patch.object(cli, 'preflight'), \
+             patch.object(cli, '_acquire_article_for_download', return_value={'title': 'Retry Photos'}), \
+             patch.object(article_archive, 'write_article_bundle', side_effect=save_bundle), \
+             patch.object(cli.article_image, 'render', side_effect=render), \
+             patch.object(cli, 'import_photos', side_effect=import_verified) as retry_importer:
+            code, out, err = self.run_cli('retry', task1_id, '--json')
+        self.assertEqual(code, 0, err + out)
+        retried = json.loads(out)['items'][0]
+        self.assertEqual(retried['article_photo'], 'imported')
+        self.assertEqual(retried['destination'], 'Photos')
+        self.assertTrue(retry_importer.call_args.args[1])
+
+        # 2. Failed --photos run can be overridden to --folder on retry
+        with patch.object(cli.sys, 'platform', 'darwin'), \
+             patch.object(cli, '_acquire_article_for_download', side_effect=RuntimeError('transient network error')):
+            code, out, err = self.run_cli(url, '--photos', '--browser', 'none', '--json')
+        self.assertEqual(code, 1, err + out)
+        task2_id = json.loads(out)['task_id']
+
+        with patch.object(cli.sys, 'platform', 'darwin'), \
+             patch.object(cli, 'preflight'), \
+             patch.object(cli, '_acquire_article_for_download', return_value={'title': 'Retry Folder Override'}), \
+             patch.object(article_archive, 'write_article_bundle', side_effect=save_bundle), \
+             patch.object(cli, 'import_photos') as override_importer:
+            code, out, err = self.run_cli('retry', task2_id, '--folder', str(out_root), '--json')
+        self.assertEqual(code, 0, err + out)
+        override_item = json.loads(out)['items'][0]
+        self.assertNotIn('article_photo', override_item)
+        self.assertTrue((Path(override_item['article_folder']) / 'article.html').is_file())
+        override_importer.assert_not_called()
+
+        # 3. retry TASK --article --photos works on X Article tasks and rejects non-X article tasks cleanly
+        with patch.object(cli, '_acquire_article_for_download', side_effect=RuntimeError('transient error')):
+            code, out, err = self.run_cli(url, '--folder', str(out_root), '--browser', 'none', '--json')
+        self.assertEqual(code, 1, err + out)
+        task3_id = json.loads(out)['task_id']
+
+        with patch.object(cli.sys, 'platform', 'darwin'), \
+             patch.object(cli, 'preflight'), \
+             patch.object(cli, '_acquire_article_for_download', return_value={'title': 'Retry Override Photos'}), \
+             patch.object(article_archive, 'write_article_bundle', side_effect=save_bundle), \
+             patch.object(cli.article_image, 'render', side_effect=render), \
+             patch.object(cli, 'import_photos', side_effect=import_verified):
+            code, out, err = self.run_cli('retry', task3_id, '--article', '--photos', '--json')
+        self.assertEqual(code, 0, err + out)
+        self.assertEqual(json.loads(out)['items'][0]['article_photo'], 'imported')
+
+        with patch.object(cli, '_acquire_article_for_download', side_effect=RuntimeError('transient error')):
+            code, out, err = self.run_cli('https://example.com/post', '--folder', str(out_root), '--browser', 'none', '--json')
+        self.assertEqual(code, 1, err + out)
+        non_x_task_id = json.loads(out)['task_id']
+
+        code, out, err = self.run_cli('retry', non_x_task_id, '--article', '--photos', '--json')
+        self.assertEqual(code, 1, err + out)
+        self.assertIn('Articles cannot be imported into Photos', json.loads(out)['error']['message'])
+
     def test_x_status_auto_promotion_download_and_read_and_normal_tweet_preserved(self):
         sample = _sample_x_graphql_item()
         out_root = self.root / 'out'

@@ -43,6 +43,7 @@ import {
   isXArticlePhotoCapable,
   isXUrl,
   resolveBatchArticleFallbackFolder,
+  resolveBatchDefaultTarget,
   summarizeUrlHosts,
 } from "../src/lib/save-helpers.ts";
 import {
@@ -769,6 +770,141 @@ test("extractUrlInputs, X Article Photos routing, batch args, and save-helpers w
       () => "/tmp/Articles",
     ),
     undefined,
+  );
+  assert.equal(
+    resolveBatchArticleFallbackFolder(
+      "auto",
+      "photos",
+      ["https://x.com/a/status/1", "https://vimeo.com/1"],
+      { defaultBrowser: "auto" },
+      { ok: true, x_article_photos: false },
+      () => "/tmp/Articles",
+    ),
+    undefined,
+  );
+
+  // Batch Auto + Default must omit --photos and route articles appropriately
+  for (const xPhotos of [false, true]) {
+    const nonXBatch = resolveBatchDefaultTarget({
+      effectiveMode: "auto",
+      batchUrls: ["https://mp.weixin.qq.com/s/abc", "https://zhuanlan.zhihu.com/p/123"],
+      allowArticlePhotos: false,
+      prefs: { defaultBrowser: "auto" },
+      config: { ok: true, destination: { mode: "photos" }, x_article_photos: xPhotos },
+      resolveDefaultTargetFn: resolveDefaultDownloadTarget,
+      resolveArticleFolderFn: resolveEffectiveArticleFolder,
+    });
+    assert.deepEqual(nonXBatch, {
+      destination: "default",
+      articleFolder: path.join(os.homedir(), "Downloads"),
+    });
+    assert.deepEqual(
+      buildBatchDownloadArgs(
+        ["https://mp.weixin.qq.com/s/abc", "https://zhuanlan.zhihu.com/p/123"],
+        { mode: "auto", ...nonXBatch },
+      ),
+      [
+        "batch",
+        "https://mp.weixin.qq.com/s/abc",
+        "https://zhuanlan.zhihu.com/p/123",
+        "--article-folder",
+        path.join(os.homedir(), "Downloads"),
+        "--non-interactive",
+        "--json",
+      ],
+    );
+  }
+
+  const mixedXOff = resolveBatchDefaultTarget({
+    effectiveMode: "auto",
+    batchUrls: ["https://x.com/a/article/1", "https://vimeo.com/1"],
+    allowArticlePhotos: false,
+    prefs: { defaultBrowser: "auto" },
+    config: { ok: true, destination: { mode: "photos" }, x_article_photos: false },
+    resolveDefaultTargetFn: resolveDefaultDownloadTarget,
+    resolveArticleFolderFn: resolveEffectiveArticleFolder,
+  });
+  assert.deepEqual(mixedXOff, {
+    destination: "default",
+    articleFolder: path.join(os.homedir(), "Downloads"),
+  });
+
+  const mixedXOn = resolveBatchDefaultTarget({
+    effectiveMode: "auto",
+    batchUrls: ["https://x.com/a/article/1", "https://vimeo.com/1"],
+    allowArticlePhotos: false,
+    prefs: { defaultBrowser: "auto" },
+    config: { ok: true, destination: { mode: "photos" }, x_article_photos: true },
+    resolveDefaultTargetFn: resolveDefaultDownloadTarget,
+    resolveArticleFolderFn: resolveEffectiveArticleFolder,
+  });
+  assert.deepEqual(mixedXOn, { destination: "default" });
+
+  // Article + Default + x_article_photos=true + noAssets=true falls back to folder (never --article --no-assets --photos)
+  const singleNoAssets = resolveDefaultDownloadTarget(
+    "article",
+    { defaultBrowser: "auto" },
+    { ok: true, destination: { mode: "photos" }, x_article_photos: true },
+    { ok: true, engine: "x_article", supports_article_photos: true },
+    { noAssets: true },
+  );
+  assert.deepEqual(singleNoAssets, {
+    destination: "default",
+    folder: path.join(os.homedir(), "Downloads"),
+  });
+  assert.deepEqual(
+    buildDownloadArgs("https://x.com/u/article/1", {
+      mode: "article",
+      allowArticlePhotos: true,
+      noAssets: true,
+      ...singleNoAssets,
+    }),
+    [
+      "https://x.com/u/article/1",
+      "--article",
+      "--no-assets",
+      "--folder",
+      path.join(os.homedir(), "Downloads"),
+      "--non-interactive",
+      "--json",
+    ],
+  );
+
+  const batchNoAssets = resolveBatchDefaultTarget({
+    effectiveMode: "article",
+    batchUrls: ["https://x.com/u/article/1", "https://x.com/u/article/2"],
+    allowArticlePhotos: true,
+    noAssets: true,
+    prefs: { defaultBrowser: "auto" },
+    config: { ok: true, destination: { mode: "photos" }, x_article_photos: true },
+    resolveDefaultTargetFn: resolveDefaultDownloadTarget,
+    resolveArticleFolderFn: resolveEffectiveArticleFolder,
+  });
+  assert.deepEqual(batchNoAssets, {
+    destination: "default",
+    folder: path.join(os.homedir(), "Downloads"),
+  });
+  assert.deepEqual(
+    buildBatchDownloadArgs(
+      ["https://x.com/u/article/1", "https://x.com/u/article/2"],
+      {
+        mode: "article",
+        allowArticlePhotos: true,
+        noAssets: true,
+        ...batchNoAssets,
+      },
+    ),
+    [
+      "batch",
+      "https://x.com/u/article/1",
+      "https://x.com/u/article/2",
+      "--article",
+      "--no-assets",
+      "--folder",
+      path.join(os.homedir(), "Downloads"),
+      "--non-interactive",
+      "--json",
+    ],
   );
 });
 

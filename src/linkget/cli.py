@@ -1331,16 +1331,17 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
             parser.error("Use linkget config --article-folder [PATH] to set the default article folder.")
         if args.audio:
             parser.error("Do not combine --article with --audio.")
+        is_deferred_article_cmd = bool(args.link) and args.link[0] in {"inspect", "retry", "recover"}
         article_links = (
             args.link[1:]
             if (args.link and args.link[0] == "batch")
-            else ([" ".join(args.link)] if args.link and args.link[0] != "inspect" else [])
+            else ([" ".join(args.link)] if args.link and not is_deferred_article_cmd else [])
         )
         all_x_capable = bool(article_links) and all(_is_x_article_capable(item) for item in article_links)
         if args.photos:
             if args.no_assets:
                 parser.error("Rendering an X Article for Photos requires its assets; omit --no-assets.")
-            if not all_x_capable:
+            if not is_deferred_article_cmd and not all_x_capable:
                 parser.error("Articles cannot be imported into Photos. Use --folder or linkget config --article-folder.")
         if args.date_now:
             will_photo_x = all_x_capable and not args.no_assets and (
@@ -1348,7 +1349,7 @@ Paste sharing text at the prompt to avoid shell quoting and special characters."
                 or (args.folder is None and args.article_folder is None
                     and accounts.preferences().get("x_article_photos") is True)
             )
-            if not will_photo_x:
+            if not is_deferred_article_cmd and not will_photo_x:
                 parser.error("--date-now applies to Photos imports only, not --article.")
         if args.live_photos:
             parser.error("--live-photos cannot be combined with --article.")
@@ -1858,6 +1859,8 @@ def restore_options(args, journal, tokens):
         flags = {"--" + name.replace("_", "-")}
         if name == "folder":
             flags.add("--photos")
+        if name == "photos":
+            flags.add("--folder")
         if not any(token.split("=", 1)[0] in flags for token in tokens) and name in saved:
             setattr(args, name, saved[name])
     if args._explicit_folder or args._explicit_photos:

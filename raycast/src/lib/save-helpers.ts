@@ -175,12 +175,85 @@ export function resolveBatchArticleFallbackFolder(
     p: ExtensionPreferences,
     c?: ConfigResponse | null,
   ) => string,
+  options?: { noAssets?: boolean },
 ): string | undefined {
-  if (mode !== "auto" || destination === "folder") {
+  if (mode !== "auto" || destination !== "default") {
     return undefined;
   }
-  if (batchUrls.some((url) => isXUrl(url)) && !config?.x_article_photos) {
-    return resolveArticleFolderFn(prefs, config);
+  if (
+    !options?.noAssets &&
+    batchUrls.some((url) => isXUrl(url)) &&
+    config?.x_article_photos
+  ) {
+    return undefined;
   }
-  return undefined;
+  return resolveArticleFolderFn(prefs, config);
+}
+
+export function resolveBatchDefaultTarget(params: {
+  effectiveMode: Exclude<SaveMode, "read">;
+  batchUrls: string[];
+  allowArticlePhotos: boolean;
+  noAssets?: boolean;
+  prefs: ExtensionPreferences;
+  config?: ConfigResponse | null;
+  resolveDefaultTargetFn: (
+    effectiveMode: Exclude<SaveMode, "read">,
+    prefs: ExtensionPreferences,
+    config?: ConfigResponse | null,
+    inspect?: InspectResponse | null,
+    options?: { noAssets?: boolean },
+  ) => {
+    destination: DestinationChoice;
+    folder?: string;
+    articleFolder?: string;
+  };
+  resolveArticleFolderFn: (
+    p: ExtensionPreferences,
+    c?: ConfigResponse | null,
+  ) => string;
+}): {
+  destination: DestinationChoice;
+  folder?: string;
+  articleFolder?: string;
+} {
+  const {
+    effectiveMode,
+    batchUrls,
+    allowArticlePhotos,
+    noAssets,
+    prefs,
+    config,
+    resolveDefaultTargetFn,
+    resolveArticleFolderFn,
+  } = params;
+  const batchInspect: InspectResponse | null =
+    effectiveMode === "article" && allowArticlePhotos
+      ? { ok: true, supports_article_photos: true, engine: "x_article" }
+      : null;
+  const resolved = resolveDefaultTargetFn(
+    effectiveMode,
+    prefs,
+    config,
+    batchInspect,
+    { noAssets },
+  );
+  if (effectiveMode === "auto") {
+    const articleFolder = resolveBatchArticleFallbackFolder(
+      effectiveMode,
+      "default",
+      batchUrls,
+      prefs,
+      config ?? null,
+      resolveArticleFolderFn,
+      { noAssets },
+    );
+    if (!prefs.defaultMediaFolder?.trim()) {
+      return articleFolder
+        ? { destination: "default", articleFolder }
+        : { destination: "default" };
+    }
+    return articleFolder ? { ...resolved, articleFolder } : resolved;
+  }
+  return resolved;
 }

@@ -237,12 +237,14 @@ export function resolveDefaultDownloadTarget(
   prefs: ExtensionPreferences,
   config?: ConfigResponse | null,
   inspect?: InspectResponse | null,
+  options?: { noAssets?: boolean },
 ): { destination: DestinationChoice; folder?: string; articleFolder?: string } {
   if (
     effectiveMode === "article" ||
     (effectiveMode === "auto" && isArticleInspectTarget(inspect))
   ) {
     if (
+      !options?.noAssets &&
       config?.x_article_photos &&
       (inspect?.supports_article_photos || inspect?.engine === "x_article")
     ) {
@@ -275,7 +277,7 @@ export function resolveDefaultDownloadTarget(
     config?.destination?.mode === "photos" &&
     config.save_types
   ) {
-    if (config.x_article_photos) {
+    if (config.x_article_photos && !options?.noAssets) {
       return { destination: "default" };
     }
     return {
