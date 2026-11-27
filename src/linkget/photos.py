@@ -66,20 +66,52 @@ def referenced_originals(exclude=None):
         for number, row in enumerate(journal.data.get("items", []), 1):
             if journal.identifier == excluded_id and number == excluded_index:
                 continue
-            receipt = row.get("receipt")
-            if not receipt:
-                continue
-            if not isinstance(receipt, dict):
-                raise ValueError("Another task has an invalid Photos receipt; originals were kept.")
-            for field in ("files", "staged"):
-                entries = receipt.get(field, [])
-                if not isinstance(entries, list):
+            for receipt_key in ("receipt", "pending_receipt"):
+                receipt = row.get(receipt_key)
+                if not receipt:
+                    continue
+                if not isinstance(receipt, dict):
                     raise ValueError("Another task has an invalid Photos receipt; originals were kept.")
-                for entry in entries:
-                    if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+                for field in ("files", "staged"):
+                    entries = receipt.get(field, [])
+                    if not isinstance(entries, list):
                         raise ValueError("Another task has an invalid Photos receipt; originals were kept.")
-                    referenced.add(ownership.canonical(entry["path"]))
+                    for entry in entries:
+                        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+                            raise ValueError("Another task has an invalid Photos receipt; originals were kept.")
+                        referenced.add(ownership.canonical(entry["path"]))
     return referenced
+
+
+def prune_receipt(receipt, removed_paths):
+    """Drop unlinked originals from a Photos receipt while keeping remaining entries consistent."""
+    if not isinstance(receipt, dict):
+        return receipt
+    removed = {ownership.canonical(path) for path in removed_paths}
+    staged = [
+        entry for entry in receipt.get("staged", [])
+        if not (isinstance(entry, dict) and isinstance(entry.get("path"), str)
+                and ownership.canonical(entry["path"]) in removed)
+    ]
+    files = receipt.get("files", [])
+    identifiers = receipt.get("identifiers", [])
+    kept_files = []
+    kept_identifiers = []
+    pair_identifiers = isinstance(files, list) and isinstance(identifiers, list) and len(files) == len(identifiers)
+    for index, entry in enumerate(files if isinstance(files, list) else []):
+        if (isinstance(entry, dict) and isinstance(entry.get("path"), str)
+                and ownership.canonical(entry["path"]) in removed):
+            continue
+        kept_files.append(entry)
+        if pair_identifiers:
+            kept_identifiers.append(identifiers[index])
+    if not staged and not kept_files:
+        return None
+    updated = dict(receipt)
+    updated["files"] = kept_files
+    updated["staged"] = staged
+    updated["identifiers"] = kept_identifiers if pair_identifiers else list(identifiers)
+    return updated
 
 
 def retain_originals(files):

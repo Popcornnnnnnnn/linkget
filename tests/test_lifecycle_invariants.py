@@ -39,7 +39,7 @@ class LifecycleInvariantTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()
         for obj, name, value in (
             (accounts, "directory", self.root / "linkget/sessions"),
             (cli, "inspect_files", uninspected),
@@ -726,6 +726,241 @@ class LifecycleInvariantTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "different text"):
             read_formats.write_text(target, "# Conflicting export\n")
         self.assertEqual(target.read_text(), "# Complete export\n")
+
+    def test_redownload_failed_photos_import_preserves_recoverable_receipt(self):
+        payload = b"recoverable redownload payload"
+        library = self.root / "Photos.photoslibrary"
+        managed = library / "originals/9/90FA4F22-C80E-43F2-A2AF-FE5BA03A989E.jpg"
+        managed.parent.mkdir(parents=True)
+        source = self.root / "dl/photo.jpg"
+        source.parent.mkdir()
+        source.write_bytes(payload)
+
+        task = jobs.Journal.create(["https://example.com/p/1"], argparse.Namespace())
+        stage = self.root / "linkget-redownload-stage"
+        stage.mkdir()
+        staged_dl = stage / "photo.jpg"
+        self._write_owned(staged_dl, payload)
+        ready = {"files": [proof.record() for proof in [ownership.FileProof.from_record(jobs.snapshot([staged_dl])[0])]], "live_pairs": [], "evidence": {}}
+
+        def osascript_first_fail_verify(command, **kwargs):
+            return CompletedProcess(command, 0, "1:0:1\n" + self.identifier_a, "")
+
+        # Initial import gets identifier_a, then library verification fails -> recoverable receipt kept.
+        with jobs.item(task, 1), patch.object(destinations.subprocess, "run", side_effect=osascript_first_fail_verify), \
+                patch.object(photos, "library_directory", return_value=library):
+            with self.assertRaises(RuntimeError):
+                destinations.import_photos([staged_dl], False, None, photos.retain_originals, photos.verify_library_copies)
+
+        saved_receipt = jobs.Journal.load(task.identifier).data["items"][0]["receipt"]
+        self.assertEqual(saved_receipt["identifiers"], [self.identifier_a])
+        staged_orig = Path(saved_receipt["staged"][0]["path"])
+        self.assertTrue(staged_orig.is_file())
+        task.update(1, ready=ready, stage=str(stage), status="failed")
+
+        # Simulate retry --redownload start (cli._has_retained_receipt preserves receipt) and failing second osascript.
+        self.assertTrue(cli._has_retained_receipt(jobs.Journal.load(task.identifier).data["items"][0]))
+        redl_dir = self.root / "redl-source"
+        redl_dir.mkdir()
+        redl_file = redl_dir / "photo.jpg"
+        self._write_owned(redl_file, payload)
+
+        def osascript_retry_fails(command, **kwargs):
+            return CompletedProcess(command, 1, "", "Photos busy")
+
+        with jobs.item(task, 1), patch.object(destinations.subprocess, "run", side_effect=osascript_retry_fails):
+            with self.assertRaisesRegex(RuntimeError, "Photos could not import"):
+                destinations.import_photos([redl_file], False, None, photos.retain_originals, photos.verify_library_copies)
+
+        after_retry = jobs.Journal.load(task.identifier).data["items"][0]["receipt"]
+        self.assertEqual(after_retry["identifiers"], [self.identifier_a])
+        self.assertEqual(after_retry["staged"], saved_receipt["staged"])
+
+        # Now Photos library copy appears and recover --verify completes using the preserved receipt.
+        managed.write_bytes(payload)
+        with patch.object(cli.sys, "platform", "darwin"), patch.object(photos, "library_directory", return_value=library):
+            code, out, err = self._run_cli("recover", task.identifier, "--verify")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("1 staged copies removed", out)
+        self.assertEqual(jobs.Journal.load(task.identifier).needs_verification(), [])
+        self.assertFalse(staged_orig.exists())
+
+    def test_partial_photos_cleanup_prunes_receipt_for_second_verification(self):
+        payload_shared = b"shared item payload"
+        payload_unique = b"unique item payload"
+        library = self.root / "Photos.photoslibrary"
+        managed_a1 = library / "originals/9/90FA4F22-C80E-43F2-A2AF-FE5BA03A989E.jpg"
+        managed_a2 = library / "originals/A/A1FB5033-D91F-4403-B3B0-0F6CB14B09AF.jpg"
+        managed_b = library / "originals/B/B2CC6144-E02A-4514-C4C1-107DC25C10B0.jpg"
+        identifier_c = "B2CC6144-E02A-4514-C4C1-107DC25C10B0/L0/001"
+        for target in (managed_a1, managed_a2, managed_b):
+            target.parent.mkdir(parents=True, exist_ok=True)
+
+        dl_a = self.root / "dl-a"
+        dl_b = self.root / "dl-b"
+        dl_a.mkdir()
+        dl_b.mkdir()
+        src_a1 = dl_a / "one.jpg"
+        src_a2 = dl_a / "two.jpg"
+        src_b = dl_b / "one.jpg"
+        self._write_owned(src_a1, payload_shared)
+        self._write_owned(src_a2, payload_unique)
+        self._write_owned(src_b, payload_shared)
+
+        task_a = jobs.Journal.create(["https://example.com/a"], argparse.Namespace())
+        task_b = jobs.Journal.create(["https://example.com/b"], argparse.Namespace())
+
+        def osascript_a(command, **kwargs):
+            return CompletedProcess(command, 0, f"2:0:1:2\n{self.identifier_a}\t{self.identifier_b}", "")
+
+        with jobs.item(task_a, 1), patch.object(destinations.subprocess, "run", side_effect=osascript_a), \
+                patch.object(photos, "library_directory", return_value=library):
+            with self.assertRaises(RuntimeError):
+                destinations.import_photos([src_a1, src_a2], False, None, photos.retain_originals, photos.verify_library_copies)
+
+        def osascript_b(command, **kwargs):
+            return CompletedProcess(command, 0, f"1:0:1\n{identifier_c}", "")
+
+        with jobs.item(task_b, 1), patch.object(destinations.subprocess, "run", side_effect=osascript_b), \
+                patch.object(photos, "library_directory", return_value=library):
+            with self.assertRaises(RuntimeError):
+                destinations.import_photos([src_b], False, None, photos.retain_originals, photos.verify_library_copies)
+
+        rec_a = jobs.Journal.load(task_a.identifier).data["items"][0]["receipt"]
+        orig_shared = Path(rec_a["staged"][0]["path"])
+        orig_unique = Path(rec_a["staged"][1]["path"])
+
+        # Task A verifies while Task B still references orig_shared: orig_unique is removed and pruned from receipt.
+        managed_a1.write_bytes(payload_shared)
+        managed_a2.write_bytes(payload_unique)
+        with patch.object(cli.sys, "platform", "darwin"), patch.object(photos, "library_directory", return_value=library):
+            code1, out1, err1 = self._run_cli("recover", task_a.identifier, "--verify")
+        self.assertEqual(code1, 0, out1 + err1)
+        self.assertIn("1 staged copies removed · 1 kept", out1)
+        self.assertFalse(orig_unique.exists())
+        self.assertTrue(orig_shared.is_file())
+        pruned_rec = jobs.Journal.load(task_a.identifier).data["items"][0]["receipt"]
+        self.assertEqual([e["path"] for e in pruned_rec["files"]], [str(orig_shared)])
+        self.assertEqual([e["path"] for e in pruned_rec["staged"]], [str(orig_shared)])
+        self.assertEqual(pruned_rec["identifiers"], [self.identifier_a])
+
+        # Task B verifies and clears its receipt, then Task A verifies again cleanly without failing on deleted orig_unique.
+        managed_b.write_bytes(payload_shared)
+        with patch.object(cli.sys, "platform", "darwin"), patch.object(photos, "library_directory", return_value=library):
+            code_b, _, err_b = self._run_cli("recover", task_b.identifier, "--verify")
+        self.assertEqual(code_b, 0, err_b)
+        with patch.object(cli.sys, "platform", "darwin"), patch.object(photos, "library_directory", return_value=library):
+            code2, out2, err2 = self._run_cli("recover", task_a.identifier, "--verify")
+        self.assertEqual(code2, 0, out2 + err2)
+        self.assertIn("1 staged copies removed", out2)
+        self.assertFalse(orig_shared.exists())
+        self.assertEqual(jobs.Journal.load(task_a.identifier).needs_verification(), [])
+
+    def test_read_tasks_refresh_holds_worker_lock_across_status_write(self):
+        with patch.object(read_store, "root", return_value=self.root / "private"):
+            read_tasks.directory().mkdir(parents=True, exist_ok=True)
+            identifier = "20260101T000001-abcdef012345"
+            record, _, claim, _ = read_tasks.paths(identifier)
+            read_store.write_json(record, {
+                "schema": 1,
+                "id": identifier,
+                "kind": "read",
+                "argv": ["https://example.com/a"],
+                "created": time.time() - 60,
+                "status": "running",
+                "phase": "read",
+                "outputs": [],
+                "pid": 999999,
+            })
+
+            # While worker holds .worker.lock, refresh does not interrupt.
+            with read_store.lock(claim):
+                kept = read_tasks.refresh(identifier)
+            self.assertEqual(kept["status"], "running")
+
+            # When refresh acquires .worker.lock, the lock remains held across the terminal status write.
+            real_write = read_store.write_json
+            lock_state = []
+
+            def spy_write(path, value):
+                if path == record:
+                    fd = os.open(claim, os.O_RDONLY | os.O_NOFOLLOW)
+                    try:
+                        try:
+                            read_tasks.fcntl.flock(fd, read_tasks.fcntl.LOCK_EX | read_tasks.fcntl.LOCK_NB)
+                            lock_state.append("unlocked")
+                        except BlockingIOError:
+                            lock_state.append("locked")
+                    finally:
+                        os.close(fd)
+                return real_write(path, value)
+
+            with patch.object(read_tasks.read_store, "write_json", side_effect=spy_write):
+                stopped = read_tasks.refresh(identifier)
+            self.assertEqual(lock_state, ["locked"])
+            self.assertEqual(stopped["status"], "interrupted")
+
+    def test_read_tasks_worker_reconciles_completed_read_job_on_post_commit_interrupt(self):
+        with patch.object(read_store, "root", return_value=self.root / "private"):
+            read_tasks.directory().mkdir(parents=True, exist_ok=True)
+            folder = self.root / "done-read"
+            folder.mkdir(mode=0o700)
+            read_store.write_json(folder / "content.json", {"schema_version": 2, "text": "Complete"})
+            read_store.write_json(folder / ".read-job.json", {
+                "schema": read_store.SCHEMA,
+                "id": "job123",
+                "folder": str(folder),
+                "source": None,
+                "options": {},
+                "status": "completed",
+                "created": time.time(),
+            })
+
+            # 1) Worker interrupted right after committing .read-job.json settles as completed (exit 0).
+            task_worker = "20260101T000002-abcdef012345"
+            rec_w, _, _, _ = read_tasks.paths(task_worker)
+            read_store.write_json(rec_w, {
+                "schema": 1,
+                "id": task_worker,
+                "kind": "read",
+                "argv": ["https://example.com/w"],
+                "created": time.time(),
+                "status": "queued",
+                "phase": "queued",
+                "outputs": [],
+                "pid": None,
+            })
+
+            def interrupt_after_commit(argv):
+                read_tasks.record_output(folder)
+                raise KeyboardInterrupt("SIGINT after commit")
+
+            with patch.object(content, "main", side_effect=interrupt_after_commit):
+                exit_code = read_tasks.worker(task_worker)
+            self.assertEqual(exit_code, 0)
+            loaded_w = read_tasks.load(task_worker)
+            self.assertEqual(loaded_w["status"], "completed")
+            self.assertEqual(loaded_w["exit_code"], 0)
+            self.assertIsNone(loaded_w["failure"])
+
+            # 2) Refresh after a hard crash following .read-job.json commit also settles as completed.
+            task_crash = "20260101T000003-abcdef012345"
+            rec_c, _, _, _ = read_tasks.paths(task_crash)
+            read_store.write_json(rec_c, {
+                "schema": 1,
+                "id": task_crash,
+                "kind": "read",
+                "argv": ["https://example.com/c"],
+                "created": time.time() - 60,
+                "status": "running",
+                "phase": "read",
+                "outputs": [str(folder)],
+                "pid": 999999,
+                "cancel_requested": True,
+            })
+            refreshed = read_tasks.refresh(task_crash)
+            self.assertEqual(refreshed["status"], "completed")
+            self.assertEqual(refreshed["exit_code"], 0)
 
 
 if __name__ == "__main__":

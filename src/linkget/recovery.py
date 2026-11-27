@@ -7,14 +7,14 @@ from urllib.parse import urlsplit
 if __package__:
     from . import jobs, media_limits, staging, transfers, ownership
     from .failures import redact
-    from .photos import originals_directory, originals_lock, referenced_originals, verify_library_copies, digest
+    from .photos import originals_directory, originals_lock, prune_receipt, referenced_originals, verify_library_copies, digest
     from .media import inspect_files
     from .live import prepare_pairs, save_pairs
     from .output import saving_activity, batch_media
 else:
     import jobs, media_limits, staging, transfers, ownership
     from failures import redact
-    from photos import originals_directory, originals_lock, referenced_originals, verify_library_copies, digest
+    from photos import originals_directory, originals_lock, prune_receipt, referenced_originals, verify_library_copies, digest
     from media import inspect_files
     from live import prepare_pairs, save_pairs
     from output import saving_activity, batch_media
@@ -65,7 +65,7 @@ def listing(status, records=None):
     return 0
 
 
-def remove_verified(records, root, *, protect_shared=False):
+def remove_verified(records, root, *, protect_shared=False, removed_paths=None):
     if records == []:
         return 0
     jobs.verified_files(records, root)
@@ -89,6 +89,8 @@ def remove_verified(records, root, *, protect_shared=False):
                 transfers.verify_outputs()
                 proof.remove()
                 removed += 1
+                if removed_paths is not None:
+                    removed_paths.add(proof.path)
     return removed
 
 
@@ -135,7 +137,16 @@ def restore(journal, args, status, save_folder, import_photos, claimed=False, in
                             jobs.verified_files(ready["files"], stage)
                             for pair in ready.get("prepared", []):
                                 jobs.verified_files(pair, stage)
-                        removed = remove_verified(receipt["staged"], originals_directory(), protect_shared=True)
+                        with originals_lock():
+                            removed_originals = set()
+                            removed = remove_verified(
+                                receipt["staged"],
+                                originals_directory(),
+                                protect_shared=True,
+                                removed_paths=removed_originals,
+                            )
+                            if removed_originals:
+                                jobs.record(receipt=prune_receipt(receipt, removed_originals))
                         if ready:
                             remove_verified(ready["files"], stage)
                             for pair in ready.get("prepared", []):

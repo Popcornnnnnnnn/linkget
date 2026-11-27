@@ -1,5 +1,6 @@
 """Detached read/AI workers with private receipts, results and safe cancellation."""
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
 import json
@@ -117,11 +118,71 @@ def active(value):
         return False
 
 
+@contextmanager
+def _try_claim_worker(identifier):
+    _, _, claim, _ = paths(identifier)
+    if claim.is_symlink():
+        yield False
+        return
+    claim.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        fd = os.open(claim, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        yield False
+        return
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+    finally:
+        os.close(fd)
+
+
+def _job_completed(value):
+    if value.get('kind') not in {'read', 'retry'} or len(value.get('outputs', [])) != 1:
+        return False
+    folder = Path(value['outputs'][0])
+    job_path = folder / '.read-job.json'
+    content_path = folder / 'content.json'
+    if (
+        folder.is_symlink()
+        or not folder.is_dir()
+        or job_path.is_symlink()
+        or not job_path.is_file()
+        or content_path.is_symlink()
+        or not content_path.is_file()
+    ):
+        return False
+    try:
+        job = read_store.read_json(job_path)
+    except (OSError, ValueError):
+        return False
+    return job.get('schema') == read_store.SCHEMA and job.get('status') == 'completed'
+
+
 def _refresh_locked(identifier, record, value):
-    if (value['status'] not in TERMINAL and not worker_claimed(identifier) and not active(value)
-            and (value['status'] == 'running' or time.time() - value['created'] > 10)):
-        value.update(status='cancelled' if value.get('cancel_requested') else 'interrupted',
-                     phase='worker stopped; source/checkpoints retained', finished=time.time())
+    if value['status'] in TERMINAL or (value['status'] != 'running' and time.time() - value['created'] <= 10) or active(value):
+        return value
+    with _try_claim_worker(identifier) as claimed:
+        if not claimed or active(value):
+            return value
+        if _job_completed(value):
+            value.update(
+                status='completed',
+                phase='completed',
+                exit_code=0,
+                finished=time.time(),
+                failure=None,
+            )
+        else:
+            value.update(
+                status='cancelled' if value.get('cancel_requested') else 'interrupted',
+                phase='worker stopped; source/checkpoints retained',
+                finished=time.time(),
+            )
         read_store.write_json(record, value)
     return value
 
@@ -445,6 +506,8 @@ def worker(identifier):
             with read_store.lock(lock, wait=True):
                 current_value = load(identifier)
                 if current_value['status'] not in TERMINAL:
+                    if code != 0 and _job_completed(current_value):
+                        code = 0
                     final = 'completed' if code == 0 else 'cancelled' if code == 130 else 'failed'
                     current_value.update(
                         status=final,
