@@ -11,19 +11,22 @@ export const colors = {
 
 const classify = (v) => {
   const crossTaskLoss =
-    (v.recA === "unverified" || v.recB === "unverified") && v.orig !== "present";
+    ((v.recA === "unverified" || v.recB === "unverified") && v.orig1 !== "present") ||
+    (Boolean(v.recAOrig2) && v.orig2 !== "present");
   const receiptDrop =
     v.mode === "photos" &&
-    v.orig === "present" &&
+    v.orig1 === "present" &&
     v.ownerA &&
-    v.recA !== "unverified" &&
-    v.recA !== "verified_kept";
+    ((v.recA !== "unverified" && v.recA !== "verified_kept") || !v.recAId);
   const dualOwner = v.ownerA && v.ownerB;
   const coordDeadlock = v.batchCoord === "failed" && !v.batchCancelled;
   const readRegression =
     (v.readTerminal !== "none" && v.readStatus !== v.readTerminal) ||
-    (v.jobEverDone && v.jobStatus !== "completed");
-  const lockedInterrupt = v.workerLock && v.readStatus !== "running";
+    (v.jobEverDone && v.jobStatus !== "completed") ||
+    (v.jobEverDone &&
+      ["completed", "cancelled", "failed", "interrupted"].includes(v.readStatus) &&
+      v.readStatus !== "completed");
+  const lockedInterrupt = v.workerLock && v.readStatus === "interrupted";
   return {
     crossTaskLoss,
     receiptDrop,
@@ -46,16 +49,16 @@ export const state = (v) => {
   if (v.mode === "idle") return "Idle";
 
   if (v.mode === "photos") {
-    if (v.recA === "cleared") return "Photos original verified and cleaned";
+    if (v.recA === "cleared") return "Photos originals verified and cleaned";
     if (v.recA === "verified_kept" && v.recB === "unverified") {
-      return "Task A verified; original kept for Task B";
+      return "Task A cleaned unique original; shared kept";
     }
     if (v.recA === "verified_kept" && v.recB === "cleared") {
-      return "Task B verified; Task A can clean original";
+      return "Task B verified; Task A can clean shared";
     }
-    if (v.recB === "unverified") return "Task A and Task B share staged original";
+    if (v.recB === "unverified") return "Task A and Task B share original 1";
     if (v.recB === "cleared") return "Task B verified; Task A still unverified";
-    return "Task A staged original";
+    return "Task A staged originals";
   }
 
   if (v.mode === "batch") {
@@ -70,13 +73,20 @@ export const state = (v) => {
   }
 
   if (v.readStatus === "queued") {
+    if (v.workerLock) return "Read worker holds lock before start";
     return v.cancelReq ? "Read queued with cancel requested" : "Read queued";
   }
   if (v.readStatus === "running" && v.workerLock) {
+    if (v.jobEverDone) return "Read job committed; finalizing task";
     return v.cancelReq ? "Read worker running with cancel requested" : "Read worker running";
   }
   if (v.readStatus === "running" && !v.workerLock) {
-    return "Read worker crashed; lock released";
+    return v.jobEverDone
+      ? "Read worker crashed after job commit"
+      : "Read worker crashed; lock released";
+  }
+  if (v.workerLock) {
+    return `Read ${v.readStatus}; releasing lock`;
   }
   if (v.readStatus === "completed") return "Read completed";
   if (v.readStatus === "cancelled") return "Read cancelled";
@@ -122,8 +132,8 @@ export const step = (action, from, to) => {
       return "Task A retries with redownload";
     case "TaskAVerify":
       return to.recA === "verified_kept"
-        ? "Task A verifies and keeps shared original"
-        : "Task A verifies and removes original";
+        ? "Task A cleans unique and keeps shared"
+        : "Task A verifies and cleans";
     case "TaskBVerify":
       return "Task B verifies Photos copy";
     case "WorkerBlockInteraction":
@@ -140,22 +150,29 @@ export const step = (action, from, to) => {
       return "worker spawn fails";
     case "ReadCancelRequest":
       return "user requests cancel";
-    case "ReadWorkerStart":
+    case "ReadWorkerAcquireLock":
+      return "worker acquires lock";
+    case "ReadWorkerBegin":
       return to.readStatus === "cancelled"
         ? "worker sees cancel before start"
-        : "worker acquires lock and starts";
+        : "worker transitions to running";
+    case "ReadCommitJob":
+      return "read job commits completed";
+    case "ReadWorkerFinalizeSuccess":
+      return "worker finalizes completed task";
+    case "ReadPostCommitInterrupt":
+      return "post-commit interrupt reconciles completed";
     case "ReadWorkerCrash":
       return "worker crashes and drops lock";
     case "ReadRefresh":
+      if (to.readStatus === "completed") return "refresh reconciles completed job";
       return to.readStatus === "cancelled"
         ? "refresh marks stopped task cancelled"
         : "refresh marks stopped task interrupted";
-    case "ReadWorkerCommit":
-      return "worker commits output and completes";
     case "ReadWorkerCancelFinish":
       return "worker handles cancel and stops";
-    case "ReadPostCommitInterrupt":
-      return "post-commit interrupt keeps completed";
+    case "ReadWorkerReleaseLock":
+      return "worker releases lock";
     default:
       return action;
   }

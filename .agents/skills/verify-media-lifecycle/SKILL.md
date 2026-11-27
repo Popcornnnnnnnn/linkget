@@ -9,46 +9,52 @@ Checks the TLA+ model in `formal/LinkgetMediaLifecycle.tla` against the safety a
 
 ## Coverage and Sync Record
 
-- `sync_commit`: `305b025`
+- `sync_commit`: `30e931a3e14aa7a02ed1d00d592da15adc4ac253`
 - **Covered files and symbols:**
-  - `src/linkget/photos.py`: `originals_lock`, `referenced_originals`, `retain_originals`
+  - `src/linkget/photos.py`: `originals_lock`, `referenced_originals`, `retain_originals`, `prune_receipt`
+  - `src/linkget/jobs.py`: `Journal.update` (`pending_receipt`, `receipt`)
   - `src/linkget/live.py`: `_retention_lock`, `retain_pairs`
-  - `src/linkget/destinations.py`: `_import_photos`
+  - `src/linkget/destinations.py`: `_carry_created_proofs`, `_import_photos`
   - `src/linkget/recovery.py`: `remove_verified`, `restore`
   - `src/linkget/cli.py`: `_has_retained_receipt`, `download`
   - `src/linkget/batch.py`: `_run`
   - `src/linkget/runtime.py`: `batch_interaction`, `check_batch_cancelled`
-  - `src/linkget/read_tasks.py`: `update`, `worker_claimed`, `_refresh_locked`, `refresh`, `cancel`, `submit`, `worker`
+  - `src/linkget/read_tasks.py`: `update`, `_try_claim_worker`, `_job_completed`, `_refresh_locked`, `refresh`, `cancel`, `submit`, `worker`
   - `src/linkget/read_store.py`: `save_job`, `unfinished`
   - `src/linkget/content.py`: `read_videos`, `finish`, `.toutiao-download` cleanup
   - `src/linkget/read_formats.py`: `write_text`
 - **Check for code drift since last sync:**
   ```sh
-  git diff 305b025..HEAD -- src/linkget/photos.py src/linkget/live.py src/linkget/destinations.py src/linkget/recovery.py src/linkget/cli.py src/linkget/batch.py src/linkget/runtime.py src/linkget/read_tasks.py src/linkget/read_store.py src/linkget/content.py src/linkget/read_formats.py
+  git diff 30e931a3e14aa7a02ed1d00d592da15adc4ac253..HEAD -- src/linkget/photos.py src/linkget/jobs.py src/linkget/live.py src/linkget/destinations.py src/linkget/recovery.py src/linkget/cli.py src/linkget/batch.py src/linkget/runtime.py src/linkget/read_tasks.py src/linkget/read_store.py src/linkget/content.py src/linkget/read_formats.py
   ```
 
 If covered files changed after `sync_commit`, update `formal/LinkgetMediaLifecycle.tla` and confirm it accurately models `HEAD` (including a mutation check) before moving `sync_commit` forward.
 
 ## Verified Properties (Invariants)
 
-1. **`NoCrossTaskOriginalLoss`:** A shared content-addressed file in `originals/` is never unlinked while another task still holds an unverified Photos receipt referencing it.
-2. **`NoUnverifiedReceiptLoss`:** Retrying a task with `--redownload` never drops an existing unverified Photos receipt whose staged files still exist on disk.
+1. **`NoCrossTaskOriginalLoss`:** Neither a shared content-addressed file in `originals/` (`orig1`) nor an unremoved receipt entry (`recAOrig2 => orig2 = "present"`) is deleted while still referenced by an active Photos receipt.
+2. **`NoUnverifiedReceiptLoss`:** Retrying a task with `--redownload` never drops an existing recoverable Photos receipt or its import identifier while staged originals remain on disk.
 3. **`SingleOriginalOwner`:** Concurrent staging of the same original grants creation-time cleanup ownership (`created=True`) to at most one task.
-4. **`NoCoordShutdownDeadlock` (and `NoDeadlock`):** An unhandled exception in the batch coordinator always sets `state["cancelled"]` before `executor.shutdown(wait=True)`, waking any worker blocked in `batch_interaction()`.
-5. **`MonotonicReadTerminal`:** Once a detached read task reaches a terminal status (`completed`, `cancelled`, `failed`, `interrupted`) or a read job commits `completed` in `.read-job.json`, neither concurrent cancellation, refresh, worker cleanup, nor post-commit interrupts regress its status.
-6. **`NoStaleInterruptWhileLocked`:** `read_tasks.refresh()` never marks a task `interrupted` while its detached worker holds `.worker.lock`.
+4. **`NoCoordShutdownDeadlock` (and `NoDeadlock`):** An unhandled exception in the batch coordinator always sets `state["cancelled"]` before `executor.shutdown(wait=True)`, waking any worker blocked in `batch_interaction()`; partial Photos cleanup prunes removed originals so follow-up verification reaches completion without deadlock.
+5. **`MonotonicReadTerminal`:** Once a detached read task reaches a terminal status (`completed`, `cancelled`, `failed`, `interrupted`) or a read job commits `completed` in `.read-job.json`, neither concurrent cancellation, refresh, post-commit interrupts (`worker` `finally`), nor hard-crash `refresh()` reconciliation regress the status away from `completed`.
+6. **`NoStaleInterruptWhileLocked`:** `read_tasks.refresh()` acquires `.worker.lock` across its terminal status write (`_try_claim_worker`), never marking a task `interrupted` while a live detached worker holds `.worker.lock`.
 
 ## Bounds, Assumptions, and Out of Scope
 
-- **Bounds:** Three disjoint protocol branches selected from `Idle` (`photos`, `batch`, `read`): 2 tasks sharing 1 content-addressed original with at most 1 `--redownload` retry; 1 batch coordinator with 1 worker entering `batch_interaction()` and at most 1 unhandled crash; 1 detached read task with `.worker.lock`, 1 cancel request, 1 worker crash, and 1 post-commit interrupt.
+- **Bounds:** Three disjoint protocol branches selected from `Idle` (`photos`, `batch`, `read`): 2 tasks sharing `orig1` plus unshared `orig2` with `--redownload` retry and multi-step `recover --verify` partial cleanup pruning; 1 batch coordinator with 1 worker entering `batch_interaction()` and at most 1 unhandled crash; 1 detached read task modeling separate lock acquisition (`ReadWorkerAcquireLock`), startup (`ReadWorkerBegin`), `.read-job.json` commit (`ReadCommitJob`), post-commit interrupt or hard crash, lock-held refresh (`ReadRefresh`), and lock release (`ReadWorkerReleaseLock`).
 - **Assumptions:** `fcntl.flock` on `.originals.lock`, `.lock`, and `.worker.lock` provides mutual exclusion on local POSIX filesystems; atomic rename/link (`os.replace` / `os.link`) is indivisible; `FileProof.verify()` detects in-place tampering.
 - **Out of scope:** Network/extractor retries, cookie/session recovery flows, AppleScript/Photos internal database locking, and ffmpeg/whisper subprocess internals.
 
-## Verified Status at `305b025`
+## Verified Status at `30e931a3e14aa7a02ed1d00d592da15adc4ac253`
 
-- **Model check (`LinkgetMediaLifecycle`):** TLC explores **37 states / 60 steps** (22 chart states, 30 arrows). All 6 invariants and `NoDeadlock` **hold** (`exit 0`).
-- **Mutation proofs:** Removing the cross-task receipt check in `TaskAVerify` breaks `NoCrossTaskOriginalLoss` in 3 steps (`exit 1`); removing `batchCancelled' = TRUE` in `CoordUnhandledCrash` breaks `NoCoordShutdownDeadlock` and `NoDeadlock` (`exit 1`); clearing `recA` in `TaskARedownload` breaks `NoUnverifiedReceiptLoss` (`exit 1`); removing `~workerLock` in `ReadRefresh` breaks `NoStaleInterruptWhileLocked` (`exit 1`).
-- **Regression tests:** Replayed offline in `tests/test_lifecycle_invariants.py`.
+- **Model check (`LinkgetMediaLifecycle`):** TLC explores **49 states / 83 steps** (27 chart states, 41 arrows). All 6 invariants and `NoDeadlock` **hold** (`exit 0`).
+- **Mutation proofs (all exited `1`):**
+  1. Clearing `recAId` on `TaskARedownload` breaks `NoUnverifiedReceiptLoss` in 2 steps (`exit 1`).
+  2. Keeping `recAOrig2` unpruned after partial `TaskAVerify` breaks `NoCrossTaskOriginalLoss` in 2 steps and `NoDeadlock` in 5 steps (`exit 1`).
+  3. Dropping `~workerLock` in `ReadRefresh` breaks `NoStaleInterruptWhileLocked` in 3 steps (`exit 1`).
+  4. Regressing `readStatus` to `"cancelled"` in `ReadPostCommitInterrupt` breaks `MonotonicReadTerminal` in 5 steps (`exit 1`).
+  5. Removing the cross-task receipt check in `TaskAVerify` breaks `NoCrossTaskOriginalLoss` and `NoDeadlock` in 3 steps (`exit 1`).
+- **Regression tests:** Replayed offline in `tests/test_lifecycle_invariants.py` (full suite: 668 tests run, 6 skipped, 0 failures).
 
 Treat any violation of these invariants or `NoDeadlock` as a release blocker.
 
