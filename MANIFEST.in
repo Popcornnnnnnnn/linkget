@@ -9,3 +9,4 @@ recursive-include macos *.py *.swift
 recursive-include scripts *.py
 recursive-include tests *.py *.json
 exclude docs/validation.md
+prune site

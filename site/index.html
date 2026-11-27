@@ -1,0 +1,671 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <script src="./scripts/boot.js"></script>
+  <title>Linkget — Save Social Media, Live Photos &amp; Long Reads Locally on macOS</title>
+  <meta name="description" content="Local-first MIT macOS CLI, Raycast extension, and stdio MCP server for saving photos, Live Photos, videos, audio, and X/web articles to Apple Photos or Markdown folders.">
+  <link rel="canonical" href="https://linkget.popcornnn.xyz/">
+  <meta property="og:title" content="Linkget v0.4.0 — Save Posts, Live Photos &amp; Long Reads Locally">
+  <meta property="og:description" content="Resolve post links locally with browser session reuse, ffprobe completeness checks, offline X Article rendering, CLI, Raycast extension, and stdio MCP server.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://linkget.popcornnn.xyz/">
+  <meta property="og:image" content="https://linkget.popcornnn.xyz/assets/og-linkget.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Linkget v0.4.0 — Local macOS Archiver for Photos &amp; Markdown">
+  <meta name="twitter:description" content="Save photos, Live Photos, videos, audio, and X/WeChat/Zhihu/web articles into Apple Photos or local Markdown folders via CLI, Raycast, and MCP.">
+  <meta name="twitter:image" content="https://linkget.popcornnn.xyz/assets/og-linkget.png">
+  <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg">
+  <link rel="stylesheet" href="./styles/tokens.css">
+  <link rel="stylesheet" href="./styles/main.css">
+  <script type="module" src="./scripts/main.js"></script>
+</head>
+<body>
+  <a class="skip-link visually-hidden" href="#main-content" data-i18n="nav.skip">Skip to main content</a>
+  <div id="live-status" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand-link" href="#main-content">
+        <img class="brand-icon" src="./assets/favicon.svg" alt="" width="28" height="28">
+        <span>Linkget</span>
+        <span class="brand-badge">v0.4.0</span>
+      </a>
+
+      <nav class="primary-nav" aria-label="Primary">
+        <a href="#router" data-i18n="nav.router">Router</a>
+        <a href="#demos" data-i18n="nav.demos">Demos</a>
+        <a href="#surfaces" data-i18n="nav.surfaces">Surfaces</a>
+        <a href="#sites" data-i18n="nav.sites">Sites</a>
+        <a href="#install" data-i18n="nav.install">Install</a>
+      </nav>
+
+      <div class="header-actions">
+        <button type="button" class="pill-btn" id="lang-toggle" aria-label="Switch interface language to Chinese">
+          <span data-i18n="controls.langLabel">中文</span>
+        </button>
+        <button type="button" class="icon-btn" id="theme-toggle">
+          <span class="theme-option-light">
+            <svg class="theme-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+            <span class="visually-hidden" data-i18n="controls.toLight">Switch to light theme</span>
+          </span>
+          <span class="theme-option-dark">
+            <svg class="theme-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+            <span class="visually-hidden" data-i18n="controls.toDark">Switch to dark theme</span>
+          </span>
+        </button>
+        <a class="pill-btn" href="https://popcornnn.xyz/" data-i18n="nav.studio">Studio</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="main-content" tabindex="-1">
+    <section class="hero">
+      <div class="container hero-grid">
+        <div>
+          <div class="eyebrow">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span data-i18n="hero.eyebrow">LOCAL-FIRST macOS ARCHIVER · MIT</span>
+          </div>
+          <h1 data-i18n="hero.title">Save posts, Live Photos, and long reads straight to Photos or Markdown.</h1>
+          <p class="hero-sub" data-i18n="hero.sub">
+            Linkget resolves social links and articles on your own Mac, checks media completeness with ffprobe, and keeps staged copies until Apple Photos imports are verified byte-for-byte.
+          </p>
+
+          <div class="install-strip">
+            <code id="hero-brew-cmd">brew install Popcornnnnnnnn/tap/linkget</code>
+            <button type="button" class="mini-copy-btn" data-copy-target="hero-brew-cmd" aria-label="Copy Homebrew install command" data-i18n="copy.btn">Copy</button>
+          </div>
+
+          <div class="cta-row">
+            <a class="btn-primary" href="#router" data-i18n="hero.ctaPrimary">Try Command Router</a>
+            <a class="btn-secondary" href="https://github.com/Popcornnnnnnnn/linkget" data-i18n="hero.ctaRepo">GitHub Repo</a>
+            <a class="btn-secondary" href="https://github.com/Popcornnnnnnnn/linkget/releases/tag/v0.4.0" data-i18n="hero.ctaRelease">v0.4.0 Release</a>
+          </div>
+
+          <div class="highlight-strip">
+            <div class="highlight-item">
+              <strong data-i18n="hl.h1Title">Apple Photos + Live Photos</strong>
+              <span data-i18n="hl.h1Sub">Byte-verified imports &amp; paired motion</span>
+            </div>
+            <div class="highlight-item">
+              <strong data-i18n="hl.h2Title">X &amp; Web Articles</strong>
+              <span data-i18n="hl.h2Sub">Offline Markdown folder or long PNG</span>
+            </div>
+            <div class="highlight-item">
+              <strong data-i18n="hl.h3Title">CLI · Raycast · MCP</strong>
+              <span data-i18n="hl.h3Sub">One toolset across terminal, launcher, and agents</span>
+            </div>
+            <div class="highlight-item">
+              <strong data-i18n="hl.h4Title">Zero Telemetry</strong>
+              <span data-i18n="hl.h4Sub">Local browser sessions &amp; disk receipts only</span>
+            </div>
+          </div>
+        </div>
+
+        <aside class="flow-card" aria-label="Linkget local pipeline overview">
+          <div class="flow-step">
+            <div class="flow-kicker" data-i18n="flow.k1">01 · Input &amp; Mode Resolution</div>
+            <p data-i18n="flow.v1">Paste a single URL, share text, or a multi-link batch. Override detection with --as auto, photo, video, article, or --audio.</p>
+          </div>
+          <div class="flow-arrow" aria-hidden="true">↓</div>
+          <div class="flow-step">
+            <div class="flow-kicker" data-i18n="flow.k2">02 · Local Engines &amp; Checks</div>
+            <p data-i18n="flow.v2">Routes across gallery-dl, yt-dlp, native site resolvers, or offline headless Chromium, reusing local browser logins only when allowed.</p>
+          </div>
+          <div class="flow-arrow" aria-hidden="true">↓</div>
+          <div class="flow-step is-verified">
+            <div class="flow-kicker" data-i18n="flow.k3">03 · Verified Destination</div>
+            <p data-i18n="flow.v3">Commits into macOS Apple Photos after byte-for-byte library checks, or writes Obsidian-ready Markdown, HTML, JSON, and local assets.</p>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="section" id="router">
+      <div class="container">
+        <div class="section-head">
+          <h2 data-i18n="router.heading">Interactive Command &amp; Route Builder</h2>
+          <p data-i18n="router.sub">
+            Pick a real workflow and switch destination or save type to see the exact CLI invocation, inspect summary, and output layout.
+          </p>
+        </div>
+
+        <div class="router-shell">
+          <div class="tablist-scroll" role="tablist" aria-label="Linkget workflow presets" id="router-presets">
+            <button type="button" class="tab-btn" role="tab" id="preset-xarticle" data-preset="xarticle" aria-selected="true" aria-controls="router-panel" tabindex="0" data-i18n="router.pXArticle">X Article → Photos</button>
+            <button type="button" class="tab-btn" role="tab" id="preset-markdown" data-preset="markdown" aria-selected="false" aria-controls="router-panel" tabindex="-1" data-i18n="router.pMarkdown">Article → Obsidian</button>
+            <button type="button" class="tab-btn" role="tab" id="preset-live" data-preset="live" aria-selected="false" aria-controls="router-panel" tabindex="-1" data-i18n="router.pLive">Douyin / XHS → Live Photos</button>
+            <button type="button" class="tab-btn" role="tab" id="preset-video" data-preset="video" aria-selected="false" aria-controls="router-panel" tabindex="-1" data-i18n="router.pVideo">Bilibili / YouTube</button>
+            <button type="button" class="tab-btn" role="tab" id="preset-batch" data-preset="batch" aria-selected="false" aria-controls="router-panel" tabindex="-1" data-i18n="router.pBatch">Batch + Retry</button>
+          </div>
+
+          <div id="router-panel" role="tabpanel" aria-labelledby="preset-xarticle" tabindex="0">
+            <div class="router-controls">
+              <div class="control-group" role="group" aria-label="Destination">
+                <span class="control-label" data-i18n="router.destLabel">Destination</span>
+                <button type="button" class="chip-btn" data-dest="photos" aria-pressed="true" data-i18n="router.destPhotos">Apple Photos</button>
+                <button type="button" class="chip-btn" data-dest="folder" aria-pressed="false" data-i18n="router.destFolder">Local Folder</button>
+              </div>
+
+              <div class="control-group" role="group" aria-label="Save mode">
+                <span class="control-label" data-i18n="router.modeLabel">Save As</span>
+                <button type="button" class="chip-btn" data-mode="auto" aria-pressed="true" data-i18n="router.modeAuto">Auto</button>
+                <button type="button" class="chip-btn" data-mode="photo" aria-pressed="false" data-i18n="router.modePhoto">Photo</button>
+                <button type="button" class="chip-btn" data-mode="video" aria-pressed="false" data-i18n="router.modeVideo">Video</button>
+                <button type="button" class="chip-btn" data-mode="article" aria-pressed="false" data-i18n="router.modeArticle">Article</button>
+                <button type="button" class="chip-btn" data-mode="audio" aria-pressed="false" data-i18n="router.modeAudio">Audio</button>
+              </div>
+            </div>
+
+            <div class="router-grid">
+              <div class="pane-card">
+                <div class="pane-head">
+                  <span class="pane-title" data-i18n="router.cmdTitle">Generated Shell Command</span>
+                  <span class="pane-badge" id="router-engine-badge">x · --photos</span>
+                </div>
+
+                <div class="code-panel">
+                  <div class="code-bar">
+                    <span>zsh · ASCII-quoted URL</span>
+                    <button type="button" class="code-copy-btn" data-copy-target="router-command" aria-label="Copy generated CLI command" data-i18n="copy.btn">Copy</button>
+                  </div>
+                  <pre><code id="router-command">linkget 'https://x.com/USER/article/ID' --photos</code></pre>
+                </div>
+
+                <p class="router-note" id="router-note">
+                  Renders the X Article locally inside a network-disabled Chromium window and imports a high-resolution PNG into Apple Photos.
+                </p>
+              </div>
+
+              <div class="pane-card">
+                <div class="pane-head">
+                  <span class="pane-title" data-i18n="router.inspectTitle">Inspect Route &amp; Expected Output</span>
+                  <span class="pane-badge is-ok" data-i18n="router.previewTag">Simulated Preview</span>
+                </div>
+
+                <dl class="inspect-grid">
+                  <div class="inspect-cell">
+                    <dt data-i18n="router.kSite">Site</dt>
+                    <dd id="router-site">x</dd>
+                  </div>
+                  <div class="inspect-cell">
+                    <dt data-i18n="router.kEngine">Engine</dt>
+                    <dd id="router-engine">x-article-photos (offline Chromium)</dd>
+                  </div>
+                  <div class="inspect-cell">
+                    <dt data-i18n="router.kDest">Destination</dt>
+                    <dd id="router-dest">Apple Photos Library</dd>
+                  </div>
+                  <div class="inspect-cell">
+                    <dt data-i18n="router.kSafety">Safety Gate</dt>
+                    <dd id="router-safety">network-disabled Chromium + byte-verified cleanup</dd>
+                  </div>
+                </dl>
+
+                <div class="tree-box" id="router-output">Apple Photos Library
+└─ 2026-11-27-user-article.png (offline Chromium render)
+Staging: ~/Library/Application Support/linkget/ (removed after byte check)</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="demos">
+      <div class="container">
+        <div class="section-head">
+          <h2 data-i18n="demos.heading">Live Terminal Recordings</h2>
+          <p data-i18n="demos.sub">
+            Recorded from real runs saving a five-second Vimeo clip and archiving a web page offline.
+          </p>
+        </div>
+
+        <div class="demo-grid">
+          <figure class="terminal-card reveal-block">
+            <div class="terminal-bar">
+              <span class="traffic-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+              <span title="linkget 'https://vimeo.com/1084537' --clip 0:03-0:08 --folder video --browser none">linkget 'https://vimeo.com/1084537' --clip 0:03-0:08 --folder video --browser none</span>
+            </div>
+            <div class="terminal-frame">
+              <img src="./assets/save-video.gif" alt="Terminal recording of Linkget saving a five-second Big Buck Bunny Vimeo clip as an MP4 file" width="1040" height="340">
+            </div>
+            <figcaption class="terminal-caption">
+              <h3 data-i18n="demos.vTitle">Save a video clip to a folder</h3>
+              <p data-i18n="demos.vDesc">Downloads Blender's Big Buck Bunny test clip via yt-dlp, verifies streams with ffprobe, and saves a standalone MP4.</p>
+            </figcaption>
+          </figure>
+
+          <figure class="terminal-card reveal-block">
+            <div class="terminal-bar">
+              <span class="traffic-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+              <span title="linkget 'https://example.com/' --article --folder articles --browser none">linkget 'https://example.com/' --article --folder articles --browser none</span>
+            </div>
+            <div class="terminal-frame">
+              <img src="./assets/save-article.gif" alt="Terminal recording of Linkget archiving a web page into HTML, Markdown, and plain text" width="1040" height="340">
+            </div>
+            <figcaption class="terminal-caption">
+              <h3 data-i18n="demos.aTitle">Archive a web article offline</h3>
+              <p data-i18n="demos.aDesc">Extracts article content, downloads embedded media into local assets/, and writes article.md alongside standalone article.html.</p>
+            </figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="surfaces">
+      <div class="container">
+        <div class="section-head">
+          <h2 data-i18n="surfaces.heading">Three Ways to Run Linkget</h2>
+          <p data-i18n="surfaces.sub">
+            Use the same local engine from your shell, through the bundled two-command Raycast extension, or inside AI coding agents over stdio MCP.
+          </p>
+        </div>
+
+        <div class="tabs-widget" data-tabs-widget="surfaces">
+          <div class="tablist-scroll" role="tablist" focusgroup="tablist nomemory" aria-label="Linkget interfaces">
+            <button type="button" class="tab-btn" role="tab" id="surf-tab-cli" aria-controls="surf-panel-cli" aria-selected="true" tabindex="0" focusgroupstart data-i18n="surfaces.tCli">CLI (linkget)</button>
+            <button type="button" class="tab-btn" role="tab" id="surf-tab-raycast" aria-controls="surf-panel-raycast" aria-selected="false" tabindex="-1" data-i18n="surfaces.tRay">Raycast (lg / lgs)</button>
+            <button type="button" class="tab-btn" role="tab" id="surf-tab-mcp" aria-controls="surf-panel-mcp" aria-selected="false" tabindex="-1" data-i18n="surfaces.tMcp">MCP Server (linkget mcp)</button>
+          </div>
+
+          <div id="surf-panel-cli" role="tabpanel" aria-labelledby="surf-tab-cli" tabindex="0">
+            <div class="surface-grid">
+              <article class="feature-card">
+                <span class="feature-tag" data-i18n="surf.tagDownload">DOWNLOAD &amp; OVERRIDE</span>
+                <h3 data-i18n="surf.cli1Title">Single Post, Audio &amp; Articles</h3>
+                <p data-i18n="surf.cli1Desc">Detects photos, videos, audio tracks, and articles automatically, with explicit --as photo|video|article and --photos or --folder overrides.</p>
+                <code class="cmd-inline">linkget 'URL' --as article --photos</code>
+              </article>
+
+              <article class="feature-card">
+                <span class="feature-tag" data-i18n="surf.tagInspect">PRE-FLIGHT CHECK</span>
+                <h3 data-i18n="surf.cli2Title">Side-Effect-Free Inspect</h3>
+                <p data-i18n="surf.cli2Desc">Checks canonical URL routing, supported article/photo flags, tool availability, and saved session status without touching disk receipts.</p>
+                <code class="cmd-inline">linkget inspect 'URL' --json</code>
+              </article>
+
+              <article class="feature-card">
+                <span class="feature-tag" data-i18n="surf.tagBatch">BATCH &amp; RECOVERY</span>
+                <h3 data-i18n="surf.cli3Title">Batch Queue, Retry &amp; Recover</h3>
+                <p data-i18n="surf.cli3Desc">Downloads multiple links concurrently via batch (--jobs N), resumes unfinished items with retry while preserving flags, and salvages verified staged files via recover.</p>
+                <code class="cmd-inline">linkget retry --redownload</code>
+              </article>
+
+              <article class="feature-card">
+                <span class="feature-tag" data-i18n="surf.tagRead">READ &amp; CLEANUP</span>
+                <h3 data-i18n="surf.cli4Title">Transcripts, Keyframes &amp; Stage Clean</h3>
+                <p data-i18n="surf.cli4Desc">Extracts subtitles, Whisper transcripts, OCR keyframes, or offline articles via read, and safely prunes aged temp directories with clean.</p>
+                <code class="cmd-inline">linkget clean --older-than 7d</code>
+              </article>
+            </div>
+          </div>
+
+          <div id="surf-panel-raycast" role="tabpanel" aria-labelledby="surf-tab-raycast" hidden="until-found">
+            <div class="surface-grid">
+              <article class="feature-card">
+                <span class="feature-tag" data-i18n="surf.tagLg">COMMAND · lg</span>
+                <h3 data-i18n="surf.ray1Title">Save Link</h3>
+                <p data-i18n="surf.ray1Desc">Auto-reads clipboard links or accepts multi-line batch pastes and share text. Switch between Auto, Photos, Video, Article, Audio, or Transcript before saving, or launch in background (⌘B).</p>
+                <code class="cmd-inline">raycast/ · macOS Raycast Form</code>
+              </article>
+
+              <article class="feature-card">
+                <span class="feature-tag" data-i18n="surf.tagLgs">COMMAND · lgs</span>
+                <h3 data-i18n="surf.ray2Title">Status Board</h3>
+                <p data-i18n="surf.ray2Desc">Browse recent downloads and archived reads with cover previews, toggle the detail pane (⌘⇧D), open the inline Markdown reader (⌘⇧R, with ⌘C Copy Markdown), open article.html, or retry failed jobs.</p>
+                <code class="cmd-inline">Default: Apple Photos (media) · ~/Downloads (articles)</code>
+              </article>
+
+              <article class="feature-card">
+                <span class="feature-tag" data-i18n="surf.tagVault">OBSIDIAN &amp; PHOTOS</span>
+                <h3 data-i18n="surf.ray3Title">Vault Folder &amp; X Article PNG</h3>
+                <p data-i18n="surf.ray3Desc">Point Default Article Archive Folder at your Obsidian Vault Clippings folder, or render X Articles as high-resolution PNG images into Apple Photos.</p>
+                <code class="cmd-inline">linkget config --article-folder ~/Vault/Clippings</code>
+              </article>
+
+              <article class="feature-card">
+                <span class="feature-tag" data-i18n="surf.tagDiag">DIAGNOSTICS</span>
+                <h3 data-i18n="surf.ray4Title">Engines, Sessions &amp; Maintenance</h3>
+                <p data-i18n="surf.ray4Desc">Inspect gallery-dl, yt-dlp, ffmpeg, and site session status inside Status Board, trigger update checks, and confirm linkget clean runs.</p>
+                <code class="cmd-inline">cd raycast &amp;&amp; npm install &amp;&amp; npm run build</code>
+              </article>
+            </div>
+          </div>
+
+          <div id="surf-panel-mcp" role="tabpanel" aria-labelledby="surf-tab-mcp" hidden="until-found">
+            <div class="surface-grid">
+              <article class="feature-card">
+                <span class="feature-tag" data-i18n="surf.tagMcp1">INSPECT &amp; HEALTH</span>
+                <h3>inspect_url · doctor</h3>
+                <p data-i18n="surf.mcp1Desc">Read-only pre-flight routing, remote metadata probes (no_network option), browser controller selection (neo or chrome), and folder write checks.</p>
+                <code class="cmd-inline">stdio JSON-RPC 2.0 · 0 extra deps</code>
+              </article>
+
+              <article class="feature-card">
+                <span class="feature-tag" data-i18n="surf.tagMcp2">MEDIA &amp; BATCH</span>
+                <h3>download_media · batch_download</h3>
+                <p data-i18n="surf.mcp2Desc">Saves single posts, 1 to 50 batch URLs, audio extractions (audio_format), and offline articles into explicit target folders with duration and size caps.</p>
+                <code class="cmd-inline">clip · max_duration · max_size · jobs (1–8)</code>
+              </article>
+
+              <article class="feature-card">
+                <span class="feature-tag" data-i18n="surf.tagMcp3">CONTENT READING</span>
+                <h3>read_content</h3>
+                <p data-i18n="surf.mcp3Desc">Extracts subtitles, speech transcripts, video keyframes (max_frames), macOS Vision OCR, and X/web/WeChat/Toutiao articles synchronously or in background.</p>
+                <code class="cmd-inline">subtitles · frames · frame_ocr · background</code>
+              </article>
+
+              <article class="feature-card">
+                <span class="feature-tag" data-i18n="surf.tagMcp4">TASKS &amp; CLEANUP</span>
+                <h3>get_task · retry_task · clean_stages</h3>
+                <p data-i18n="surf.mcp4Desc">Polls download or read tasks (with optional content.json payload), retries unfinished items without losing parameters, and previews temporary cleanup.</p>
+                <code class="cmd-inline">apply: false runs dry-run preview</code>
+              </article>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="guarantees">
+      <div class="container">
+        <div class="section-head">
+          <h2 data-i18n="guards.heading">Four Local-First Guarantees</h2>
+          <p data-i18n="guards.sub">
+            Built so temporary downloads never vanish mid-failure and browser sessions stay on your disk.
+          </p>
+        </div>
+
+        <div class="cards-wrap">
+          <div class="card-grid-2">
+            <article class="feature-card reveal-block">
+              <span class="feature-tag" data-i18n="guards.g1Tag">APPLE PHOTOS</span>
+              <h3 data-i18n="guards.g1Title">Byte-Verified Stage Cleanup</h3>
+              <p data-i18n="guards.g1Desc">
+                Media is staged under ~/Library/Application Support/linkget/ and verified inside the managed Apple Photos library byte-for-byte before staging files are deleted.
+              </p>
+            </article>
+
+            <article class="feature-card reveal-block">
+              <span class="feature-tag" data-i18n="guards.g2Tag">X ARTICLES</span>
+              <h3 data-i18n="guards.g2Title">Offline Headless Chromium PNGs</h3>
+              <p data-i18n="guards.g2Desc">
+                Pass --photos or set linkget config --x-article-photos to archive an X Article or promoted long post as a high-resolution PNG into Photos using a network-disabled browser pass.
+              </p>
+            </article>
+
+            <article class="feature-card reveal-block">
+              <span class="feature-tag" data-i18n="guards.g3Tag">RECOVERY</span>
+              <h3 data-i18n="guards.g3Title">Checkpointed Retry &amp; Dry-Run Clean</h3>
+              <p data-i18n="guards.g3Desc">
+                Unfinished downloads reuse verified staged media under linkget retry while keeping original --photos or --folder targets intact, and clean defaults to preview unless --apply is set.
+              </p>
+            </article>
+
+            <article class="feature-card reveal-block">
+              <span class="feature-tag" data-i18n="guards.g4Tag">PRIVACY</span>
+              <h3 data-i18n="guards.g4Title">Local Browser Reuse &amp; Zero Telemetry</h3>
+              <p data-i18n="guards.g4Desc">
+                Linkget has no hosted backend or analytics. Saved session cookies and receipts remain readable only by your user account, or pass --browser none to disable browser reads completely.
+              </p>
+            </article>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="sites">
+      <div class="container">
+        <div class="section-head">
+          <h2 data-i18n="sites.heading">Supported Sites</h2>
+          <p data-i18n="sites.sub">
+            Single-post resolvers, article archivers, and audio extractors verified in Linkget v0.4.0. Filter by what you want to save.
+          </p>
+        </div>
+
+        <div class="tablist-scroll" role="toolbar" aria-label="Filter supported sites by output type" id="sites-filters">
+          <button type="button" class="tab-btn" data-filter="all" aria-pressed="true" tabindex="0" data-i18n="sites.fAll">All Sites</button>
+          <button type="button" class="tab-btn" data-filter="photos" aria-pressed="false" tabindex="-1" data-i18n="sites.fPhotos">Photos</button>
+          <button type="button" class="tab-btn" data-filter="videos" aria-pressed="false" tabindex="-1" data-i18n="sites.fVideos">Videos</button>
+          <button type="button" class="tab-btn" data-filter="articles" aria-pressed="false" tabindex="-1" data-i18n="sites.fArticles">Articles</button>
+          <button type="button" class="tab-btn" data-filter="audio" aria-pressed="false" tabindex="-1" data-i18n="sites.fAudio">Audio</button>
+        </div>
+
+        <div class="table-scroll" tabindex="0" role="region" aria-label="Supported sites table" id="sites-table-region">
+          <table class="sites-table">
+            <caption data-i18n="sites.caption">Single-post, article, and music routes in Linkget v0.4.0</caption>
+            <thead>
+              <tr>
+                <th scope="col" data-i18n="sites.colSite">Site</th>
+                <th scope="col" data-i18n="sites.colOutputs">Supported Media</th>
+                <th scope="col" data-i18n="sites.colStatus">Tier</th>
+                <th scope="col" data-i18n="sites.colNotes">Notes</th>
+              </tr>
+            </thead>
+            <tbody id="sites-body">
+              <tr data-cat="photos videos">
+                <th scope="row">Instagram</th>
+                <td data-i18n="sites.oIg">Photos, videos, Reels</td>
+                <td><span class="status-pill" data-i18n="sites.sStable">Stable</span></td>
+                <td data-i18n="sites.nIg">Completeness check counts source photos and videos across carousels and Reels.</td>
+              </tr>
+              <tr data-cat="photos videos articles">
+                <th scope="row">X / Twitter</th>
+                <td data-i18n="sites.oX">Photos, videos, X Articles</td>
+                <td><span class="status-pill" data-i18n="sites.sStable">Stable</span></td>
+                <td data-i18n="sites.nX">Detects Articles on /status/ID &amp; /article/ID; saves Markdown/HTML folder or renders PNG via --photos.</td>
+              </tr>
+              <tr data-cat="articles">
+                <th scope="row" data-i18n="sites.sWebName">WeChat / Toutiao / Zhihu / Web</th>
+                <td data-i18n="sites.oWeb">Offline articles</td>
+                <td><span class="status-pill" data-i18n="sites.sStable">Stable</span></td>
+                <td data-i18n="sites.nWeb">Writes article.md, standalone article.html, content.json, and assets/; pass --no-assets to skip media.</td>
+              </tr>
+              <tr data-cat="videos audio">
+                <th scope="row">Bilibili</th>
+                <td data-i18n="sites.oBili">Video (BV/av), Opus, Audio (au)</td>
+                <td><span class="status-pill" data-i18n="sites.sStable">Stable</span></td>
+                <td data-i18n="sites.nBili">Optional browser login unlocks higher streams; handles one part or audio track per URL.</td>
+              </tr>
+              <tr data-cat="photos videos">
+                <th scope="row">TikTok</th>
+                <td data-i18n="sites.oTt">Photo posts, videos</td>
+                <td><span class="status-pill" data-i18n="sites.sStable">Stable</span></td>
+                <td data-i18n="sites.nTt">Supports short share links.</td>
+              </tr>
+              <tr data-cat="photos videos">
+                <th scope="row">Douyin</th>
+                <td data-i18n="sites.oDy">Photo posts, Live Photos, videos</td>
+                <td><span class="status-pill" data-i18n="sites.sStable">Stable</span></td>
+                <td data-i18n="sites.nDy">Ranks clean playback streams, pairs still + motion into Live Photos, supports BrowserOS neo / Chrome fallback.</td>
+              </tr>
+              <tr data-cat="photos videos">
+                <th scope="row">Xiaohongshu</th>
+                <td data-i18n="sites.oXhs">Image sets, videos</td>
+                <td><span class="status-pill is-trial" data-i18n="sites.sTrial">Trial</span></td>
+                <td data-i18n="sites.nXhs">Keep full URL including xsec_token query parameters; checkpoints multi-image posts on retry.</td>
+              </tr>
+              <tr data-cat="photos videos">
+                <th scope="row">Weibo</th>
+                <td data-i18n="sites.oWb">Photos, videos</td>
+                <td><span class="status-pill" data-i18n="sites.sStable">Stable</span></td>
+                <td data-i18n="sites.nWb">Heuristic selection prefers watermark-free JPEG originals when available.</td>
+              </tr>
+              <tr data-cat="videos audio">
+                <th scope="row">YouTube / YouTube Music</th>
+                <td data-i18n="sites.oYt">Single videos, Shorts, Music tracks</td>
+                <td><span class="status-pill" data-i18n="sites.sStable">Stable</span></td>
+                <td data-i18n="sites.nYt">Playlist-only URLs and live streams excluded; music.youtube.com defaults to audio extraction.</td>
+              </tr>
+              <tr data-cat="videos">
+                <th scope="row">Vimeo</th>
+                <td data-i18n="sites.oVimeo">Public embeddable videos</td>
+                <td><span class="status-pill is-dev" data-i18n="sites.sDev">Development</span></td>
+                <td data-i18n="sites.nVimeo">Accepts vimeo.com/ID and player.vimeo.com/video/ID.</td>
+              </tr>
+              <tr data-cat="videos">
+                <th scope="row">Dailymotion</th>
+                <td data-i18n="sites.oDm">Single videos</td>
+                <td><span class="status-pill is-dev" data-i18n="sites.sDev">Development</span></td>
+                <td data-i18n="sites.nDm">Accepts dailymotion.com/video/ID and dai.ly/ID.</td>
+              </tr>
+              <tr data-cat="audio">
+                <th scope="row">SoundCloud</th>
+                <td data-i18n="sites.oSc">Single tracks</td>
+                <td><span class="status-pill" data-i18n="sites.sStable">Stable</span></td>
+                <td data-i18n="sites.nSc">Public tracks and on.soundcloud.com shares; sets excluded.</td>
+              </tr>
+              <tr data-cat="audio">
+                <th scope="row">Bandcamp</th>
+                <td data-i18n="sites.oBc">Single tracks</td>
+                <td><span class="status-pill" data-i18n="sites.sStable">Stable</span></td>
+                <td data-i18n="sites.nBc">Public /track/ links with metadata tags; full albums excluded.</td>
+              </tr>
+              <tr data-cat="photos videos">
+                <th scope="row">Reddit</th>
+                <td data-i18n="sites.oRd">Photos, galleries, videos</td>
+                <td><span class="status-pill is-trial" data-i18n="sites.sTrial">Trial</span></td>
+                <td data-i18n="sites.nRd">Handled through gallery-dl.</td>
+              </tr>
+              <tr data-cat="videos">
+                <th scope="row">Kuaishou</th>
+                <td data-i18n="sites.oKs">/short-video/ videos</td>
+                <td><span class="status-pill is-trial" data-i18n="sites.sTrial">Trial</span></td>
+                <td data-i18n="sites.nKs">Prefers HEVC streams at equal resolution.</td>
+              </tr>
+              <tr data-cat="photos videos">
+                <th scope="row">LOFTER</th>
+                <td data-i18n="sites.oLf">Photos, videos</td>
+                <td><span class="status-pill is-trial" data-i18n="sites.sTrial">Trial</span></td>
+                <td data-i18n="sites.nLf">Handled through gallery-dl.</td>
+              </tr>
+              <tr data-cat="photos">
+                <th scope="row">Pixiv</th>
+                <td data-i18n="sites.oPx">Static artworks</td>
+                <td><span class="status-pill is-trial" data-i18n="sites.sTrial">Trial</span></td>
+                <td data-i18n="sites.nPx">Static artworks; Ugoira and collections excluded.</td>
+              </tr>
+              <tr data-cat="photos videos">
+                <th scope="row">Pinterest</th>
+                <td data-i18n="sites.oPin">Pins, boards</td>
+                <td><span class="status-pill is-trial" data-i18n="sites.sTrial">Trial</span></td>
+                <td data-i18n="sites.nPin">Handled through gallery-dl.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="table-footnote" data-i18n="sites.footnote">
+          Video mode can also attempt additional sites supported by your installed yt-dlp. See the repository README for the full compatibility reference.
+        </p>
+      </div>
+    </section>
+
+    <section class="section" id="install">
+      <div class="container">
+        <div class="section-head">
+          <h2 data-i18n="install.heading">Install &amp; Configure</h2>
+          <p data-i18n="install.sub">
+            One Homebrew command installs Python, gallery-dl, yt-dlp, ffmpeg, and deno. Set your default Photos and Obsidian paths once, then connect Raycast or MCP if needed.
+          </p>
+        </div>
+
+        <div class="tabs-widget" data-tabs-widget="install">
+          <div class="tablist-scroll" role="tablist" focusgroup="tablist nomemory" aria-label="Install and integration steps">
+            <button type="button" class="tab-btn" role="tab" id="inst-tab-brew" aria-controls="inst-panel-brew" aria-selected="true" tabindex="0" focusgroupstart data-i18n="install.tBrew">Homebrew Install</button>
+            <button type="button" class="tab-btn" role="tab" id="inst-tab-defaults" aria-controls="inst-panel-defaults" aria-selected="false" tabindex="-1" data-i18n="install.tDefaults">Photos &amp; Obsidian</button>
+            <button type="button" class="tab-btn" role="tab" id="inst-tab-mcp" aria-controls="inst-panel-mcp" aria-selected="false" tabindex="-1" data-i18n="install.tMcp">MCP Client Config</button>
+            <button type="button" class="tab-btn" role="tab" id="inst-tab-raycast" aria-controls="inst-panel-raycast" aria-selected="false" tabindex="-1" data-i18n="install.tRay">Raycast Local Build</button>
+          </div>
+
+          <div id="inst-panel-brew" role="tabpanel" aria-labelledby="inst-tab-brew" tabindex="0">
+            <div class="code-panel">
+              <div class="code-bar">
+                <span>zsh · macOS Homebrew</span>
+                <button type="button" class="code-copy-btn" data-copy-target="code-brew" aria-label="Copy Homebrew commands" data-i18n="copy.btn">Copy</button>
+              </div>
+              <pre><code id="code-brew"># Install CLI + gallery-dl, yt-dlp, ffmpeg, and deno
+brew install Popcornnnnnnnn/tap/linkget
+
+# Check installed engines, Chromium controller, and local sessions
+linkget doctor
+
+# Launch interactive prompt (or pass --photos / --folder)
+linkget</code></pre>
+            </div>
+          </div>
+
+          <div id="inst-panel-defaults" role="tabpanel" aria-labelledby="inst-tab-defaults" hidden="until-found">
+            <div class="code-panel">
+              <div class="code-bar">
+                <span>zsh · Permanent Defaults</span>
+                <button type="button" class="code-copy-btn" data-copy-target="code-defaults" aria-label="Copy default config commands" data-i18n="copy.btn">Copy</button>
+              </div>
+              <pre><code id="code-defaults"># Default media destination: Apple Photos; articles: your Obsidian Vault
+linkget config --photos --article-folder ~/Vault/Clippings
+
+# Also render X Articles / long posts as high-res PNGs into Apple Photos by default
+linkget config --x-article-photos
+
+# Inspect effective settings anytime
+linkget config</code></pre>
+            </div>
+          </div>
+
+          <div id="inst-panel-mcp" role="tabpanel" aria-labelledby="inst-tab-mcp" hidden="until-found">
+            <div class="code-panel">
+              <div class="code-bar">
+                <span>json · Stdio MCP Client Entry</span>
+                <button type="button" class="code-copy-btn" data-copy-target="code-mcp" aria-label="Copy MCP client JSON" data-i18n="copy.btn">Copy</button>
+              </div>
+              <pre><code id="code-mcp">{
+  "mcpServers": {
+    "linkget": {
+      "command": "linkget",
+      "args": ["mcp"]
+    }
+  }
+}</code></pre>
+            </div>
+          </div>
+
+          <div id="inst-panel-raycast" role="tabpanel" aria-labelledby="inst-tab-raycast" hidden="until-found">
+            <div class="code-panel">
+              <div class="code-bar">
+                <span>zsh · Raycast Extension (macOS)</span>
+                <button type="button" class="code-copy-btn" data-copy-target="code-raycast" aria-label="Copy Raycast build commands" data-i18n="copy.btn">Copy</button>
+              </div>
+              <pre><code id="code-raycast">git clone https://github.com/Popcornnnnnnnn/linkget.git
+cd linkget/raycast
+npm install
+npm test &amp;&amp; npm run lint &amp;&amp; npm run build
+# Then open "Import Extension" in Raycast and select the raycast/ folder</code></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div>
+        <strong data-i18n="footer.brand">Linkget v0.4.0 · MIT License</strong>
+        <span data-i18n="footer.note"> — Runs locally on macOS. Zero cloud services or telemetry.</span>
+      </div>
+      <nav class="footer-links" aria-label="Footer">
+        <a href="https://popcornnn.xyz/" data-i18n="footer.home">popcornnn.xyz</a>
+        <a href="https://github.com/Popcornnnnnnnn/linkget" data-i18n="footer.repo">GitHub</a>
+        <a href="https://github.com/Popcornnnnnnnn/linkget/releases/tag/v0.4.0" data-i18n="footer.release">Releases</a>
+        <a href="https://github.com/Popcornnnnnnnn/linkget/blob/main/raycast/README.md" data-i18n="footer.raycast">Raycast</a>
+        <a href="https://github.com/Popcornnnnnnnn/linkget/issues" data-i18n="footer.issues">Issues</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
