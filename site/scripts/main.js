@@ -316,6 +316,7 @@ const I18N = {
     'footer.release': 'Releases',
     'footer.raycast': 'Raycast',
     'footer.issues': 'Issues',
+    'footer.linuxdo': 'LINUX DO',
   },
   'zh-Hans': {
     'meta.title': 'Linkget — 把社交媒体图片、视频、实况照片与长文保存到本地或 Apple 照片',
@@ -500,6 +501,7 @@ const I18N = {
     'footer.release': '版本发布',
     'footer.raycast': 'Raycast',
     'footer.issues': '反馈 Issue',
+    'footer.linuxdo': 'LINUX DO',
   },
 };
 

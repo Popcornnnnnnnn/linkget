@@ -2,7 +2,9 @@
 
 [English](README.md) · **简体中文**
 
-**官网：** [linkget.popcornnn.xyz](https://linkget.popcornnn.xyz)
+**官网：** [linkget.popcornnn.xyz](https://linkget.popcornnn.xyz) · **社区：** [LINUX DO](https://linux.do/)
+
+[![LINUX DO](https://img.shields.io/badge/LINUX-DO-FFB003.svg)](https://linux.do/)
 
 将帖子或音乐链接中的图片、视频与音频保存到 **macOS 照片**或本地文件夹。
 一个本地优先的 macOS CLI（`MIT` · 当前稳定版本 `v0.4.0`），支持复用浏览器登录态、完整性校验且无需任何托管服务。

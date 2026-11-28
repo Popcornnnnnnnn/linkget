@@ -2,7 +2,9 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-**Website:** [linkget.popcornnn.xyz](https://linkget.popcornnn.xyz)
+**Website:** [linkget.popcornnn.xyz](https://linkget.popcornnn.xyz) · **Community:** [LINUX DO](https://linux.do/)
+
+[![LINUX DO](https://img.shields.io/badge/LINUX-DO-FFB003.svg)](https://linux.do/)
 
 Save photos, videos, and audio from a post or music link to **macOS Photos** or a local folder.
 A local-first macOS CLI (`MIT` · current stable release `v0.4.0`) with browser session reuse, completeness checks, and no hosted service.
